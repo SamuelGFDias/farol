@@ -30,7 +30,7 @@ A dor: hoje o estado da sua vida técnica está espalhado em várias abas, termi
 
 ## Integrações previstas
 
-- [`openfortivpn-gui`](https://github.com/SamuelGFDias) — conectar/desconectar VPN, status, log.
+- [`openfortivpn-gui`](https://github.com/SamuelGFDias/OpenFortVPN-gui) — conectar/desconectar VPN, status, log.
 - **Uptime Kuma** — status de monitores via endpoint `/metrics` (Prometheus).
 - **Git local** — repos em `~/dev` com mudanças pendentes, ahead/behind.
 - **GitHub** — issues atribuídas, PRs aguardando review.
