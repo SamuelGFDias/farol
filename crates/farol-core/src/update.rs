@@ -104,6 +104,16 @@ impl Farol {
                 });
                 self.plugin.widgets = result.widgets;
                 self.plugin.state = PluginState::Ready;
+
+                // Correção pós-onda: fetch imediato ao ficar Ready — sem
+                // isto, o primeiro `widget/get` só sairia no primeiro tick
+                // do timer de refresh (até 30s depois, ver
+                // `subscription`/`handle_refresh_tick`), e a UI mostrava
+                // "nenhum repositório encontrado" nesse intervalo por não
+                // distinguir "ainda não busquei" de "busquei e está vazio".
+                // Reaproveita a mesma lógica de disparo (guarda de estado,
+                // `try_send` não-bloqueante) em vez de duplicá-la aqui.
+                self.handle_refresh_tick();
             }
             HandshakeOutcome::VersionIncompatible {
                 plugin_version,
@@ -608,5 +618,43 @@ mod tests {
             app.plugin.items[0].last_error.as_deref(),
             Some("erro anterior")
         );
+    }
+
+    /// Correção pós-onda: `HandshakeOutcome::Ready` deve disparar o primeiro
+    /// `widget/get` imediatamente (via `handle_refresh_tick`), sem esperar o
+    /// primeiro tick do timer de 30s — reproduz o bug de UX em que a tela
+    /// mostrava "nenhum repositório encontrado" por até 30s mesmo com
+    /// repositórios de verdade, porque o único gatilho de busca era o timer
+    /// periódico.
+    #[test]
+    fn handshake_ready_outcome_immediately_requests_first_widget() {
+        let mut app = Farol::default();
+        let (sender, mut receiver) = iced::futures::channel::mpsc::channel::<WorkerInput>(16);
+        app.worker_sender = Some(sender);
+
+        let result = farol_protocol::HandshakeHelloResult {
+            protocol_version: ProtocolVersion::new(0, 1),
+            plugin_name: "git-local".to_string(),
+            capabilities: CapabilityManifest {
+                capabilities: vec!["exec".to_string()],
+            },
+            widgets: vec![farol_protocol::WidgetDeclaration {
+                id: "repo-status".to_string(),
+                kind: "status-grid".to_string(),
+                title: "Repositórios Git".to_string(),
+                suggested_refresh_interval_ms: None,
+            }],
+            actions: vec![],
+        };
+
+        app.handle_handshake_outcome(HandshakeOutcome::Ready(result));
+
+        assert_eq!(app.plugin.state, PluginState::Ready);
+        match receiver.try_recv() {
+            Ok(WorkerInput::RequestWidget { widget_id }) => {
+                assert_eq!(widget_id, "repo-status");
+            }
+            other => panic!("esperava Ok(RequestWidget{{repo-status}}), obteve {other:?}"),
+        }
     }
 }

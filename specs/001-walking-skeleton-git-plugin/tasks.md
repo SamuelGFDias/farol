@@ -46,13 +46,13 @@ tests/{contract,integration,unit}/
 **Purpose**: Inicialização do workspace e das duas árvores de código (Rust e Python) — só
 estrutura, sem lógica de protocolo nem de negócio.
 
-- [ ] T001 Criar `Cargo.toml` de workspace na raiz do repositório, com membros `crates/farol-core` e `crates/farol-protocol`, per `plan.md` § Project Structure
-- [ ] T002 [P] Inicializar `crates/farol-core/Cargo.toml` (binário) com dependências `iced` ~0.13 (feature `tokio`), `tokio`, `serde`, `serde_json`, per `plan.md` § Technical Context
-- [ ] T003 [P] Inicializar `crates/farol-protocol/Cargo.toml` (biblioteca) com dependências `serde`, `serde_json`, `thiserror`, per `plan.md` § Technical Context
-- [ ] T004 [P] Criar esqueleto de `plugins/git-local/` (`main.py`, `scan.py`, `config.py` — stubs, apenas stdlib), per `plan.md` § Project Structure e D3 de `research.md`
-- [ ] T005 [P] Configurar lint/format do workspace Rust (`rustfmt.toml`, config clippy) na raiz do repositório
-- [ ] T006 [P] Configurar lint/format de `plugins/git-local` (Python, stdlib only — sem dependência de runtime externa)
-- [ ] T007 Criar esqueleto de `tests/` (`tests/contract/`, `tests/integration/`, `tests/unit/`) per `plan.md` § Project Structure, documentando o propósito de cada pasta (contrato = validação contra `protocol/schema/`; integração = cenários de `quickstart.md`; unidade = lógica pura)
+- [x] T001 Criar `Cargo.toml` de workspace na raiz do repositório, com membros `crates/farol-core` e `crates/farol-protocol`, per `plan.md` § Project Structure
+- [x] T002 [P] Inicializar `crates/farol-core/Cargo.toml` (binário) com dependências `iced` ~0.13 (feature `tokio`), `tokio`, `serde`, `serde_json`, per `plan.md` § Technical Context
+- [x] T003 [P] Inicializar `crates/farol-protocol/Cargo.toml` (biblioteca) com dependências `serde`, `serde_json`, `thiserror`, per `plan.md` § Technical Context
+- [x] T004 [P] Criar esqueleto de `plugins/git-local/` (`main.py`, `scan.py`, `config.py` — stubs, apenas stdlib), per `plan.md` § Project Structure e D3 de `research.md`
+- [x] T005 [P] Configurar lint/format do workspace Rust (`rustfmt.toml`, config clippy) na raiz do repositório
+- [x] T006 [P] Configurar lint/format de `plugins/git-local` (Python, stdlib only — sem dependência de runtime externa)
+- [x] T007 Criar esqueleto de `tests/` (`tests/contract/`, `tests/integration/`, `tests/unit/`) per `plan.md` § Project Structure, documentando o propósito de cada pasta (contrato = validação contra `protocol/schema/`; integração = cenários de `quickstart.md`; unidade = lógica pura)
 
 ---
 
@@ -66,11 +66,11 @@ explícito tanto do core (Rust) quanto do plugin (Python) — nenhum dos dois po
 
 ### Phase 2a — Especificação do Protocolo (pré-requisito de core E plugin — D1)
 
-- [ ] T008 Escrever `protocol/SPEC.md` — prosa normativa cobrindo transporte stdin/stdout, framing NDJSON (D2 de `research.md`), sequência de handshake, versionamento `MAJOR.MINOR` (D7), correlação de `id`, e modelo de erro; consolida `contracts/framing-and-versioning.md`, `contracts/handshake.md` e `contracts/error-model.md`
-- [ ] T009 [P] Criar `protocol/schema/v0.1/handshake.schema.json` (JSON Schema Draft 2020-12) para `handshake/hello` request/response, per `contracts/handshake.md` e `data-model.md` §1.2–1.4, §1.6
-- [ ] T010 [P] Criar `protocol/schema/v0.1/widget.schema.json` para `widget/get` request/response, per `contracts/widget-protocol.md` e `data-model.md` §1.5
-- [ ] T011 [P] Criar `protocol/schema/v0.1/action.schema.json` para `action/invoke` request/response, per `contracts/action-protocol.md` e `data-model.md` §1.4
-- [ ] T012 [P] Criar `protocol/schema/v0.1/error.schema.json` para o objeto de erro JSON-RPC e a tabela de `code`/`data.reason`, per `contracts/error-model.md` e `data-model.md` §1.7
+- [x] T008 Escrever `protocol/SPEC.md` — prosa normativa cobrindo transporte stdin/stdout, framing NDJSON (D2 de `research.md`), sequência de handshake, versionamento `MAJOR.MINOR` (D7), correlação de `id`, e modelo de erro; consolida `contracts/framing-and-versioning.md`, `contracts/handshake.md` e `contracts/error-model.md`
+- [x] T009 [P] Criar `protocol/schema/v0.1/handshake.schema.json` (JSON Schema Draft 2020-12) para `handshake/hello` request/response, per `contracts/handshake.md` e `data-model.md` §1.2–1.4, §1.6
+- [x] T010 [P] Criar `protocol/schema/v0.1/widget.schema.json` para `widget/get` request/response, per `contracts/widget-protocol.md` e `data-model.md` §1.5
+- [x] T011 [P] Criar `protocol/schema/v0.1/action.schema.json` para `action/invoke` request/response, per `contracts/action-protocol.md` e `data-model.md` §1.4
+- [x] T012 [P] Criar `protocol/schema/v0.1/error.schema.json` para o objeto de erro JSON-RPC e a tabela de `code`/`data.reason`, per `contracts/error-model.md` e `data-model.md` §1.7
 
 **Checkpoint**: `protocol/` completo e normativo (D1). **Nenhuma task de `farol-protocol` (Rust) ou
 `git-local` (Python) pode começar antes deste checkpoint.** A partir daqui, core e plugin são
@@ -78,13 +78,13 @@ paralelizáveis entre si — linguagens e diretórios distintos, sem arquivo com
 
 ### Phase 2b — Esqueletos de Core e Plugin (paralelo entre si, após 2a)
 
-- [ ] T013 [P] Implementar codec NDJSON em `crates/farol-protocol/src/framing.rs` (D2) — encode/decode de linha JSON compacta única, conforme `protocol/SPEC.md`
-- [ ] T014 [P] Implementar tipo `ProtocolVersion` e algoritmo de comparação em `crates/farol-protocol/src/version.rs` (D7) — igualdade exata quando `MAJOR == 0`, regra geral para `MAJOR >= 1`
-- [ ] T015 [P] Implementar tipos de mensagem (`HandshakeHello`/`HandshakeHelloResult`, `WidgetDeclaration`, `ActionDeclaration`, `ActionTarget`, `GitRepository`, `RemoteStatus`, objeto de erro) em `crates/farol-protocol/src/messages.rs`, a partir de `protocol/schema/v0.1/*.schema.json`
-- [ ] T016 [P] farol-core: esqueleto de app `iced` abrindo exatamente uma janela nativa ao iniciar (FR-001) em `crates/farol-core/src/main.rs`
-- [ ] T017 [P] farol-core: definir `PluginState`, `PluginConnection`, `UnavailableReason` em `crates/farol-core/src/model.rs`, per `data-model.md` §2.1 e §3 (transições de estado — ainda sem I/O real)
-- [ ] T018 [P] plugin git-local: loop de leitura/escrita NDJSON sobre stdin/stdout em `plugins/git-local/main.py` (`readline` + JSON compacto), conforme `protocol/SPEC.md` — sem lógica de negócio ainda
-- [ ] T019 [P] plugin git-local: leitor de configuração em `plugins/git-local/config.py` — lê `$XDG_CONFIG_HOME/farol/plugins/git-local/config.toml` (fallback `~/.config/...`), default `scan_root = ~/dev` quando ausente (FR-012, `contracts/git-local-plugin.md`)
+- [x] T013 [P] Implementar codec NDJSON em `crates/farol-protocol/src/framing.rs` (D2) — encode/decode de linha JSON compacta única, conforme `protocol/SPEC.md`
+- [x] T014 [P] Implementar tipo `ProtocolVersion` e algoritmo de comparação em `crates/farol-protocol/src/version.rs` (D7) — igualdade exata quando `MAJOR == 0`, regra geral para `MAJOR >= 1`
+- [x] T015 [P] Implementar tipos de mensagem (`HandshakeHello`/`HandshakeHelloResult`, `WidgetDeclaration`, `ActionDeclaration`, `ActionTarget`, `GitRepository`, `RemoteStatus`, objeto de erro) em `crates/farol-protocol/src/messages.rs`, a partir de `protocol/schema/v0.1/*.schema.json`
+- [x] T016 [P] farol-core: esqueleto de app `iced` abrindo exatamente uma janela nativa ao iniciar (FR-001) em `crates/farol-core/src/main.rs`
+- [x] T017 [P] farol-core: definir `PluginState`, `PluginConnection`, `UnavailableReason` em `crates/farol-core/src/model.rs`, per `data-model.md` §2.1 e §3 (transições de estado — ainda sem I/O real)
+- [x] T018 [P] plugin git-local: loop de leitura/escrita NDJSON sobre stdin/stdout em `plugins/git-local/main.py` (`readline` + JSON compacto), conforme `protocol/SPEC.md` — sem lógica de negócio ainda
+- [x] T019 [P] plugin git-local: leitor de configuração em `plugins/git-local/config.py` — lê `$XDG_CONFIG_HOME/farol/plugins/git-local/config.toml` (fallback `~/.config/...`), default `scan_root = ~/dev` quando ausente (FR-012, `contracts/git-local-plugin.md`)
 
 **Checkpoint**: codec de protocolo, janela do core e loop stdio do plugin existem. A implementação
 da User Story 1 pode começar.
@@ -103,21 +103,21 @@ adicional do usuário.
 
 ### Implementação para User Story 1
 
-- [ ] T020 [US1] farol-core: implementar spawn do processo filho do plugin (`tokio::process::Command`) dentro de uma `iced::Subscription` worker em `crates/farol-core/src/plugin_worker.rs` (D4/D5) — transições `Starting` → `Handshaking`, ou `Unavailable{FailedToStart}` em falha de spawn
-- [ ] T021 [US1] farol-core: enviar `handshake/hello` pelo canal do worker e tratar a resposta em `crates/farol-core/src/plugin_worker.rs` — aplicar `RPC_TIMEOUT_CONTROL` (5s, D6) e a checagem de compatibilidade de versão (D7) via `farol_protocol::version` (depende de T013, T014, T020)
-- [ ] T022 [US1] farol-core: propagar o resultado do handshake para `crates/farol-core/src/update.rs` — `PluginState` transiciona para `Ready` (compatível) ou `Unavailable{VersionIncompatible}`/`Unavailable{Unresponsive}` (`data-model.md` §3) (depende de T017, T021)
-- [ ] T023 [P] [US1] plugin git-local: implementar handler de `handshake/hello` em `plugins/git-local/main.py` — responde `plugin_name: "git-local"`, `protocol_version: "0.1"`, `capabilities: ["exec"]`, `widgets: [repo-status/status-grid]`, `actions: []` (`contracts/handshake.md`, `contracts/git-local-plugin.md`) (depende de T018)
-- [ ] T024 [P] [US1] plugin git-local: implementar varredura em `plugins/git-local/scan.py` — subdiretórios diretos de `scan_root` contendo `.git`, `dirty` via `git status --porcelain`, `ahead`/`behind` via `git rev-list --left-right --count`, `remote_status: {"kind":"no_remote"}` quando sem remote configurado (FR-013/FR-014, `contracts/git-local-plugin.md`) (depende de T019)
-- [ ] T025 [US1] plugin git-local: implementar handler de `widget/get` em `plugins/git-local/main.py`, combinando `scan.py` com a `fetch_action` de cada repositório (`enabled: false` quando `no_remote`), conforme `contracts/widget-protocol.md` (depende de T023, T024)
-- [ ] T026 [US1] farol-core: implementar refresh periódico como `iced::Subscription` (`time::every`, default 30000ms ou `suggested_refresh_interval_ms` do handshake — FR-011) chamando `widget/get` pelo worker; timeout de `RPC_TIMEOUT_CONTROL` no ciclo contribui para `Unresponsive` (D6) em `crates/farol-core/src/plugin_worker.rs` (depende de T021, T025)
-- [ ] T027 [US1] farol-core: registrar e exibir o manifesto de capacidades declarado pelo plugin (incluindo `exec`), consultável pelo usuário na UI (FR-008) em `crates/farol-core/src/view.rs` (depende de T022)
-- [ ] T028 [US1] farol-core: renderizar o widget `status-grid` (repositórios com working tree suja/limpa e ahead/behind, ou "sem remoto" visualmente distinguível de "0 ahead / 0 behind") em `crates/farol-core/src/view.rs`, mapeando `GitRepository`/`RemoteStatus` recebidos (FR-009/FR-010/FR-013/FR-014) (depende de T015, T022, T026)
-- [ ] T029 [US1] farol-core: exibir mensagem legível de incompatibilidade de versão quando o handshake falha por versão (FR-005), sem renderizar nenhum widget desse plugin (depende de T022)
+- [x] T020 [US1] farol-core: implementar spawn do processo filho do plugin (`tokio::process::Command`) dentro de uma `iced::Subscription` worker em `crates/farol-core/src/plugin_worker.rs` (D4/D5) — transições `Starting` → `Handshaking`, ou `Unavailable{FailedToStart}` em falha de spawn
+- [x] T021 [US1] farol-core: enviar `handshake/hello` pelo canal do worker e tratar a resposta em `crates/farol-core/src/plugin_worker.rs` — aplicar `RPC_TIMEOUT_CONTROL` (5s, D6) e a checagem de compatibilidade de versão (D7) via `farol_protocol::version` (depende de T013, T014, T020)
+- [x] T022 [US1] farol-core: propagar o resultado do handshake para `crates/farol-core/src/update.rs` — `PluginState` transiciona para `Ready` (compatível) ou `Unavailable{VersionIncompatible}`/`Unavailable{Unresponsive}` (`data-model.md` §3) (depende de T017, T021)
+- [x] T023 [P] [US1] plugin git-local: implementar handler de `handshake/hello` em `plugins/git-local/main.py` — responde `plugin_name: "git-local"`, `protocol_version: "0.1"`, `capabilities: ["exec"]`, `widgets: [repo-status/status-grid]`, `actions: []` (`contracts/handshake.md`, `contracts/git-local-plugin.md`) (depende de T018)
+- [x] T024 [P] [US1] plugin git-local: implementar varredura em `plugins/git-local/scan.py` — subdiretórios diretos de `scan_root` contendo `.git`, `dirty` via `git status --porcelain`, `ahead`/`behind` via `git rev-list --left-right --count`, `remote_status: {"kind":"no_remote"}` quando sem remote configurado (FR-013/FR-014, `contracts/git-local-plugin.md`) (depende de T019)
+- [x] T025 [US1] plugin git-local: implementar handler de `widget/get` em `plugins/git-local/main.py`, combinando `scan.py` com a `fetch_action` de cada repositório (`enabled: false` quando `no_remote`), conforme `contracts/widget-protocol.md` (depende de T023, T024)
+- [x] T026 [US1] farol-core: implementar refresh periódico como `iced::Subscription` (`time::every`, default 30000ms ou `suggested_refresh_interval_ms` do handshake — FR-011) chamando `widget/get` pelo worker; timeout de `RPC_TIMEOUT_CONTROL` no ciclo contribui para `Unresponsive` (D6) em `crates/farol-core/src/plugin_worker.rs` (depende de T021, T025)
+- [x] T027 [US1] farol-core: registrar e exibir o manifesto de capacidades declarado pelo plugin (incluindo `exec`), consultável pelo usuário na UI (FR-008) em `crates/farol-core/src/view.rs` (depende de T022)
+- [x] T028 [US1] farol-core: renderizar o widget `status-grid` (repositórios com working tree suja/limpa e ahead/behind, ou "sem remoto" visualmente distinguível de "0 ahead / 0 behind") em `crates/farol-core/src/view.rs`, mapeando `GitRepository`/`RemoteStatus` recebidos (FR-009/FR-010/FR-013/FR-014) (depende de T015, T022, T026)
+- [x] T029 [US1] farol-core: exibir mensagem legível de incompatibilidade de versão quando o handshake falha por versão (FR-005), sem renderizar nenhum widget desse plugin (depende de T022)
 
 ### Validação da User Story 1 (cenários de `quickstart.md`)
 
-- [ ] T030 [US1] Executar Cenário 1 de `quickstart.md` — abrir o Farol com diretório de teste populado; confirmar janela única, widget populado (working tree + ahead/behind, ou "sem remoto" distinguível), e atualização automática após ~30s sem reiniciar (FR-001, FR-011, SC-001, SC-002)
-- [ ] T031 [US1] Executar Cenário 2 de `quickstart.md` — simular `protocol_version: "9.9"` na resposta de handshake do plugin; confirmar que nenhum widget é renderizado, mensagem legível de incompatibilidade aparece, e o core não trava nem cai (FR-005, SC-005)
+- [x] T030 [US1] Executar Cenário 1 de `quickstart.md` — abrir o Farol com diretório de teste populado; confirmar janela única, widget populado (working tree + ahead/behind, ou "sem remoto" distinguível), e atualização automática após ~30s sem reiniciar (FR-001, FR-011, SC-001, SC-002)
+- [ ] T031 [US1] Executar Cenário 2 de `quickstart.md` — simular `protocol_version: "9.9"` na resposta de handshake do plugin; confirmar que nenhum widget é renderizado, mensagem legível de incompatibilidade aparece, e o core não trava nem cai (FR-005, SC-005) (pendente — não executado ainda)
 
 **Checkpoint**: User Story 1 completa e testável de forma independente — MVP.
 
@@ -137,15 +137,15 @@ visíveis).
 
 ### Implementação para User Story 2
 
-- [ ] T032 [US2] farol-core: exibir a ação "Fetch" por repositório em `crates/farol-core/src/view.rs`, no estado (habilitado/desabilitado) exatamente como declarado pelo plugin (FR-015) — o core nunca decide isso por conta própria (depende de T028)
-- [ ] T033 [US2] farol-core: implementar envio de `action/invoke` pelo worker ao acionar Fetch, com `RPC_TIMEOUT_ACTION` (120s default, ou `timeout_hint_ms` da `ActionDeclaration` quando presente) em `crates/farol-core/src/plugin_worker.rs` (FR-016, D6) (depende de T020, T032)
-- [ ] T034 [P] [US2] plugin git-local: implementar `action/invoke` para `git.fetch` em `plugins/git-local/main.py`/`scan.py` — executa `git fetch` via subprocess no repositório-alvo, devolve `GitRepository` pós-fetch em sucesso, ou erro `-32001 fetch_failed` sem encerrar o processo do plugin (FR-017, `contracts/action-protocol.md`, `contracts/git-local-plugin.md`) (depende de T024)
-- [ ] T035 [US2] farol-core: fundir o resultado de `action/invoke` no `RepositoryViewModel` do repositório-alvo em `crates/farol-core/src/update.rs` — sucesso atualiza ahead/behind, erro popula `last_error` (FR-018, `data-model.md` §2.2) (depende de T033, T034)
-- [ ] T036 [US2] farol-core: refletir `fetch_in_flight`/erro por repositório em `crates/farol-core/src/view.rs` sem travar a janela (depende de T035)
+- [x] T032 [US2] farol-core: exibir a ação "Fetch" por repositório em `crates/farol-core/src/view.rs`, no estado (habilitado/desabilitado) exatamente como declarado pelo plugin (FR-015) — o core nunca decide isso por conta própria (depende de T028)
+- [x] T033 [US2] farol-core: implementar envio de `action/invoke` pelo worker ao acionar Fetch, com `RPC_TIMEOUT_ACTION` (120s default, ou `timeout_hint_ms` da `ActionDeclaration` quando presente) em `crates/farol-core/src/plugin_worker.rs` (FR-016, D6) (depende de T020, T032)
+- [x] T034 [P] [US2] plugin git-local: implementar `action/invoke` para `git.fetch` em `plugins/git-local/main.py`/`scan.py` — executa `git fetch` via subprocess no repositório-alvo, devolve `GitRepository` pós-fetch em sucesso, ou erro `-32001 fetch_failed` sem encerrar o processo do plugin (FR-017, `contracts/action-protocol.md`, `contracts/git-local-plugin.md`) (depende de T024)
+- [x] T035 [US2] farol-core: fundir o resultado de `action/invoke` no `RepositoryViewModel` do repositório-alvo em `crates/farol-core/src/update.rs` — sucesso atualiza ahead/behind, erro popula `last_error` (FR-018, `data-model.md` §2.2) (depende de T033, T034)
+- [x] T036 [US2] farol-core: refletir `fetch_in_flight`/erro por repositório em `crates/farol-core/src/view.rs` sem travar a janela (depende de T035)
 
 ### Validação da User Story 2 (cenário de `quickstart.md`)
 
-- [ ] T037 [US2] Executar Cenário 3 de `quickstart.md` — disparar fetch num repositório com remoto (ahead/behind atualizado ao final), confirmar ação desabilitada, não omitida, para repositório sem remoto, e simular falha de rede confirmando erro estruturado exibido sem travar a janela nem derrubar o core (FR-015–FR-018, SC-003)
+- [ ] T037 [US2] Executar Cenário 3 de `quickstart.md` — disparar fetch num repositório com remoto (ahead/behind atualizado ao final), confirmar ação desabilitada, não omitida, para repositório sem remoto, e simular falha de rede confirmando erro estruturado exibido sem travar a janela nem derrubar o core (FR-015–FR-018, SC-003) (pendente — não executado ainda)
 
 **Checkpoint**: User Stories 1 e 2 funcionam, cada uma de forma independente.
 
@@ -164,14 +164,14 @@ outra funcionalidade do core é afetada.
 
 ### Implementação para User Story 3
 
-- [ ] T038 [US3] farol-core: observar `child.wait()` concorrentemente à leitura de stdout/recebimento de pedidos (via `tokio::select!`) no worker, emitindo `Unavailable{Crashed}` imediatamente quando o processo termina, sem depender de nenhuma requisição em voo (FR-019, D6) em `crates/farol-core/src/plugin_worker.rs` (depende de T020)
-- [ ] T039 [US3] farol-core: garantir que `Unavailable{Crashed}` e `Unavailable{Unresponsive}` (do timeout de refresh, T026) convergem para o mesmo estado visível de "indisponível" na UI, distinguível de "carregando"/"sem dados" (FR-020) em `crates/farol-core/src/view.rs` (depende de T026, T038)
-- [ ] T040 [US3] farol-core: garantir que o restante da janela (demais elementos e interação do usuário) continua respondendo quando `PluginState = Unavailable`, sem bloquear `update`/`view` (FR-021) (depende de T039)
+- [x] T038 [US3] farol-core: observar `child.wait()` concorrentemente à leitura de stdout/recebimento de pedidos (via `tokio::select!`) no worker, emitindo `Unavailable{Crashed}` imediatamente quando o processo termina, sem depender de nenhuma requisição em voo (FR-019, D6) em `crates/farol-core/src/plugin_worker.rs` (depende de T020)
+- [x] T039 [US3] farol-core: garantir que `Unavailable{Crashed}` e `Unavailable{Unresponsive}` (do timeout de refresh, T026) convergem para o mesmo estado visível de "indisponível" na UI, distinguível de "carregando"/"sem dados" (FR-020) em `crates/farol-core/src/view.rs` (depende de T026, T038)
+- [x] T040 [US3] farol-core: garantir que o restante da janela (demais elementos e interação do usuário) continua respondendo quando `PluginState = Unavailable`, sem bloquear `update`/`view` (FR-021) (depende de T039)
 
 ### Validação da User Story 3 (cenários de `quickstart.md`)
 
-- [ ] T041 [US3] Executar Cenário 4 de `quickstart.md` — `kill -9` no processo do plugin; confirmar que a janela do Farol permanece aberta e responsiva, e o widget passa a exibir "indisponível" distinguível de carregando (FR-019–FR-021, SC-004)
-- [ ] T042 [US3] Executar Cenário 5 de `quickstart.md` — `kill -STOP` no processo do plugin (travamento); confirmar que o core não bloqueia indefinidamente e sinaliza `Unavailable{Unresponsive}` após `RPC_TIMEOUT_CONTROL` no próximo ciclo de refresh, sem impedir o resto da janela de responder; `kill -CONT` ao final do teste (FR-019, D6)
+- [x] T041 [US3] Executar Cenário 4 de `quickstart.md` — `kill -9` no processo do plugin; confirmar que a janela do Farol permanece aberta e responsiva, e o widget passa a exibir "indisponível" distinguível de carregando (FR-019–FR-021, SC-004)
+- [x] T042 [US3] Executar Cenário 5 de `quickstart.md` — `kill -STOP` no processo do plugin (travamento); confirmar que o core não bloqueia indefinidamente e sinaliza `Unavailable{Unresponsive}` após `RPC_TIMEOUT_CONTROL` no próximo ciclo de refresh, sem impedir o resto da janela de responder; `kill -CONT` ao final do teste (FR-019, D6)
 
 **Checkpoint**: as três user stories funcionam, cada uma de forma independente.
 
@@ -183,13 +183,13 @@ outra funcionalidade do core é afetada.
 remanescentes de `quickstart.md`, e a suíte de testes automatizados descrita em `plan.md` §
 Testing.
 
-- [ ] T043 [P] farol-core: sinalizar `Unavailable{FailedToStart}` quando o spawn do processo do plugin falha (binário ausente ou não executável), sem widget renderizado para esse plugin (Edge Case da spec) em `crates/farol-core/src/plugin_worker.rs`
-- [ ] T044 Executar Cenário 6 de `quickstart.md` — apontar o core para um caminho de plugin inexistente; confirmar `Unavailable{FailedToStart}` desde o início, sem crash do core e sem widget renderizado (Edge Case da spec)
-- [ ] T045 [P] plugin git-local: reportar `-32003 exec_unavailable` quando o binário `git` está ausente do sistema (em `widget/get` ou `action/invoke`), sem encerrar o processo do plugin (Edge Case da spec, `contracts/error-model.md`) em `plugins/git-local/scan.py`
-- [ ] T046 Executar Cenário 7 de `quickstart.md` — remover `git` do `PATH` visível ao plugin; confirmar erro `exec_unavailable` reportado nas operações afetadas, sem que o processo do plugin morra e sem que `PluginState` saia de `Ready`
-- [ ] T047 [P] farol-protocol: testes de contrato (`cargo test`) — codec NDJSON, comparação de versão (D7), (de)serialização de cada forma de mensagem contra `protocol/schema/v0.1/*.schema.json`, em `tests/contract/`
-- [ ] T048 [P] farol-core: testes de unidade da máquina de estados `PluginState` (`data-model.md` §3) em `tests/unit/`
-- [ ] T049 [P] plugin git-local: testes pytest — varredura de `scan_root`, mapeamento de `no_remote`, execução de `git fetch` mockada, em `tests/unit/test_git_local_scan.py`
+- [x] T043 [P] farol-core: sinalizar `Unavailable{FailedToStart}` quando o spawn do processo do plugin falha (binário ausente ou não executável), sem widget renderizado para esse plugin (Edge Case da spec) em `crates/farol-core/src/plugin_worker.rs`
+- [ ] T044 Executar Cenário 6 de `quickstart.md` — apontar o core para um caminho de plugin inexistente; confirmar `Unavailable{FailedToStart}` desde o início, sem crash do core e sem widget renderizado (Edge Case da spec) (pendente — não executado ainda)
+- [x] T045 [P] plugin git-local: reportar `-32003 exec_unavailable` quando o binário `git` está ausente do sistema (em `widget/get` ou `action/invoke`), sem encerrar o processo do plugin (Edge Case da spec, `contracts/error-model.md`) em `plugins/git-local/scan.py`
+- [ ] T046 Executar Cenário 7 de `quickstart.md` — remover `git` do `PATH` visível ao plugin; confirmar erro `exec_unavailable` reportado nas operações afetadas, sem que o processo do plugin morra e sem que `PluginState` saia de `Ready` (pendente — não executado ainda)
+- [ ] T047 [P] farol-protocol: testes de contrato (`cargo test`) — codec NDJSON, comparação de versão (D7), (de)serialização de cada forma de mensagem contra `protocol/schema/v0.1/*.schema.json`, em `tests/contract/` (pendente — não executado ainda)
+- [x] T048 [P] farol-core: testes de unidade da máquina de estados `PluginState` (`data-model.md` §3) em `tests/unit/`
+- [x] T049 [P] plugin git-local: testes pytest — varredura de `scan_root`, mapeamento de `no_remote`, execução de `git fetch` mockada, em `tests/unit/test_git_local_scan.py`
 
 ---
 
