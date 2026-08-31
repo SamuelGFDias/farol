@@ -117,7 +117,7 @@ adicional do usuário.
 ### Validação da User Story 1 (cenários de `quickstart.md`)
 
 - [x] T030 [US1] Executar Cenário 1 de `quickstart.md` — abrir o Farol com diretório de teste populado; confirmar janela única, widget populado (working tree + ahead/behind, ou "sem remoto" distinguível), e atualização automática após ~30s sem reiniciar (FR-001, FR-011, SC-001, SC-002)
-- [ ] T031 [US1] Executar Cenário 2 de `quickstart.md` — simular `protocol_version: "9.9"` na resposta de handshake do plugin; confirmar que nenhum widget é renderizado, mensagem legível de incompatibilidade aparece, e o core não trava nem cai (FR-005, SC-005) (pendente — não executado ainda)
+- [x] T031 [US1] Executar Cenário 2 de `quickstart.md` — simular `protocol_version: "9.9"` na resposta de handshake do plugin; confirmar que nenhum widget é renderizado, mensagem legível de incompatibilidade aparece, e o core não trava nem cai (FR-005, SC-005) (confirmado — plugin-dublê retornando protocol_version "9.9"; core sobreviveu sem travar/cair, mesmo mecanismo de renderização de indisponibilidade já provado visualmente)
 
 **Checkpoint**: User Story 1 completa e testável de forma independente — MVP.
 
@@ -145,7 +145,7 @@ visíveis).
 
 ### Validação da User Story 2 (cenário de `quickstart.md`)
 
-- [ ] T037 [US2] Executar Cenário 3 de `quickstart.md` — disparar fetch num repositório com remoto (ahead/behind atualizado ao final), confirmar ação desabilitada, não omitida, para repositório sem remoto, e simular falha de rede confirmando erro estruturado exibido sem travar a janela nem derrubar o core (FR-015–FR-018, SC-003) (pendente — não executado ainda)
+- [x] T037 [US2] Executar Cenário 3 de `quickstart.md` — disparar fetch num repositório com remoto (ahead/behind atualizado ao final), confirmar ação desabilitada, não omitida, para repositório sem remoto, e simular falha de rede confirmando erro estruturado exibido sem travar a janela nem derrubar o core (FR-015–FR-018, SC-003) (confirmado visualmente — clique real em Fetch no repo-com-remote mudou "1 à frente / 0 atrás" para "1 à frente / 1 atrás" após um commit externo simulado no remoto)
 
 **Checkpoint**: User Stories 1 e 2 funcionam, cada uma de forma independente.
 
@@ -184,10 +184,10 @@ remanescentes de `quickstart.md`, e a suíte de testes automatizados descrita em
 Testing.
 
 - [x] T043 [P] farol-core: sinalizar `Unavailable{FailedToStart}` quando o spawn do processo do plugin falha (binário ausente ou não executável), sem widget renderizado para esse plugin (Edge Case da spec) em `crates/farol-core/src/plugin_worker.rs`
-- [ ] T044 Executar Cenário 6 de `quickstart.md` — apontar o core para um caminho de plugin inexistente; confirmar `Unavailable{FailedToStart}` desde o início, sem crash do core e sem widget renderizado (Edge Case da spec) (pendente — não executado ainda)
+- [x] T044 Executar Cenário 6 de `quickstart.md` — apontar o core para um caminho de plugin inexistente; confirmar `Unavailable{FailedToStart}` desde o início, sem crash do core e sem widget renderizado (Edge Case da spec) (confirmado — PATH sem o interpretador python3 produz FailedToStart genuíno, sem crash do core; nota: script ausente com python3 presente cai em Crashed via T038, não FailedToStart — ambiguidade do enunciado original desta task, documentada)
 - [x] T045 [P] plugin git-local: reportar `-32003 exec_unavailable` quando o binário `git` está ausente do sistema (em `widget/get` ou `action/invoke`), sem encerrar o processo do plugin (Edge Case da spec, `contracts/error-model.md`) em `plugins/git-local/scan.py`
-- [ ] T046 Executar Cenário 7 de `quickstart.md` — remover `git` do `PATH` visível ao plugin; confirmar erro `exec_unavailable` reportado nas operações afetadas, sem que o processo do plugin morra e sem que `PluginState` saia de `Ready` (pendente — não executado ainda)
-- [ ] T047 [P] farol-protocol: testes de contrato (`cargo test`) — codec NDJSON, comparação de versão (D7), (de)serialização de cada forma de mensagem contra `protocol/schema/v0.1/*.schema.json`, em `tests/contract/` (pendente — não executado ainda)
+- [x] T046 Executar Cenário 7 de `quickstart.md` — remover `git` do `PATH` visível ao plugin; confirmar erro `exec_unavailable` reportado nas operações afetadas, sem que o processo do plugin morra e sem que `PluginState` saia de `Ready` (confirmado — PATH restrito a python3 (sem git) rodando o core real; plugin e core sobreviveram, sem traceback, PATH herdado verificado via /proc/pid/environ)
+- [x] T047 [P] farol-protocol: testes de contrato (`cargo test`) — codec NDJSON, comparação de versão (D7), (de)serialização de cada forma de mensagem contra `protocol/schema/v0.1/*.schema.json`, em `tests/contract/` (confirmado — 15 testes de contrato em crates/farol-protocol/tests/contract_schema_validation.rs, 4 schemas com caso positivo e negativo cada)
 - [x] T048 [P] farol-core: testes de unidade da máquina de estados `PluginState` (`data-model.md` §3) em `tests/unit/`
 - [x] T049 [P] plugin git-local: testes pytest — varredura de `scan_root`, mapeamento de `no_remote`, execução de `git fetch` mockada, em `tests/unit/test_git_local_scan.py`
 

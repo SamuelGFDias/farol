@@ -14,3 +14,6 @@ opt-level = 0
 
 [profile.release]
 opt-level = 3
+
+[dev-dependencies]
+jsonschema = "0.52.1"
