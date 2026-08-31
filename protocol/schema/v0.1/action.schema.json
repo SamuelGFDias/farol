@@ -1,0 +1,90 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://farol.dev/protocol/v0.1/action.schema.json",
+  "title": "Farol Protocol v0.1 — action/invoke",
+  "description": "Request and response envelopes for the action/invoke method. See protocol/SPEC.md §5.3 for the normative round-trip and §7.2 for its dedicated timeout budget (RPC_TIMEOUT_ACTION, distinct from RPC_TIMEOUT_CONTROL used by handshake/hello and widget/get). References ActionTarget from handshake.schema.json and GitRepository from widget.schema.json.",
+  "oneOf": [
+    { "$ref": "#/$defs/ActionInvokeRequest" },
+    { "$ref": "#/$defs/ActionInvokeResponseSuccess" },
+    { "$ref": "#/$defs/ActionInvokeResponseError" }
+  ],
+  "$defs": {
+    "RequestId": {
+      "title": "RequestId",
+      "oneOf": [
+        { "type": "integer" },
+        { "type": "string", "minLength": 1 }
+      ]
+    },
+
+    "ActionInvokeParams": {
+      "title": "ActionInvokeParams",
+      "type": "object",
+      "properties": {
+        "action_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Must match the `id` of an ActionDeclaration the plugin previously declared (in the handshake result and/or a widget/get response) for the given target, with enabled=true."
+        },
+        "target": {
+          "$ref": "https://farol.dev/protocol/v0.1/handshake.schema.json#/$defs/ActionTarget",
+          "description": "MUST be echoed back verbatim from the target of the ActionDeclaration that motivated this invocation - the core MUST NOT reconstruct a target on its own."
+        }
+      },
+      "required": ["action_id", "target"],
+      "additionalProperties": false
+    },
+
+    "ActionInvokeRequest": {
+      "title": "ActionInvokeRequest",
+      "type": "object",
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "id": { "$ref": "#/$defs/RequestId" },
+        "method": { "const": "action/invoke" },
+        "params": { "$ref": "#/$defs/ActionInvokeParams" }
+      },
+      "required": ["jsonrpc", "id", "method", "params"],
+      "additionalProperties": false
+    },
+
+    "ActionInvokeResult": {
+      "title": "ActionInvokeResult",
+      "type": "object",
+      "description": "Result of a successful action invocation. For the git-local reference plugin's git.fetch action, this is the post-fetch repository state - the core replaces the corresponding repository's data with this value directly, without an additional widget/get call.",
+      "properties": {
+        "repo": {
+          "$ref": "https://farol.dev/protocol/v0.1/widget.schema.json#/$defs/GitRepository",
+          "description": "Updated state of the target repository after the action ran."
+        }
+      },
+      "required": ["repo"],
+      "additionalProperties": false
+    },
+
+    "ActionInvokeResponseSuccess": {
+      "title": "ActionInvokeResponseSuccess",
+      "type": "object",
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "id": { "$ref": "#/$defs/RequestId" },
+        "result": { "$ref": "#/$defs/ActionInvokeResult" }
+      },
+      "required": ["jsonrpc", "id", "result"],
+      "additionalProperties": false
+    },
+
+    "ActionInvokeResponseError": {
+      "title": "ActionInvokeResponseError",
+      "type": "object",
+      "description": "E.g. code -32001 / reason \"fetch_failed\" when the underlying action execution failed, or code -32002 / reason \"action_timeout\" synthesized by the core when RPC_TIMEOUT_ACTION elapses. MUST NOT cause the plugin process to exit (protocol/SPEC.md §8.3) - the plugin keeps responding to subsequent requests. Never marks the plugin connection unavailable by itself.",
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "id": { "$ref": "#/$defs/RequestId" },
+        "error": { "$ref": "https://farol.dev/protocol/v0.1/error.schema.json" }
+      },
+      "required": ["jsonrpc", "id", "error"],
+      "additionalProperties": false
+    }
+  }
+}

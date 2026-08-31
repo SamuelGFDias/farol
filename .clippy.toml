@@ -1,0 +1,7 @@
+# Clippy configuration for Farol workspace
+# https://doc.rust-lang.org/clippy/
+
+# Lint level: deny for critical issues, warn for everything else by default
+too-many-arguments-threshold = 8
+type-complexity-threshold = 500
+excessive-nesting-threshold = 5

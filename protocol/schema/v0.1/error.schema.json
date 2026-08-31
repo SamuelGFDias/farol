@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://farol.dev/protocol/v0.1/error.schema.json",
+  "title": "Farol Protocol v0.1 — JSON-RPC Error Object",
+  "description": "The `error` member of any Farol protocol JSON-RPC response (handshake/hello, widget/get, action/invoke). See protocol/SPEC.md §8 for the normative prose. `code` follows the standard JSON-RPC 2.0 reserved range (-32700..-32600..-32603) for generic protocol errors, or the Farol domain range (-32000 to -32099) for the reasons below. `data.reason` is REQUIRED whenever `code` is one of the Farol domain codes.\n\nFarol domain error catalog (protocol v0.1, code -> reason -> where -> meaning):\n-32000 -> protocol_version_incompatible -> handshake/hello response (plugin-side refusal path) -> the plugin refuses the protocol_version proposed by the core.\n-32001 -> fetch_failed -> action/invoke response -> the underlying action execution failed (e.g. `git fetch` returned a non-zero exit code); `data.detail` MAY carry the underlying error output.\n-32002 -> action_timeout -> synthesized by the core (not the plugin) when RPC_TIMEOUT_ACTION elapses on a single action/invoke call -> does not by itself mark the plugin connection unavailable.\n-32003 -> exec_unavailable -> handshake/hello or action/invoke response -> an executable the plugin depends on for a declared capability (e.g. `exec`) is not available in the environment; the plugin reports this as a pointwise failure without exiting its own process.\n-32004 -> scan_root_unreadable -> widget/get response -> a configured path the plugin needs to read exists but is not accessible (permission error) - distinct from \"does not exist/empty\", which MUST be reported as success with empty data, never as an error.\n\nThis catalog is normative for the git-local reference plugin. A future plugin MAY reserve additional `reason` values within the same -32000..-32099 code range, documented in that plugin's own section, as long as it does not reuse a `code` already defined above with a different meaning. `data.reason` is therefore intentionally left as an open string (not a closed enum) in this schema so that forward-compatible plugins are not rejected by validation.",
+  "$ref": "#/$defs/ErrorObject",
+  "$defs": {
+    "ErrorObject": {
+      "type": "object",
+      "title": "ErrorObject",
+      "description": "Standard JSON-RPC 2.0 error object, as used by every Farol protocol method. `message` is for humans/logs only - code MUST distinguish error kinds via `code`/`data.reason`, never by parsing `message`.",
+      "properties": {
+        "code": {
+          "type": "integer",
+          "description": "Numeric error identifier. Either a standard JSON-RPC 2.0 reserved code (-32700, -32600, -32601, -32602, -32603) or a Farol domain code in the reserved application range -32000 to -32099 (see this file's top-level description for the v0.1 catalog)."
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Human-readable error message, for logs/diagnostics. Not a stable identifier - callers MUST use `code`/`data.reason` for programmatic handling."
+        },
+        "data": {
+          "type": "object",
+          "description": "Structured error detail. REQUIRED to be present with a `reason` field whenever `code` is a Farol domain code (-32000 to -32099). Additional properties beyond `reason` vary per `reason` (e.g. `detail`, `target`) and are intentionally left open by this schema.",
+          "properties": {
+            "reason": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Farol domain reason string, e.g. \"protocol_version_incompatible\", \"fetch_failed\", \"action_timeout\", \"exec_unavailable\", \"scan_root_unreadable\", or a future plugin-specific reason within the reserved code range. Intentionally not a closed enum, to remain forward-compatible with reasons introduced by future plugins/versions."
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "required": ["code", "message"],
+      "additionalProperties": false
+    }
+  }
+}

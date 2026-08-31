@@ -1,0 +1,7 @@
+[workspace]
+members = ["crates/farol-core", "crates/farol-protocol"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Samuel Dias <samudias48@gmail.com>"]

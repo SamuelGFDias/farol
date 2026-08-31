@@ -1,0 +1,174 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://farol.dev/protocol/v0.1/widget.schema.json",
+  "title": "Farol Protocol v0.1 — widget/get",
+  "description": "Request and response envelopes for the widget/get method. See protocol/SPEC.md §5.2 for the normative polling model. The core calls this once per refresh cycle, per widget declared in the handshake result (protocol/SPEC.md §6.3) - the plugin MUST NOT push widget data unsolicited. This file also defines GitRepository and RemoteStatus; it references ActionDeclaration from handshake.schema.json.",
+  "oneOf": [
+    { "$ref": "#/$defs/WidgetGetRequest" },
+    { "$ref": "#/$defs/WidgetGetResponseSuccess" },
+    { "$ref": "#/$defs/WidgetGetResponseError" }
+  ],
+  "$defs": {
+    "RequestId": {
+      "title": "RequestId",
+      "oneOf": [
+        { "type": "integer" },
+        { "type": "string", "minLength": 1 }
+      ]
+    },
+
+    "WidgetGetParams": {
+      "title": "WidgetGetParams",
+      "type": "object",
+      "properties": {
+        "widget_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Must match the `id` of a WidgetDeclaration returned by this plugin's handshake/hello result."
+        }
+      },
+      "required": ["widget_id"],
+      "additionalProperties": false
+    },
+
+    "WidgetGetRequest": {
+      "title": "WidgetGetRequest",
+      "type": "object",
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "id": { "$ref": "#/$defs/RequestId" },
+        "method": { "const": "widget/get" },
+        "params": { "$ref": "#/$defs/WidgetGetParams" }
+      },
+      "required": ["jsonrpc", "id", "method", "params"],
+      "additionalProperties": false
+    },
+
+    "RemoteStatus": {
+      "title": "RemoteStatus",
+      "description": "Discriminated union on `kind`. \"no_remote\" is a distinct serialization from a tracked repo reporting 0 ahead / 0 behind - the core never has to infer \"no remote\" from an absent field.",
+      "oneOf": [
+        {
+          "title": "RemoteStatusTracked",
+          "type": "object",
+          "properties": {
+            "kind": { "const": "tracked" },
+            "ahead": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Commits ahead of the configured upstream."
+            },
+            "behind": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Commits behind the configured upstream."
+            }
+          },
+          "required": ["kind", "ahead", "behind"],
+          "additionalProperties": false
+        },
+        {
+          "title": "RemoteStatusNoRemote",
+          "type": "object",
+          "properties": {
+            "kind": { "const": "no_remote" }
+          },
+          "required": ["kind"],
+          "additionalProperties": false
+        }
+      ]
+    },
+
+    "GitRepository": {
+      "title": "GitRepository",
+      "type": "object",
+      "description": "One repository item reported by widget/get.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable identifier - the repository's absolute filesystem path."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Short display name (e.g. the directory name)."
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Absolute filesystem path."
+        },
+        "dirty": {
+          "type": "boolean",
+          "description": "true = working tree has pending changes; false = clean."
+        },
+        "remote_status": {
+          "$ref": "#/$defs/RemoteStatus",
+          "description": "MUST be kind=\"no_remote\" if and only if this repository's corresponding fetch ActionDeclaration has enabled=false (protocol/SPEC.md invariant carried over from data-model.md)."
+        }
+      },
+      "required": ["id", "name", "path", "dirty", "remote_status"],
+      "additionalProperties": false
+    },
+
+    "WidgetItem": {
+      "title": "WidgetItem",
+      "type": "object",
+      "description": "Pairs one GitRepository with its corresponding fetch ActionDeclaration. This is how the actions[] list, possibly empty at handshake time, reaches the core in practice (protocol/SPEC.md §6.3.1).",
+      "properties": {
+        "repo": { "$ref": "#/$defs/GitRepository" },
+        "fetch_action": {
+          "$ref": "https://farol.dev/protocol/v0.1/handshake.schema.json#/$defs/ActionDeclaration",
+          "description": "MUST have enabled=false whenever repo.remote_status.kind == \"no_remote\"."
+        }
+      },
+      "required": ["repo", "fetch_action"],
+      "additionalProperties": false
+    },
+
+    "WidgetGetResult": {
+      "title": "WidgetGetResult",
+      "type": "object",
+      "properties": {
+        "widget_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Echoes the widget_id from the request."
+        },
+        "items": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/WidgetItem" },
+          "description": "MAY be empty - a configured scan root with no repositories under it is a valid state, not an error."
+        }
+      },
+      "required": ["widget_id", "items"],
+      "additionalProperties": false
+    },
+
+    "WidgetGetResponseSuccess": {
+      "title": "WidgetGetResponseSuccess",
+      "type": "object",
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "id": { "$ref": "#/$defs/RequestId" },
+        "result": { "$ref": "#/$defs/WidgetGetResult" }
+      },
+      "required": ["jsonrpc", "id", "result"],
+      "additionalProperties": false
+    },
+
+    "WidgetGetResponseError": {
+      "title": "WidgetGetResponseError",
+      "type": "object",
+      "description": "E.g. code -32004 / reason \"scan_root_unreadable\" when the configured root exists but cannot be read. A pointwise error here does not, by itself, mark the plugin connection unavailable - the core keeps the last known items (protocol/SPEC.md §5.2).",
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "id": { "$ref": "#/$defs/RequestId" },
+        "error": { "$ref": "https://farol.dev/protocol/v0.1/error.schema.json" }
+      },
+      "required": ["jsonrpc", "id", "error"],
+      "additionalProperties": false
+    }
+  }
+}

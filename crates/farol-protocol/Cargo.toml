@@ -1,0 +1,16 @@
+[package]
+name = "farol-protocol"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+thiserror = "1.0"
+
+[profile.dev]
+opt-level = 0
+
+[profile.release]
+opt-level = 3
