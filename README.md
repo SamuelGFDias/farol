@@ -2,7 +2,7 @@
 
 > Plano de controle pessoal para a máquina do dev — nativo, modular, extensível por plugins.
 
-**Status: em idealização.** Ainda não há código funcional. Este repositório existe para consolidar a visão do projeto antes da implementação.
+**Status: visão consolidada, ainda sem código funcional.** As decisões de arquitetura estão formalizadas numa constitution versionada em [`.specify/memory/constitution.md`](.specify/memory/constitution.md), e o projeto adota spec-driven development (spec-kit).
 
 ---
 
@@ -20,7 +20,7 @@ A dor: hoje o estado da sua vida técnica está espalhado em várias abas, termi
 
 ## Princípios de arquitetura
 
-- **App nativo Linux**, sem navegador.
+- **App nativo Linux**, sem navegador. Core em **Rust + iced** (GUI de arquitetura Elm/Model-Update-View): puro Rust, sem binding contra GTK/Qt do sistema, o que dá binário estático e boa compatibilidade cross-distro, sem depender da versão de toolkit gráfico instalada em cada distro.
 - **Plugins são processos separados**, falando JSON-RPC com o core via stdin/stdout — mesmo modelo do LSP/MCP. Qualquer linguagem, isolamento de crash, sandbox real.
 - **Plugins descrevem widgets, não desenham.** Devolvem dados declarativos (`status-grid`, `lista`, `métrica`...); o core renderiza. Mantém a UI consistente e segura, e permite trocar de toolkit no futuro sem quebrar plugin nenhum.
 - **Permissões explícitas por manifesto.** Rede por allowlist de host, segredos no keyring do sistema, execução de comando (`exec`) como capacidade sinalizada. Plugin de terceiro roda sem confiança cega.
@@ -38,22 +38,22 @@ A dor: hoje o estado da sua vida técnica está espalhado em várias abas, termi
 
 ## Roadmap
 
-1. **Protótipo monolítico** — os plugins acima direto no código, sem protocolo externo ainda. Objetivo: uso diário real.
-2. **Extrair o protocolo** — os mesmos plugins viram processos externos falando JSON-RPC.
+1. **Walking skeleton** — fatia vertical com core em Rust + iced, protocolo de plugin JSON-RPC e um plugin de referência (Git local), provando o contrato de plugin ponta a ponta com um consumidor real.
+2. **Ampliar cobertura de plugins** — os demais plugins da seção "Integrações previstas" (VPN, Uptime Kuma, GitHub, Docker) sobre o protocolo já provado no walking skeleton.
 3. **Sandbox e permissões** — manifesto de capacidades, isolamento via bubblewrap, vault de segredos.
 4. **Registry** — repo-índice, CI de validação, instalação in-app, template de plugin.
 5. **Polimento social** — espaços exportáveis, temas, galeria de plugins.
 
 ## Decisões em aberto
 
-- Stack do core: Python (iterar rápido) vs. Rust com GTK4/libadwaita (distribuir cedo). Provável caminho: protótipo em Python, core reescrito em Rust quando a API de plugin estabilizar.
 - Ações privilegiadas (ex: VPN exige root): `sudo` sob demanda, polkit, ou daemon auxiliar.
 - Farol roda sempre em background (tray icon, notificações) ou só quando aberto.
 - Escopo do v1 público: só dev/homelab, ou aberto a outros domínios desde já.
+- Empacotamento/distribuição: Flatpak vs. AppImage vs. binário estático.
 
 ## Contribuindo
 
-Ainda não há processo formal de contribuição — o projeto está na fase de definir o contrato de plugin antes de abrir para a comunidade. Acompanhe as issues deste repositório para o andamento.
+Ainda não há processo formal de contribuição — o projeto está na fase de definir o contrato de plugin antes de abrir para a comunidade. Para entender as regras do projeto, veja a [constitution](.specify/memory/constitution.md). Acompanhe as issues deste repositório para o andamento.
 
 ## Licença
 
