@@ -93,7 +93,21 @@ futuros mais restritivos, mas não é exercitado pelo plugin `git-local` desta f
 
 ## Timeout
 
-O handshake é uma requisição JSON-RPC como qualquer outra — sujeita ao `RPC_TIMEOUT` (default 5s,
-D6). Se expirar, `PluginState` vai para `Unavailable{Unresponsive}`, nenhum widget é registrado
-(mesmo efeito de UI de uma falha de versão — FR-020 não distingue os dois na UI, ver
-`data-model.md` § 2.1).
+O handshake é uma requisição JSON-RPC como qualquer outra requisição de controle — sujeita ao
+`RPC_TIMEOUT_CONTROL` (default 5s, D6 em `research.md`), o mesmo orçamento usado por `widget/get`.
+Handshake é IPC local sobre pipe, sem I/O de rede, por isso usa o orçamento curto de controle e
+não o orçamento de ação (`RPC_TIMEOUT_ACTION`, usado só por `action/invoke` — ver
+`action-protocol.md`). Se expirar, `PluginState` vai para `Unavailable{Unresponsive}`, nenhum
+widget é registrado (mesmo efeito de UI de uma falha de versão — FR-020 não distingue os dois na
+UI, ver `data-model.md` § 2.1).
+
+## Sugestão de orçamento de timeout por ação
+
+Cada `ActionDeclaration` (ver `data-model.md` § 1.4) — entregue no handshake quando já conhecida,
+ou em uma resposta subsequente de `widget/get` (ver nota de sequenciamento acima) — PODE incluir o
+campo opcional `timeout_hint_ms`, pelo qual o plugin sugere ao core o orçamento de timeout a
+aplicar quando invocar aquela ação específica via `action/invoke`. O core respeita a sugestão do
+plugin quando presente e aplica o default de `RPC_TIMEOUT_ACTION` (120s) só na ausência dela — o
+mesmo padrão "plugin sugere, core respeita, default na ausência" já usado por
+`WidgetDeclaration.suggested_refresh_interval_ms` (FR-011). Isso evita que o core precise adivinhar
+o custo de ações de plugins que ele não conhece (ver `action-protocol.md` § Timeout).

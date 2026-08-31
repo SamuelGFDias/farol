@@ -48,6 +48,7 @@ Declarado pelo plugin no handshake (FR-006a), simétrico a `WidgetDeclaration`.
 | `label` | `string` | sim | Rótulo legível para exibição na UI (ex.: `"Fetch"`). |
 | `target` | `ActionTarget` | sim | Alvo sobre o qual a ação opera. |
 | `enabled` | `boolean` | sim | Estado declarado pelo plugin — o core MUST NOT decidir isso por conta própria (FR-006b). |
+| `timeout_hint_ms` | `integer` | não | Sugestão do plugin para o orçamento de timeout desta ação específica (ver `RPC_TIMEOUT_ACTION`, D6 em `research.md`). Ausente → core aplica default de 120000ms. Mesmo padrão de "plugin sugere, core respeita, default na ausência" já usado em `WidgetDeclaration.suggested_refresh_interval_ms` (FR-011). |
 
 `ActionTarget` (objeto):
 
@@ -137,7 +138,9 @@ estes casos entre si, só precisa distinguir "Unavailable" de "Starting/Handshak
 - `FailedToStart` — o processo nem chegou a subir (binário ausente/não executável).
 - `VersionIncompatible` — handshake concluiu, versões incompatíveis (FR-005).
 - `Crashed` — processo terminou inesperadamente depois de `Ready` (FR-019).
-- `Unresponsive` — processo vivo, mas não respondeu dentro do `RPC_TIMEOUT` (FR-019, D6).
+- `Unresponsive` — processo vivo, mas não respondeu dentro do `RPC_TIMEOUT_CONTROL` no handshake ou
+  num ciclo de refresh (FR-019, D6). Estouro do `RPC_TIMEOUT_ACTION` de uma invocação de ação
+  pontual (`action/invoke`) NÃO produz este estado — ver `contracts/action-protocol.md`.
 
 ### 2.2 RepositoryViewModel
 
@@ -162,11 +165,11 @@ explícito de polling manual.
 ```
 Starting ──(spawn falhou)──────────────────────────► Unavailable{FailedToStart}
 Starting ──(spawn ok)──► Handshaking
-Handshaking ──(timeout, D6)───────────────────────► Unavailable{Unresponsive}
+Handshaking ──(timeout RPC_TIMEOUT_CONTROL, D6)────► Unavailable{Unresponsive}
 Handshaking ──(resposta, versão incompatível, D7)──► Unavailable{VersionIncompatible}
 Handshaking ──(resposta, versão compatível)────────► Ready
 Ready ──(child.wait() resolve, D6)─────────────────► Unavailable{Crashed}
-Ready ──(timeout de RPC em refresh periódico, D6)──► Unavailable{Unresponsive}
+Ready ──(timeout RPC_TIMEOUT_CONTROL em refresh)───► Unavailable{Unresponsive}
 Ready ──(widget/get e action/invoke normais)───────► Ready (permanece; atualiza RepositoryViewModel)
 Unavailable{*} ──(nenhuma transição nesta feature)──► (terminal — Out of Scope: restart automático)
 ```

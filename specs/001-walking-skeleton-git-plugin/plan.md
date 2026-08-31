@@ -62,9 +62,11 @@ esperando I/O de plugin — toda latência de plugin (varredura de filesystem, `
 fica isolada no worker (D5) e não deve introduzir frame drop perceptível na janela.
 
 **Constraints**: Ciclo de refresh do widget = 30000ms default, ou o valor sugerido pelo plugin no
-handshake (FR-011). Timeout de requisição JSON-RPC (`RPC_TIMEOUT`) = 5000ms default — decisão de
-engenharia deste plano (D6), não normativa do protocolo em si (o protocolo exige apenas que o core
-não bloqueie indefinidamente, não um valor específico).
+handshake (FR-011). Timeout de requisição JSON-RPC separado por classe de chamada (D6), não
+normativo do protocolo em si (o protocolo exige apenas que o core não bloqueie indefinidamente, não
+valores específicos): `RPC_TIMEOUT_CONTROL` (handshake e `widget/get`, IPC local sem rede) =
+5000ms default; `RPC_TIMEOUT_ACTION` (`action/invoke`, pode ir à rede) = 120000ms default, ou o
+valor sugerido pelo plugin por ação no handshake quando presente.
 
 **Scale/Scope**: Um único plugin ativo por vez (Assumptions da spec); número de repositórios sob
 `scan_root` limitado pelo que o usuário tem em disco — sem meta numérica; protocolo desenhado para

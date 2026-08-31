@@ -44,7 +44,8 @@ nunca envia dados de widget sem ser perguntado nesta feature (sem push/notifica�
           "id": "git.fetch",
           "label": "Fetch",
           "target": { "type": "repo", "id": "/home/dev/projetos/farol" },
-          "enabled": true
+          "enabled": true,
+          "timeout_hint_ms": 120000   // opcional, ver ActionDeclaration em data-model.md § 1.4
         }
       },
       {
@@ -92,5 +93,6 @@ ignorado/não renderizado, sem derrubar o plugin nem o core).
   `error-model.md`; o core mantém os últimos `items` conhecidos e sinaliza o erro pontualmente,
   sem mudar `PluginState` para `Unavailable` (um erro de uma chamada de `widget/get` não é, por si
   só, "plugin indisponível" — só timeout/morte do processo, D6, mudam `PluginState`).
-- Timeout de `widget/get` (sem resposta dentro de `RPC_TIMEOUT`): conta para D6 — se ocorrer no
-  ciclo de refresh, contribui para a detecção de plugin travado.
+- Timeout de `widget/get` (sem resposta dentro de `RPC_TIMEOUT_CONTROL`, D6 em `research.md` —
+  `widget/get` é IPC local, não vai à rede, por isso usa o orçamento de controle, não o de ação):
+  conta para D6 — se ocorrer no ciclo de refresh, contribui para a detecção de plugin travado.

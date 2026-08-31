@@ -97,10 +97,11 @@ Simular travamento (ex.: enviar `SIGSTOP` ao processo do plugin):
 pgrep -f "plugins/git-local" | xargs kill -STOP
 ```
 
-**Esperado**: o core não fica bloqueado esperando indefinidamente; após o `RPC_TIMEOUT` (default
-5s, D6 de `research.md`) não receber resposta no próximo ciclo de refresh, o plugin é sinalizado
-como indisponível (`Unavailable{Unresponsive}`), e o restante da janela segue respondendo. Limpar
-com `kill -CONT` ao final do teste.
+**Esperado**: o core não fica bloqueado esperando indefinidamente; após o `RPC_TIMEOUT_CONTROL`
+(default 5s, D6 de `research.md` — orçamento de controle, usado por `widget/get`/handshake, não o
+orçamento de ação `RPC_TIMEOUT_ACTION`) não receber resposta no próximo ciclo de refresh, o plugin
+é sinalizado como indisponível (`Unavailable{Unresponsive}`), e o restante da janela segue
+respondendo. Limpar com `kill -CONT` ao final do teste.
 
 ## Cenário 6 — Binário do plugin ausente / falha ao iniciar (Edge Case da spec)
 

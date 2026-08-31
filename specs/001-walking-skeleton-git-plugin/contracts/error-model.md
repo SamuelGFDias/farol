@@ -25,7 +25,7 @@ implementa). Não são o caminho principal desta feature.
 |---|---|---|---|
 | `-32000` | `protocol_version_incompatible` | resposta de `handshake/hello` (caminho de recusa do lado do plugin — ver nota em `handshake.md`) | O plugin recusa a versão proposta pelo core. |
 | `-32001` | `fetch_failed` | resposta de `action/invoke` (`git.fetch`) | `git fetch` retornou código de saída não-zero (ex.: rede indisponível, credencial inválida). `data.detail` carrega stderr/mensagem do git. |
-| `-32002` | `action_timeout` | reportado pelo core à UI (não pelo plugin — é o core sintetizando este erro quando um `RPC_TIMEOUT` estoura numa invocação de `action/invoke` pontual, ver `action-protocol.md`) | A invocação de ação não respondeu a tempo; não implica plugin indisponível por si só. |
+| `-32002` | `action_timeout` | reportado pelo core à UI (não pelo plugin — é o core sintetizando este erro quando `RPC_TIMEOUT_ACTION` estoura numa invocação de `action/invoke` pontual, ver `action-protocol.md`) | A invocação de ação não respondeu a tempo; não implica plugin indisponível por si só. |
 | `-32003` | `exec_unavailable` | resposta de `handshake/hello` ou `action/invoke` | O binário `git` não está disponível no sistema para o plugin executar (Edge Case da spec) — o plugin reporta isso como erro/capacidade indisponível sem derrubar seu próprio processo. |
 | `-32004` | `scan_root_unreadable` | resposta de `widget/get` | O diretório raiz configurado existe mas não é legível (erro de permissão) — distinto de "não existe/vazio", que é sucesso com `items: []`. |
 

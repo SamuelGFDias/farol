@@ -91,10 +91,20 @@ widget/get adicional
 
 ## Timeout
 
-Sujeito ao mesmo `RPC_TIMEOUT` (D6) de qualquer requisição — mas **não** contribui para marcar
-`PluginState = Unavailable{Unresponsive}` por si só nesta feature: um `git fetch` genuinamente
-lento (rede ruim, não travamento do plugin) não deveria derrubar a percepção de "plugin
-disponível" só porque uma ação pontual estourou o timeout local. Ver nota de resolução: o timeout
-de uma invocação de ação específica é reportado ao usuário como erro daquela ação (mesmo formato de
-erro estruturado acima, com `data.reason: "action_timeout"`), distinto do timeout do ciclo de
-refresh periódico (que é o sinal usado por D6 para marcar o plugin como indisponível).
+`action/invoke` usa orçamento próprio, `RPC_TIMEOUT_ACTION` (D6 em `research.md`) — **não** o
+`RPC_TIMEOUT_CONTROL` usado por handshake/`widget/get`. Motivo: uma ação (ex.: `fetch` do plugin
+git de referência) pode ir à rede — contata um remoto Git — e por isso pode legitimamente demorar
+muito mais do que uma chamada de controle local; um orçamento curto compartilhado com o controle
+geraria falso-positivo de "ação travada" em conexões lentas ou repositórios grandes. Default de
+`RPC_TIMEOUT_ACTION`: **120 segundos**. O plugin PODE declarar, por ação, no handshake, uma
+sugestão de orçamento diferente para aquela ação específica (`timeout_hint_ms`, ver
+`handshake.md`); o core respeita a sugestão do plugin quando presente e usa o default de 120s só
+na ausência dela.
+
+Estourar `RPC_TIMEOUT_ACTION` **não** contribui para marcar `PluginState =
+Unavailable{Unresponsive}` por si só nesta feature: um `git fetch` genuinamente lento (rede ruim,
+não travamento do plugin) não deveria derrubar a percepção de "plugin disponível" só porque uma
+ação pontual estourou seu orçamento. O timeout de uma invocação de ação específica é reportado ao
+usuário como erro daquela ação (mesmo formato de erro estruturado acima, com `data.reason:
+"action_timeout"`), distinto do timeout de `RPC_TIMEOUT_CONTROL` no ciclo de refresh periódico
+(que é o sinal usado por D6 para marcar o plugin como indisponível).

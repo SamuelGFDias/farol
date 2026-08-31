@@ -193,20 +193,48 @@ alimentando o mesmo estado final na UI (`PluginState::Unavailable { reason, deta
    `PluginState::Unavailable { reason: Crashed, exit_status }` — não depende de nenhuma requisição
    estar em voo.
 2. **Processo vivo mas não responde (travado)**: toda requisição JSON-RPC enviada ao plugin é
-   envolvida em `tokio::time::timeout(RPC_TIMEOUT, aguardar_resposta_por_id)`. Se o timeout
-   expira, o worker trata aquela chamada como falha (retorna erro estruturado só para quem chamou,
-   se for uma ação pontual) e, cumulativamente, se **o handshake inicial** ou **qualquer requisição
-   de refresh do ciclo periódico** expira, o worker marca o plugin como
+   envolvida em `tokio::time::timeout(orçamento, aguardar_resposta_por_id)`. O orçamento usado
+   depende da classe da chamada — ver abaixo. Se o timeout expira, o worker trata aquela chamada
+   como falha (retorna erro estruturado só para quem chamou, se for uma ação pontual) e,
+   cumulativamente, se **o handshake inicial** ou **qualquer requisição de refresh do ciclo
+   periódico** (`widget/get`) expira, o worker marca o plugin como
    `Unavailable { reason: Unresponsive }` — porque um plugin que não responde ao ciclo de vida
-   básico (refresh) é, na prática, tão inútil quanto um plugin morto, mesmo que o processo SO ainda
-   exista.
+   básico (handshake/refresh) é, na prática, tão inútil quanto um plugin morto, mesmo que o
+   processo SO ainda exista.
 
-   `RPC_TIMEOUT` default: **5 segundos**. Não há requisito numérico na spec para esse valor; é uma
-   decisão de engenharia deste plano (IPC local via pipe, sem rede — 5s já é folgado para
-   `git fetch` local rodar ou falhar rápido; timeouts muito curtos gerariam falso-positivo de
-   "travado" em repositórios grandes). Documentado aqui para ser revisitado se a experiência de uso
-   mostrar que é curto/longo demais; não é normativo do protocolo (o protocolo em si não exige um
-   timeout específico, só que o core não trave — o valor é um parâmetro de implementação do core).
+   **Dois orçamentos de timeout, não um único `RPC_TIMEOUT` genérico** — chamadas de controle
+   (`handshake`, `widget/get`) e invocação de ação (`action/invoke`) têm perfis de latência
+   incompatíveis e não podem compartilhar um único valor:
+
+   - **`RPC_TIMEOUT_CONTROL`** — aplicado a `handshake` e a `widget/get` do ciclo de refresh.
+     Default: **5 segundos**. Essas chamadas são IPC local sobre pipe (stdin/stdout do processo
+     plugin), sem I/O de rede envolvido — o plugin só lê estado já calculado/cacheado para
+     responder. 5s é folgado para isso responder ou falhar rápido; um estouro aqui é o sinal de
+     "plugin travado" de FR-019/FR-020 (comportamento de D6 acima).
+   - **`RPC_TIMEOUT_ACTION`** — aplicado a `action/invoke`. Default: **120 segundos**. Ao contrário
+     do handshake/refresh, uma ação (ex.: a ação `fetch` do plugin git de referência, ver
+     `contracts/action-protocol.md`) pode legitimamente **ir à rede** — ela contata um remoto
+     Git. A justificativa original deste documento, de que "`git fetch` é local e 5s bastam",
+     estava **errada**: `git fetch` fala com o remoto configurado (rede), não é operação local, e
+     em link lento, repositório grande ou host frio passa de 5s com folga mesmo funcionando
+     normalmente. Um orçamento de 5s para ação geraria falso-positivo de "ação travada"
+     rotineiramente. Por isso a invocação de ação usa um orçamento próprio, bem maior, e
+     **desacoplado** do de controle: estourar `RPC_TIMEOUT_ACTION` produz o erro pontual
+     `-32002 action_timeout` (ver `contracts/error-model.md`) só para quem chamou a ação — não
+     alimenta a detecção de "plugin travado" de D6 nem marca o plugin como indisponível (essa
+     separação já existia no desenho de `action-protocol.md` e é preservada aqui).
+     Adicionalmente, o plugin PODE declarar no handshake, por ação, uma sugestão de orçamento de
+     tempo para aquela ação específica (`timeout_hint_ms` — ver `contracts/handshake.md`); o core
+     respeita a sugestão do plugin quando presente e aplica os 120s default só na ausência dela.
+     Isso espelha o mecanismo já aceito para o intervalo de refresh (FR-011: plugin sugere, core
+     respeita, default na ausência) e evita que o core precise adivinhar o custo de ações de
+     plugins que ele não conhece.
+
+   Nenhum requisito numérico da spec fixa esses valores; ambos são decisão de engenharia deste
+   plano, documentados aqui para serem revisitados se a experiência de uso mostrar que estão
+   curtos/longos demais — não são normativos do protocolo (o protocolo em si não exige valores
+   específicos, só que o core não trave; os valores são parâmetro de implementação do core, exceto
+   a sugestão por ação, que é um campo opcional do protocolo — ver `contracts/handshake.md`).
 
 Ambos os casos convergem no mesmo estado de UI "indisponível" (a spec, em FR-020, só exige que o
 estado seja "visível e distinguível de carregando/sem dados" — não exige distinguir crash de
@@ -221,8 +249,9 @@ detectaria travamento porque o processo continua vivo. Por isso os dois mecanism
 
 **Alternativas consideradas**:
 - *Só timeout de RPC, sem observar `child.wait()` separadamente*: rejeitada — um crash real ficaria
-  escondido atrás do `RPC_TIMEOUT` inteiro antes de ser sinalizado, mesmo quando o SO já sabe
-  (via exit status) que o processo morreu no instante 0.
+  escondido atrás do orçamento de timeout inteiro (`RPC_TIMEOUT_CONTROL` ou `RPC_TIMEOUT_ACTION`,
+  conforme a chamada) antes de ser sinalizado, mesmo quando o SO já sabe (via exit status) que o
+  processo morreu no instante 0.
 - *Heartbeat periódico dedicado (`ping`/`pong`) independente do ciclo de refresh*: rejeitada para o
   v0 — o próprio ciclo de refresh de 30s (FR-011) já funciona como heartbeat de fato (é uma
   requisição JSON-RPC regular); adicionar um método `ping` dedicado é complexidade extra sem
@@ -306,7 +335,7 @@ skeleton não precisa para provar o contrato. Adiada para uma feature futura.
 | D3 | Plugin de referência em Python (stdlib), sem depender de `farol-protocol` | Restrição #1 (prova estrutural) |
 | D4 | Executor do iced (feature `tokio`) é o único runtime async do processo core | Restrição #3 |
 | D5 | Worker `Subscription` + canal `mpsc` isola I/O de plugin do `update`/`view` | Restrição #4 |
-| D6 | `child.wait()` (morte) + timeout de RPC por chamada (travamento), 5s default | Restrição #5, FR-019/020 |
+| D6 | `child.wait()` (morte) + timeout de RPC por chamada (travamento) — orçamentos separados: `RPC_TIMEOUT_CONTROL` (handshake/`widget/get`, 5s default) e `RPC_TIMEOUT_ACTION` (`action/invoke`, 120s default ou sugestão do plugin por ação) | Restrição #5, FR-019/020 |
 | D7 | `protocol_version` = `"MAJOR.MINOR"`, igualdade exata enquanto `MAJOR == 0` | Restrição #6, FR-004/005 |
 | D8 | Widget atualizado por polling core-iniciado (`widget/get`), sem push do plugin | FR-011 |
 
