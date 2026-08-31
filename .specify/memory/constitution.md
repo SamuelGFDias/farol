@@ -1,24 +1,25 @@
 <!--
 Sync Impact Report
-- Version change: 0.1.0 → 0.2.0 (amendment)
-- Bump rationale: MINOR, não PATCH — resolver o TODO de decisão de stack pendente com uma decisão
-  de stack concreta (Rust + iced) substitui uma direção "provável" por uma regra normativa nova
-  (MUST) sobre como o core é implementado; isso é expansão material da seção "Stack e Estágio do
-  Projeto", não mero ajuste de redação (não é PATCH), e não remove nem redefine de forma
-  incompatível nenhum dos 7 Core Principles existentes (não é MAJOR).
+- Version change: 0.2.0 → 0.3.0 (amendment)
+- Bump rationale: MINOR, não PATCH — nova regra de processo adicionada à seção "Governance"
+  (dívida técnica identificada e deliberadamente não corrigida MUST virar issue no tracker antes
+  de a mudança correspondente ser considerada concluída). É expansão material de uma seção
+  existente, não mero ajuste de redação (não é PATCH), e não remove nem redefine de forma
+  incompatível nenhum dos 7 Core Principles nem nenhuma das regras de Governance já existentes
+  (não é MAJOR) — conforme a própria política de versionamento da seção "Governance": "MINOR:
+  adição de novo princípio ou expansão material de uma seção existente".
 - Modified principles: nenhum (os 7 Core Principles não foram tocados)
 - Modified sections:
-  - Stack e Estágio do Projeto: TODO de decisão de stack pendente resolvido — stack do core
-    definida como Rust + iced, com justificativa (precedente COSMIC, alinhamento com Princípio
-    III, licença MIT, ausência de binding contra toolkit gráfico do sistema); fase de protótipo
-    monolítico em Python removida do roadmap, já que a stack final nasce em Rust + iced desde o
-    protótipo.
-- Added sections: nenhuma
+  - Governance: novo bullet adicionado — "Dívida técnica rastreável" — exigindo registro em issue
+    no tracker do projeto (GitHub Issues) para toda dívida técnica identificada durante o
+    desenvolvimento e deliberadamente deixada sem correção imediata (ex.: workaround documentado
+    em comentário, decisão de adiar um ajuste, limitação conhecida de uma dependência);
+    comentário de código ou nota de sessão sozinhos deixam de ser suficientes.
+- Added sections: nenhuma (novo bullet dentro de "Governance", seção já existente)
 - Removed sections: nenhuma
 - Templates requiring follow-up: none checked in this run — this command only writes the
   constitution; dependent templates (plan/spec/tasks) read it at runtime and were not touched.
-- Deferred / TODO placeholders: nenhum — o TODO de decisão de stack pendente foi resolvido nesta
-  emenda.
+- Deferred / TODO placeholders: nenhum.
 -->
 
 # Farol Constitution
@@ -159,5 +160,14 @@ repositório, esta constitution prevalece até que seja formalmente emendada.
   projeto DEVEM ser verificados contra os princípios acima antes de serem considerados prontos
   para implementação; qualquer desvio precisa de justificativa explícita no artefato correspondente
   (spec, plano ou task), não de exceção silenciosa.
+- **Dívida técnica rastreável**: dívida técnica identificada durante o desenvolvimento e
+  deliberadamente deixada sem correção imediata (ex.: workaround documentado em comentário,
+  decisão consciente de adiar um ajuste, limitação conhecida de uma dependência) MUST ser
+  registrada como issue no tracker do projeto (GitHub Issues) antes de a mudança correspondente
+  ser considerada concluída. Comentário de código ou nota de sessão, isoladamente, NÃO substituem
+  o registro rastreável. Rationale: dívida técnica que existe só em comentário ou em memória de
+  sessão desaparece do radar do projeto assim que a sessão termina ou o comentário para de ser
+  lido; uma issue no tracker é o único registro que sobrevive à sessão que a criou e que pode
+  entrar em backlog, milestone ou priorização futura.
 
-**Version**: 0.2.0 | **Ratified**: 2026-08-31 | **Last Amended**: 2026-08-31
+**Version**: 0.3.0 | **Ratified**: 2026-08-31 | **Last Amended**: 2026-08-31
