@@ -6,16 +6,25 @@ plugin de referência `uptime-kuma` (não genérico ao protocolo Farol) — FR-0
 
 ## Identidade
 
+**Revisão desta sessão (auditoria pós-plan, 2026-09-01)**: `capabilities`/credencial abaixo
+substituem o desenho anterior deste documento, que usava CLI `op`/1Password. Ver `research.md` D8
+para a arquitetura completa (core gerencia armazenamento/injeção, sem dependência de sistema externa).
+
 - `plugin_name`: `"uptime-kuma"`.
 - `protocol_version`: `"0.2"` (D1 de `research.md`).
-- `capabilities.capabilities`: `[{"kind": "exec"}]` sempre; `+{"kind": "network", ...}` e
-  `+{"kind": "secret", ...}` quando configurado (ver `handshake-delta.md`).
+- `capabilities.capabilities`: `[]` quando `base_url` ainda não resolvido; `[{"kind": "network",
+  "host": ..., "port": ...}]` quando resolvido (ver `handshake-delta.md`). **Não** declara mais
+  `{"kind": "exec"}` (não invoca nenhum binário externo) nem `{"kind": "secret"}` (removido do
+  vocabulário — a credencial é declarada via `required_config`, abaixo).
+- `required_config`: `[{"name": "base_url", "secret": false, "description": "..."}, {"name":
+  "api_key", "secret": true, "description": "..."}]`, sempre — independente de já haver valor
+  armazenado (`research.md` D8, `data-model.md` §1.6.1).
 - Linguagem de implementação: **Python 3.11+, apenas biblioteca padrão** (D7 de `research.md`,
   reafirma D3 da feature 001) — nenhuma dependência em `farol-protocol` nem em qualquer código Rust
   do core, nenhuma dependência via `pip`.
-- **Dependência de sistema** (não Python): binário **`op`** (1Password CLI), instalado e
-  **autenticado** (sessão ativa) no ambiente onde o processo do plugin roda (D8) — mesma categoria de
-  pré-requisito que o binário `git` já é para `git-local`.
+- **Sem dependência de sistema externa nesta revisão** — diferente de versões anteriores deste
+  documento, que exigiam o binário `op` (1Password CLI) instalado e autenticado. O plugin só lê
+  variáveis de ambiente já resolvidas pelo core (`research.md` D8); nenhum binário externo é invocado.
 
 ## Widget oferecido
 
@@ -28,70 +37,70 @@ plugin de referência `uptime-kuma` (não genérico ao protocolo Farol) — FR-0
   usado internamente como cadência da thread de polling (D6) — fonte única, não dois conceitos de
   intervalo desacoplados.
 
-## Configuração (FR-007, FR-008)
+## Configuração e credencial (FR-007, FR-008, FR-019) — revisado (`research.md` D8)
 
-- Arquivo de configuração próprio do plugin — **não é lido pelo core, nem faz parte do protocolo
-  JSON-RPC**. Caminho: `$XDG_CONFIG_HOME/farol/plugins/uptime-kuma/config.toml` (fallback
-  `~/.config/farol/plugins/uptime-kuma/config.toml` — mesma convenção XDG de `git-local`).
-- Formato TOML, campo único usado nesta feature:
+**Revisão desta sessão**: `base_url` e a credencial (`api_key`) deixam de ter mecanismos de leitura
+diferentes entre si (arquivo TOML vs. CLI `op`) — ambas são declaradas pelo plugin via
+`required_config` (`handshake-delta.md`) e lidas do mesmo jeito: variável de ambiente injetada pelo
+core no spawn do processo. O plugin **não** lê nenhum arquivo de configuração, nem invoca nenhum
+binário externo.
 
-  ```toml
-  # ~/.config/farol/plugins/uptime-kuma/config.toml
-  base_url = "https://monitor.example.com"
+- `plugins/uptime-kuma/main.py` declara, no handler de `handshake/hello`, sempre:
+
+  ```jsonc
+  "required_config": [
+    { "name": "base_url", "secret": false, "description": "URL base da instância Uptime Kuma" },
+    { "name": "api_key", "secret": true, "description": "API Key de métricas do Uptime Kuma" }
+  ]
   ```
 
-- **Sem default seguro** (diferente do `scan_root` do `git-local`, que tem default `~/dev`) — não
-  existe um host remoto default razoável para uma instância Uptime Kuma (FR-008, Edge Case do spec).
-  Arquivo ausente, ou presente sem `base_url`: `not_configured` (ver `error-model-delta.md`).
-- `base_url` é lido **uma única vez**, no arranque do processo — sem re-leitura por chamada de
-  `widget/get`, sem hot-reload nesta feature (decisão explícita deste plano, análoga em espírito à
-  ausência de qualquer requisito de reload na feature 001).
-- **MUST NOT**: `base_url` MUST NOT estar hardcoded em nenhum lugar do código do plugin fora deste
-  mecanismo de configuração.
-
-## Credencial (FR-019)
-
-- **Referência fixa**, não configurável pelo usuário nesta feature (só uma instância suportada por
-  vez): `"op://Dev/UptimeKuma/API Keys/farol"` — formato de referência de secret do CLI `op` do
-  1Password (`op://<vault>/<item>/<campo>`), documentada e resolvida pelo próprio plugin (D8 de
-  `research.md`).
-- Resolução, uma única vez no arranque do processo (concorrente com a espera pelo `handshake/hello`
-  do core), via `subprocess`:
+- `config.py`/`secrets.py` (ver Project Structure em `plan.md` — as duas responsabilidades podem
+  colapsar num único módulo, já que o mecanismo de leitura é idêntico para os dois campos) leem, uma
+  única vez no arranque do processo:
 
   ```python
-  import subprocess
+  import os
 
-  REFERENCE = "op://Dev/UptimeKuma/API Keys/farol"
+  def resolve(name: str) -> str | None:
+      env_var = f"FAROL_PLUGIN_UPTIME_KUMA_{name.upper()}"  # research.md D8 — convenção fixa,
+      return os.environ.get(env_var) or None                # aplicada igual pelo core ao injetar
 
-  def resolve_api_key() -> str | None:
-      try:
-          result = subprocess.run(
-              ["op", "read", REFERENCE],
-              capture_output=True, text=True, timeout=5,
-          )
-      except FileNotFoundError:
-          return None  # binário `op` ausente do PATH -> exec_unavailable (-32003)
-      if result.returncode != 0 or not result.stdout:
-          return None  # op presente, mas sem resolver a referência -> not_configured (-32005)
-      return result.stdout.rstrip("\n")
+  base_url = resolve("base_url")
+  api_key = resolve("api_key")
   ```
 
-  A distinção entre "binário `op` ausente" (`FileNotFoundError`, tratado como `exec_unavailable`,
-  `-32003`) e "`op` presente mas retornou erro" (código de saída não-zero — item não encontrado,
-  sessão não autenticada, tratado como `not_configured`, `-32005`) é feita no arranque do processo,
-  antes de responder ao `handshake/hello` (ver `handshake-delta.md`).
-- **MUST NOT**: a credencial (a API Key/senha em si) NUNCA é escrita em nenhum arquivo de
-  configuração do plugin, nunca aparece em log/stderr, nunca trafega por nenhuma mensagem do
-  protocolo JSON-RPC — só o **caminho de referência** (`op://...`) aparece, e só dentro do manifesto
-  de capacidades (`capabilities`).
-- **Provisionamento** (pré-requisito manual do usuário, fora do escopo desta feature automatizar —
-  documentado em `quickstart.md`): o item precisa já existir no cofre 1Password apontado pela
-  referência, e a sessão `op` do ambiente onde o Farol roda precisa estar autenticada.
+  O core (Rust, `plugin_worker.rs`) aplica a mesma transformação de nome ao injetar
+  (`Command::env(...)`) — nenhum nome de variável de ambiente trafega no protocolo, é derivado
+  independentemente pelos dois lados a partir de `plugin_name` (`"uptime-kuma"`) + `name`
+  (`"base_url"`/`"api_key"`).
+- **Sem default seguro** para `base_url` (diferente do `scan_root` do `git-local`, que tem default
+  `~/dev`) — não existe um host remoto default razoável para uma instância Uptime Kuma (FR-008, Edge
+  Case do spec). Variável de ambiente ausente/vazia para `base_url` e/ou `api_key`: `not_configured`
+  (ver `error-model-delta.md` — nesta revisão, salvaguarda; o caminho primário é o **core** nem chegar
+  a chamar `widget/get`, ver abaixo).
+- Ambos os valores são lidos **uma única vez**, no arranque do processo — sem re-leitura por chamada
+  de `widget/get`, sem hot-reload dentro de um mesmo processo (decisão já existente, reafirmada). O
+  caminho para "corrigir" um valor errado é a tela de setup do core (`data-model.md` §3.2): o usuário
+  submete o formulário, o core persiste e **reinicia o processo do plugin** com as novas variáveis de
+  ambiente — não um hot-reload dentro do processo já rodando.
+- **MUST NOT**: nem `base_url` nem `api_key` MUST estar hardcoded em nenhum lugar do código do
+  plugin. **MUST NOT**: a credencial (`api_key`) NUNCA é escrita em nenhum arquivo pelo próprio
+  plugin, nunca aparece em log/stderr, nunca trafega por nenhuma mensagem do protocolo JSON-RPC — só
+  a **declaração** de que ela é necessária (`required_config`, com `secret: true`) aparece no
+  handshake, nunca o valor em si.
+- **Provisionamento**: pela tela de setup do próprio Farol (`data-model.md` §3.2) — o usuário digita
+  `base_url`/`api_key` numa janela do app, sem precisar editar arquivo nem instalar/autenticar
+  nenhuma ferramenta externa (revisão desta sessão — versões anteriores deste documento exigiam um
+  item já existente no cofre 1Password e uma sessão `op` autenticada; nenhum dos dois é mais
+  necessário).
+- **Onde o valor fica armazenado** (gerido inteiramente pelo core, não pelo plugin — `research.md`
+  D8): `base_url` em `$XDG_CONFIG_HOME/farol/plugins/uptime-kuma/config.toml`; `api_key` em
+  `$XDG_CONFIG_HOME/farol/secrets.toml` (permissão `0600`, seção `[uptime-kuma]`).
 
 ## Autenticação HTTP contra `/metrics` (FR-019)
 
-HTTP Basic Auth — usuário vazio (ou qualquer valor), a API Key resolvida via `op` como senha
-(Clarifications do spec):
+HTTP Basic Auth — usuário vazio (ou qualquer valor), a `api_key` lida da variável de ambiente
+(`research.md` D8, seção "Configuração e credencial" acima) como senha (Clarifications do spec):
 
 ```python
 import base64
@@ -112,9 +121,10 @@ def build_request(base_url: str, api_key: str) -> urllib.request.Request:
 Ver `research.md` D6 para o desenho completo (cache, invariante de não-sobreposição, estado inicial).
 Resumo operacional:
 
-1. No arranque: se `not_configured` (config ou credencial ausente), a thread **nunca inicia** — todo
-   `widget/get` responde `error(-32005, not_configured)` para sempre (processo precisa ser
-   reiniciado com configuração válida).
+1. No arranque: se `not_configured` (`base_url`/`api_key` ausentes das variáveis de ambiente, D8), a
+   thread **nunca inicia** — todo `widget/get` responde `error(-32005, not_configured)` para sempre
+   (processo precisa ser reiniciado com configuração válida; na prática, o core normalmente já barra
+   esta conexão antes de chegar a chamar `widget/get`, ver `error-model-delta.md`).
 2. Caso contrário, uma `threading.Thread(daemon=True)` inicia um laço sequencial: a cada
    `suggested_refresh_interval_ms` (30000 default), faz a requisição HTTP (`build_request` acima),
    timeout de 10 segundos (`urllib.request.urlopen(req, timeout=10)`), parseia o corpo em sucesso
@@ -167,8 +177,12 @@ Resumo operacional:
 
 - Nenhuma ação (`action/invoke`) — `actions: []` sempre, em toda mensagem.
 - Nenhuma escrita/gerenciamento de monitores no Uptime Kuma — leitura pura de `/metrics`.
-- Nenhum enforcement de allowlist de rede nem de acesso ao 1Password — capacidades `network`/`secret`
-  são apenas declaradas; o core não restringe, nem media, o acesso real do plugin nem à rede nem ao
-  1Password (mesmo padrão "declarado, não aplicado" de `exec` na feature 001).
-- Nenhum hot-reload de configuração — `base_url` e a resolução da credencial são fixados no arranque
-  do processo, pelo resto da vida daquele processo.
+- Nenhum enforcement de allowlist de rede — a capacidade `network` é apenas declarada; o core não
+  restringe nem media o acesso real do plugin à rede (mesmo padrão "declarado, não aplicado" de
+  `exec`/`network` na feature 001). Não há mais mediação de acesso a nenhum cofre externo de
+  segredos (1Password ou qualquer outro) — revisão desta sessão, o core armazena a credencial
+  diretamente (`research.md` D8).
+- Nenhum hot-reload de configuração dentro de um processo já rodando — `base_url`/`api_key` são
+  fixados no arranque do processo, pelo resto da vida daquele processo; uma correção passa por
+  reiniciar o processo via a tela de setup do core (`data-model.md` §3.2), não por o plugin observar
+  o ambiente mudar em tempo real.

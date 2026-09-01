@@ -19,6 +19,23 @@ e `contracts/*.md`, `protocol/SPEC.md`, os 4 `protocol/schema/v0.1/*.schema.json
 Esta é a decisão central desta feature (FR-005 já fixou o *rumo* comportamental; esta decisão fixa
 o *schema exato*).
 
+> **Revisão desta sessão (auditoria pós-plan, 2026-09-01)**: o `kind: "secret"` de `Capability`,
+> desenhado abaixo, fica **obsoleto** para o propósito de declarar credencial — substituído pelo campo
+> novo `required_config` (irmão de `capabilities` em `HandshakeHelloResult`; ver D8 revisado). Motivo:
+> a decisão do usuário nesta sessão faz o **core**, não o plugin, gerenciar armazenamento e injeção de
+> configuração/segredos — deixa de fazer sentido o manifesto de capacidades carregar uma `reference`
+> opaca que o próprio core nunca resolve; o que o core precisa saber é *quais variáveis o plugin espera
+> receber* (nome, se é secreta, descrição), exatamente a forma de `required_config`. O `kind: "network"`
+> **não muda de papel** — continua expressando a permissão declarada de acesso de rede (host/port), só
+> que agora `host`/`port` são derivados do `base_url` já resolvido **via variável de ambiente** (D8
+> revisado) no momento de montar a resposta do handshake, em vez de lido de um arquivo TOML pelo
+> próprio plugin. A tabela, os exemplos, o schema ilustrativo e o binding Rust abaixo foram atualizados
+> para refletir isso: apenas `exec` e `network` continuam como `kind`s conhecidos desta versão do
+> protocolo — `uptime-kuma`, especificamente, não declara mais nem `exec` (a chamada `op` que a
+> justificava não existe mais, ver D8) nem `secret`. `CapabilityManifest.capabilities` também deixa de
+> exigir `minItems: 1` — MAY ser `[]` quando nenhuma capacidade concreta é declarável (ex.:
+> `uptime-kuma` sem `base_url` resolvido ainda).
+
 ### Decisão — formato exato
 
 `CapabilityManifest.capabilities` deixa de ser `string[]` e passa a ser um array de objetos
@@ -35,16 +52,17 @@ Três `kind`s conhecidos nesta versão do protocolo:
 { "kind": "exec" }
 
 { "kind": "network", "host": "monitor.example.com", "port": 443 }
-
-{ "kind": "secret", "reference": "op://Dev/UptimeKuma/API Keys/farol" }
 ```
 
 | `kind` | Campos além de `kind` | Obrigatório | Notas |
 |---|---|---|---|
-| `exec` | nenhum | — | Mesma capacidade de hoje (`git-local`), agora como objeto de um campo só. |
+| `exec` | nenhum | — | Mesma capacidade de hoje (`git-local`), agora como objeto de um campo só. **Não** declarada por `uptime-kuma` (D8 revisado — não invoca mais nenhum binário externo). |
 | `network` | `host` (string, não-vazia) | sim | Nome de host ou IP. **Sem** campo `port` obrigatório. |
 | `network` | `port` (integer, 1–65535) | não | Porta, quando fixa/conhecida (ex.: 443 para HTTPS). Ausente = não declarado. |
-| `secret` | `reference` (string, não-vazia) | sim | Ver "Formato do `reference`" abaixo. |
+
+`kind: "secret"` **removido** do vocabulário conhecido desta versão do protocolo (revisão desta
+sessão, ver callout acima e D8) — credencial passa a ser declarada via `required_config`, não via
+`Capability`.
 
 **Por que `host`/`port`, não `endpoint`/URL completa**: o Princípio IV da constitution descreve a
 capacidade de rede literalmente como "acesso de rede restrito a uma **allowlist de hosts**
@@ -55,17 +73,12 @@ completa (`https://monitor.example.com/metrics?...`) carregaria informação (pa
 allowlist de host não usa e que vazaria detalhe de implementação do plugin para o manifesto sem
 necessidade.
 
-**Formato do `reference` de `secret`**: string opaca, escolhida e documentada pelo próprio plugin —
-nunca a credencial em si (Princípio IV: segredo real nunca trafega no protocolo). Nesta feature, o
-`uptime-kuma` usa uma constante fixa e documentada, no formato de referência de secret do CLI `op`
-do 1Password (`"op://<vault>/<item>/<campo>"` — ver D8 para a escolha do mecanismo de keyring),
-concretamente `"op://Dev/UptimeKuma/API Keys/farol"` no ambiente de referência desta feature, já que
-só uma instância é configurada por vez (Assumptions do spec) — não há necessidade de tornar o
-`reference` configurável pelo usuário nesta feature. O core trata este valor como
-**string de exibição opaca**: não resolve, não valida formato além de não-vazio (não interpreta o
-prefixo `op://` nem o parseia em vault/item/campo), não faz nenhuma chamada ao 1Password por causa
-dele — mesmo padrão "declarado, não aplicado" já usado para `exec` (ver D8 abaixo para quem de fato
-resolve a credencial: o **plugin**, não o core).
+**(Histórico — não se aplica mais)** O parágrafo original desta seção descrevia o formato do campo
+`reference` de um `kind: "secret"` (referência de secret do CLI `op` do 1Password). Esse `kind` foi
+removido nesta revisão (callout acima) — a credencial de `uptime-kuma` agora é declarada via
+`required_config` (`{"name": "api_key", "secret": true, ...}`, D8 revisado), não via `Capability`. O
+core continua sem jamais resolver nem ler o valor secreto por conta própria de qualquer forma — só que
+agora ele **armazena e injeta** esse valor (D8), em vez de só exibir uma referência opaca.
 
 **Schema ilustrativo** (o que `handshake.schema.json` precisa passar a expressar; arquivo real não
 é tocado por este plano):
@@ -86,13 +99,6 @@ resolve a credencial: o **plugin**, não o core).
           "kind": { "const": "network" },
           "host": { "type": "string", "minLength": 1 },
           "port": { "type": "integer", "minimum": 1, "maximum": 65535 }
-        } } },
-    { "if": { "properties": { "kind": { "const": "secret" } } },
-      "then": {
-        "required": ["kind", "reference"], "additionalProperties": false,
-        "properties": {
-          "kind": { "const": "secret" },
-          "reference": { "type": "string", "minLength": 1 }
         } } }
   ]
 },
@@ -100,10 +106,13 @@ resolve a credencial: o **plugin**, não o core).
   "type": "object",
   "required": ["capabilities"],
   "properties": {
-    "capabilities": { "type": "array", "items": { "$ref": "#/$defs/Capability" }, "minItems": 1 }
+    "capabilities": { "type": "array", "items": { "$ref": "#/$defs/Capability" } }
   }
 }
 ```
+
+(`kind: "secret"` removido desta revisão — ver callout no topo de D1; `minItems: 1` também removido —
+`capabilities` MAY ser `[]`.)
 
 O binding Rust (`crates/farol-protocol/src/messages.rs`, não editado por este plano) evolui de
 `pub struct CapabilityManifest { pub capabilities: Vec<String> }` para algo como:
@@ -114,11 +123,12 @@ O binding Rust (`crates/farol-protocol/src/messages.rs`, não editado por este p
 pub enum Capability {
     Exec,
     Network { host: String, #[serde(skip_serializing_if = "Option::is_none")] port: Option<u16> },
-    Secret { reference: String },
 }
 
 pub struct CapabilityManifest { pub capabilities: Vec<Capability> }
 ```
+
+(Variante `Secret { reference: String }` removida desta revisão — ver callout no topo de D1.)
 
 Nota para a fase de implementação (fora de escopo aqui): um enum `#[serde(tag = "kind")]` externamente
 tagueado rejeita, por padrão, um `kind` desconhecido em vez de o preservar de forma forward-compatible
@@ -486,96 +496,172 @@ filosofia "stdlib apenas, dependência mínima" de D3/deste D7.
 
 ---
 
-## D8 — Acesso ao keyring: 1Password via `op` CLI (`op read`), reaproveitando a capacidade `exec` já existente
+## D8 — Configuração e segredos: gerenciados pelo core, tela de setup no app `iced` (substitui a decisão de 1Password/`op` CLI)
 
-O task explicitamente pede esta decisão: bibliotecas Python de keyring (`keyring` no PyPI) não são
-stdlib — introduzi-las quebraria a política "stdlib apenas" do plugin de referência (D3/D7). A
-alternativa correta, e a que esta feature adota, é descrita abaixo.
+> **Histórico desta seção**: a versão original deste documento cogitou primeiro Secret
+> Service/`libsecret`, depois foi corrigida para 1Password via CLI `op` (`op read`, por `subprocess`
+> do lado do *plugin*, reaproveitando a capacidade `exec`). **Esta sessão de auditoria (2026-09-01)
+> substitui integralmente esse mecanismo** por decisão explícita do usuário: quem gerencia
+> armazenamento seguro de configuração — secreta ou não — passa a ser o **core**, e o provisionamento
+> acontece por uma tela dentro do próprio Farol (app `iced`), nunca por CLI externo nem por edição
+> manual obrigatória de arquivo. Nenhum dos dois mecanismos anteriores (Secret Service, 1Password/`op`)
+> é usado nesta feature. Esta correção também torna obsoleto o `kind: "secret"` de `Capability` (D1
+> revisado) e o uso de `exec_unavailable` para este plugin (D9 revisado) — `uptime-kuma` não invoca
+> mais nenhum binário externo, então não declara `{"kind": "exec"}`.
 
-> **Correção de rumo registrada nesta sessão**: a decisão originalmente cogitada para este documento
-> era Secret Service/`libsecret` via `secret-tool`. O usuário indicou que a credencial real deste
-> ambiente já vive no **1Password**, referenciada no formato `op://Dev/UptimeKuma/API Keys/farol`
-> (formato de referência de secret do CLI `op` do 1Password — não é a senha em si, é o
-> caminho/localização do item no cofre). A decisão abaixo reflete esse mecanismo corrigido; nenhuma
-> outra decisão deste documento depende de qual gerenciador de segredos é usado, então nada além
-> desta seção (e das referências a ela em D1/D9/plan.md) muda por causa desta correção.
+### Decisão — novo campo de protocolo: `required_config`
 
-### Decisão
+O plugin declara, no `handshake/hello`, quais variáveis de configuração precisa — secretas ou não —
+sem nunca lê-las de arquivo por conta própria. Novo campo em `HandshakeHelloResult`, **irmão** de
+`capabilities`/`widgets`/`actions` (não aninhado dentro de `capabilities` — capacidades continuam
+expressando *permissão de acesso a sistema*; `required_config` expressa *dados que o plugin precisa
+do usuário*, uma preocupação distinta):
 
-O plugin lê a credencial diretamente do cofre **1Password**, via o **CLI oficial `op`**
-(`op read "op://<vault>/<item>/<campo>"`), invocado por `subprocess` — não Secret Service/`libsecret`:
-
-```python
-import subprocess
-
-reference = "op://Dev/UptimeKuma/API Keys/farol"  # mesmo valor declarado em capabilities (D1)
-
-result = subprocess.run(
-    ["op", "read", reference],
-    capture_output=True, text=True, timeout=5,
-)
-if result.returncode != 0 or not result.stdout:
-    # credencial não encontrada/op não autenticado -> tratado como "não configurado" (D9/FR-019)
-    ...
-api_key = result.stdout.rstrip("\n")
+```jsonc
+"required_config": [
+  { "name": "base_url", "secret": false, "description": "URL base da instância Uptime Kuma" },
+  { "name": "api_key", "secret": true, "description": "API Key de métricas do Uptime Kuma" }
+]
 ```
 
-- Isso **é exatamente o mesmo mecanismo já usado para `git`** no plugin `git-local` (feature 001):
-  invocar um binário externo do sistema via `subprocess` — coberto pela mesma capacidade `exec` já
-  existente no manifesto (`{"kind": "exec"}`), sem precisar de uma capacidade nova só para isto.
-- **A referência `op://vault/item/campo` é literalmente o valor do campo `reference` da capacidade
-  `secret`** (D1) — uma string opaca que identifica *onde* a credencial mora, nunca a credencial em
-  si; o core apenas registra/exibe esse caminho, nunca chama `op` nem resolve o valor (mesmo padrão
-  "declarado, sem enforcement" já aceito para `exec`, FR-008 da feature 001).
-- **Isto é leitura do plugin, não enforcement do core** — o core **nunca** lê nada de segredo nesta
-  feature — ele só registra e exibe a capacidade `secret` declarada (FR-006). Quem de fato resolve a
-  credencial é o **plugin**, chamando o CLI `op` do 1Password (uma ferramenta de sistema operacional,
-  não uma capacidade do protocolo Farol sendo "concedida" pelo core).
-- **Provisionamento da credencial** (fora do escopo desta feature implementar/automatizar — só
-  documentado em `quickstart.md` como pré-requisito manual do usuário): a API Key/senha já precisa
-  existir como item no cofre 1Password apontado pela referência configurada (`Dev/UptimeKuma/API
-  Keys/farol` no ambiente do usuário) — o Farol/plugin não cria nem gerencia esse item, só o lê.
-- **Autenticação do próprio `op`**: o CLI `op` precisa estar **instalado e autenticado** (sessão
-  ativa/`op signin` já realizado, ou integração com o 1Password desktop app) no ambiente onde o
-  `farol-core` (e, por consequência, o processo filho do plugin) roda — um pré-requisito de ambiente,
-  não algo que o plugin provisiona. Documentado como Assumption/dependência externa (ver `plan.md` §
-  Technical Context e `contracts/uptime-kuma-plugin.md`), no mesmo espírito de "binário `git` precisa
-  estar no `PATH`" já assumido pela feature 001 para `git-local`.
-- **Ausência do próprio binário `op` no `PATH`, ou `op` presente mas não autenticado**: ambos os casos
-  fazem `op read` falhar (código de saída não-zero) — tratados, nesta feature, como o mesmo sinal que
-  "referência não encontrada": reaproveitam `-32003 exec_unavailable` quando o binário `op` está
-  ausente do `PATH` (mesmo `reason` já usado por `git-local` para "binário do qual o plugin depende
-  não está disponível", `protocol/SPEC.md` §8.2); quando `op` está presente mas retorna erro (item
-  não encontrado, sessão expirada, não autenticado) → `not_configured` (D9) — o ambiente tem a
-  ferramenta certa, só falta acesso/provisionamento válido à credencial. Esta feature **não**
-  distingue "sessão `op` expirada" de "item não existe no cofre" — ambos caem em `not_configured`,
-  sem granularidade adicional (não pedida por FR-019).
+| Campo | Tipo | Obrigatório | Descrição |
+|---|---|---|---|
+| `name` | `string` (não-vazia) | sim | Identificador estável da variável, escolhido pelo plugin (ex.: `"base_url"`, `"api_key"`). |
+| `secret` | `boolean` | sim | `true` ⟹ o core MUST armazenar em `secrets.toml` (nunca em `config.toml`) e mascarar o campo correspondente na tela de setup. |
+| `description` | `string` (não-vazia) | sim | Rótulo legível exibido como label do campo na tela de setup (ver "Decisão — tela de setup" abaixo). |
 
-**Rationale**: reutiliza a capacidade `exec` já provada pela feature 001 em vez de inventar uma nova
-categoria de acesso a sistema; evita adicionar qualquer dependência Python via `pip` ao plugin de
-referência, mantendo a política "stdlib apenas" intacta — `op` é um binário de sistema, invocado do
-mesmo jeito que `git` já é; usar o mecanismo real do ambiente (1Password) em vez de um mecanismo
-genérico hipotético (Secret Service) mantém a referência de capacidade `secret` verificável/testável
-de fato no ambiente onde esta feature será validada.
+Todo item de `required_config` é, pelo próprio nome do campo, obrigatório — não há variante
+"opcional" nesta versão do protocolo (se o plugin não precisa de um valor para funcionar, simplesmente
+não o declara). Diferente de `capabilities` (que só declara `network` quando já resolvido, D1),
+`required_config` é a lista **fixa** do que o plugin sempre precisa — é o mecanismo que permite ao
+core saber o que pedir na tela de setup mesmo na primeira execução, antes de qualquer valor existir.
+
+Binding Rust ilustrativo (`crates/farol-protocol/src/messages.rs`):
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequiredConfigItem {
+    pub name: String,
+    pub secret: bool,
+    pub description: String,
+}
+
+pub struct HandshakeHelloResult {
+    pub protocol_version: ProtocolVersion,
+    pub plugin_name: String,
+    pub capabilities: CapabilityManifest,
+    pub required_config: Vec<RequiredConfigItem>,   // NOVO — irmão de capabilities/widgets/actions
+    pub widgets: Vec<WidgetDeclaration>,
+    pub actions: Vec<ActionDeclaration>,
+}
+```
+
+### Decisão — armazenamento (core, Rust) — sem CLI externo, sem daemon de keyring
+
+- **Não-secretos**: `$XDG_CONFIG_HOME/farol/plugins/<nome>/config.toml` — mesmo caminho/mecanismo já
+  usado pelo `scan_root` de `git-local` (feature 001) — agora também escrito pela tela de setup, além
+  de continuar editável manualmente pelo usuário.
+- **Secretos**: arquivo único `$XDG_CONFIG_HOME/farol/secrets.toml`, com permissão do arquivo forçada
+  a `0600` (Unix), escrito **exclusivamente** pelo core na submissão do formulário de setup. Formato:
+  uma tabela por plugin, chave = `name` do `required_config`:
+
+  ```toml
+  [uptime-kuma]
+  api_key = "..."
+  ```
+
+  **O plugin nunca lê este arquivo** — só o core (Rust) tem esse caminho no seu vocabulário de I/O.
+- **Injeção no spawn**: em `plugin_worker.rs` (já sendo alterada por C2 do checklist de auditoria — o
+  worker precisa saber qual plugin está subindo para resolver o `required_config` certo), o core
+  resolve cada item de `required_config` contra `config.toml`/`secrets.toml` e injeta como variável de
+  ambiente do processo filho via `Command::env(env_var_name, value)`.
+- **Convenção de nome de variável de ambiente** (decisão desta sessão, para evitar colisão com o
+  ambiente herdado do processo pai — `PATH`, `HOME`, etc. — e entre plugins que usem o mesmo `name`,
+  ex. dois plugins com um campo `"base_url"`):
+
+  ```text
+  FAROL_PLUGIN_<PLUGIN_NAME em SNAKE_CASE MAIÚSCULO>_<NAME em SNAKE_CASE MAIÚSCULO>
+  ```
+
+  Transformação: `plugin_name`/`name` viram maiúsculo, qualquer caractere não alfanumérico vira `_`.
+  Para `uptime-kuma` (`plugin_name = "uptime-kuma"`): `base_url` → `FAROL_PLUGIN_UPTIME_KUMA_BASE_URL`;
+  `api_key` → `FAROL_PLUGIN_UPTIME_KUMA_API_KEY`. **Ambos os lados** (o código Rust que injeta em
+  `plugin_worker.rs` e o código Python que lê em `plugins/uptime-kuma/config.py`) aplicam a mesma
+  transformação determinística — o nome prefixado nunca é transmitido por nenhum campo de protocolo,
+  é derivado independentemente pelos dois lados a partir de `plugin_name`+`name`, já conhecidos por
+  ambos.
+- **Quando um item obrigatório de `required_config` não tem valor armazenado** (nenhuma entrada em
+  `config.toml`/`secrets.toml`, ou os dois arquivos ausentes/corrompidos do lado do core): o core
+  **ainda assim spawna o processo do plugin normalmente** (sem a variável de ambiente correspondente
+  definida) — é assim que o plugin consegue completar o handshake e declarar `required_config` de
+  volta, o que o core precisa para saber o que renderizar na tela de setup, inclusive na primeira
+  execução, sem nenhum valor jamais ter existido. Depois do handshake, o core compara
+  `required_config` recebido contra o que conseguiu injetar; se algo faltar, a conexão vai para
+  `PluginState = Unavailable { reason: NotConfigured, .. }` (novo `UnavailableReason`, ver "Decisão —
+  tela de setup" abaixo) em vez de `Ready` — o core não chama `widget/get` para essa conexão enquanto
+  ela estiver neste estado (mesma regra geral já existente: `widget/get` só é disparado quando
+  `PluginState == Ready`).
+
+### Decisão — tela de setup (core, `iced`)
+
+Quando `PluginState = Unavailable { reason: NotConfigured, .. }`, a `view` do Farol MUST renderizar,
+no lugar onde o widget daquele plugin apareceria, um formulário construído a partir do
+`required_config` recebido no handshake: um campo de texto por item (mascarado quando `secret: true`),
+rótulo = `description`, um botão de confirmar.
+
+Ao confirmar: os valores digitados são persistidos (`config.toml`/`secrets.toml`, conforme `secret` de
+cada item) e o core precisa **reconectar** — reenviar o handshake ao mesmo plugin com as novas
+variáveis de ambiente injetadas. Isto é uma capacidade nova que a máquina de estados de `PluginState`
+não tinha: a feature 001 documenta `Unavailable` como terminal ("nenhuma transição nesta feature",
+`model.rs`, doc de `PluginState`) — `NotConfigured` é a **primeira exceção** a essa regra, precisa de
+um caminho de volta a `Starting`/`Handshaking`. Mecanicamente, a forma mais simples dentro da
+arquitetura já existente (worker = `iced::Subscription` de longa duração por conexão, D5 da feature
+001) é fazer a subscription reiniciar: a identidade da subscription do worker de um plugin passa a
+depender de um contador de "tentativa de setup" no `Model` (`PluginConnection`); incrementar esse
+contador ao processar a submissão do formulário faz o `iced` encerrar a subscription antiga (o
+processo filho anterior é morto — `kill_on_drop`) e iniciar uma nova do zero, com o comando de spawn
+agora enxergando as variáveis de ambiente recém-persistidas. Detalhe de implementação a confirmar na
+fase de tasks, registrado aqui só para não deixar a obrigação "o core tenta reconectar" sem nenhum
+mecanismo concreto.
+
+### Decisão — lado do plugin (Python)
+
+`config.py`/`secrets.py` deixam de fazer parsing de TOML ou de qualquer arquivo — o plugin só lê
+`os.environ.get(env_var_name)` para cada variável que ele mesmo declarou em `required_config`,
+aplicando a mesma convenção de nome (`FAROL_PLUGIN_...`, acima) para saber qual variável de ambiente
+ler. `uptime-kuma` colapsa a leitura de config e de segredo no mesmo mecanismo — a única diferença
+entre `base_url` e `api_key`, do ponto de vista do plugin, é o valor de `secret` que ele mesmo já
+declarou (relevante só para a tela de setup do core, o plugin não precisa se importar com isso de
+novo).
+
+### Decisão — `not_configured` deixa de ser só um `reason` de `widget/get`
+
+Ver D9 (revisado) para a lógica completa. Resumo: o caminho **primário** de UX passa a ser a
+transição de `PluginState` para `Unavailable{NotConfigured}` (o core nem chama `widget/get` nesse
+estado) — o `error(-32005, not_configured)` de `widget/get` ainda existe, mas como salvaguarda
+(defesa em profundidade) para o caso em que o plugin, já rodando, constata que uma variável de
+ambiente esperada está ausente/vazia apesar do core achar que estava tudo certo (ex.: divergência
+entre o que o core injetou e o que o plugin declarou).
+
+**Rationale**: atende à decisão explícita do usuário de que o core, não o plugin, é quem gerencia
+armazenamento seguro — elimina a dependência de sistema externa (CLI `op`/1Password, ou qualquer
+keyring do SO) que as decisões anteriores exigiam, e centraliza o provisionamento numa única UX (a
+tela de setup do próprio Farol) em vez de pedir ao usuário para operar uma ferramenta de terceiros
+antes de conseguir usar o Farol. Um único mecanismo de injeção (variável de ambiente) para os dois
+tipos de valor (secreto e não-secreto) é mais simples do que o plugin ter dois caminhos de leitura
+(arquivo para não-secreto, keyring/CLI para secreto).
 
 **Alternativas consideradas**:
-- *Secret Service/`libsecret` via `secret-tool`*: era a decisão original deste documento antes da
-  correção de rumo acima — rejeitada porque a credencial real do ambiente vive no 1Password, não no
-  keyring do Secret Service; manter essa decisão produziria um plano tecnicamente correto em
-  abstrato, mas que não teria onde ler a credencial de fato neste ambiente.
-- *Pacote `keyring` do PyPI (com backend 1Password ou genérico)*: rejeitada — não é stdlib, quebraria
-  a política de dependência zero do plugin de referência sem necessidade, já que `op` (CLI oficial)
-  resolve o mesmo problema via o mesmo mecanismo (`exec`) que o protocolo já modela.
-- *Ler a credencial de uma variável de ambiente ou de um segundo arquivo de configuração próprio do
-  plugin*: rejeitada — viola diretamente FR-019/Princípio IV ("segredos... NUNCA de arquivo de
-  configuração em texto plano gerenciado pelo plugin"); variável de ambiente teria o mesmo problema de
-  fundo (texto plano gerido fora do keyring do sistema, tipicamente herdado de um arquivo de shell
-  profile igualmente em texto plano).
-- *SDK oficial do 1Password para Python (`onepassword-sdk`, PyPI)*: tecnicamente mais "correto" que
-  invocar um binário externo via `subprocess`, mas não é stdlib — reintroduziria exatamente a
-  dependência externa que a decisão busca evitar, por um ganho (evitar um `subprocess.run`) que não
-  se justifica neste escopo, já que o CLI `op` cobre o caso de uso (`op read`) sem dependência Python
-  nenhuma.
+- *Manter 1Password via `op` CLI (decisão anterior deste documento)*: rejeitada — decisão explícita do
+  usuário nesta sessão de auditoria; exigiria que todo usuário do Farol tivesse `op` instalado e
+  autenticado só para usar um plugin de referência, um pré-requisito de ambiente desproporcional ao
+  que a feature precisa entregar.
+- *Secret Service/`libsecret`, pacote `keyring` do PyPI*: rejeitadas pelos mesmos motivos já registrados
+  na versão anterior desta seção — dependência de keyring do sistema operacional/dependência externa
+  via `pip`, nenhuma das duas necessária agora que o core gerencia o armazenamento diretamente.
+- *Plugin lê `secrets.toml`/`config.toml` diretamente*: rejeitada pela decisão explícita do usuário —
+  quem gerencia armazenamento seguro é o core, nunca o plugin (nem para o não-secreto: um único
+  mecanismo de injeção via ambiente é mais simples que o plugin ter dois caminhos de leitura).
 
 ---
 
@@ -587,62 +673,82 @@ de fato no ambiente onde esta feature será validada.
 reasons"*). Esta feature escolhe códigos que não colidem com os já usados por `git-local`
 (`-32000`..`-32004`) por prudência, ainda que não haja garantia formal de unicidade entre plugins.
 
+> **Revisão desta sessão (auditoria pós-plan, 2026-09-01)**: o texto original desta seção descrevia
+> `not_configured` como um `reason` de `widget/get` detectado via `op read` (1Password). Essa detecção
+> muda de mecanismo com D8 revisado (armazenamento gerenciado pelo core, injeção por variável de
+> ambiente) — a tabela e a lógica abaixo foram atualizadas de acordo. A mudança mais importante não é
+> de valor de código (continua `-32005`), é de **papel**: `not_configured` deixa de ser o caminho
+> primário de UX (a transição de `PluginState` para `Unavailable{NotConfigured}`, decidida pelo core
+> antes de sequer chamar `widget/get`, é o caminho primário agora — D8) e passa a ser uma salvaguarda
+> de defesa em profundidade. `exec_unavailable` (`-32003`) deixa de ter qualquer uso neste plugin —
+> não há mais nenhum binário externo invocado por `uptime-kuma`.
+
 ### Decisão — tabela de novos `reason`s
 
 | `code` | `data.reason` | Onde ocorre | Descrição |
 |---|---|---|---|
-| `-32005` | `not_configured` | `widget/get` | `base_url` ausente/vazio no arquivo de configuração (FR-008) **ou** credencial não resolvível via 1Password — `op read` executou, mas retornou erro (item não encontrado, sessão não autenticada) (FR-019). Detectado uma única vez, no arranque do processo, antes de a thread de polling (D6) começar; **toda** chamada subsequente de `widget/get` devolve este erro até o processo ser reiniciado com configuração válida (sem hot-reload nesta feature). |
+| `-32005` | `not_configured` | `widget/get` (salvaguarda) | Variável de `required_config` ausente/vazia na *environment* do processo (`FAROL_PLUGIN_...`, D8) — coincide, na prática, tanto com "core não conseguiu injetar" quanto com "arquivo de storage do core (`config.toml`/`secrets.toml`) ausente/corrompido" (esse segundo caso normalmente nem chega a esta chamada: o core já detecta e mostra a tela de setup antes de chamar `widget/get`, ver D8). Detectado uma única vez, no arranque do processo, antes de a thread de polling (D6) começar; **toda** chamada subsequente de `widget/get` devolve este erro até o processo ser reiniciado com configuração válida (sem hot-reload nesta feature). |
 | `-32006` | `metrics_unreachable` | `widget/get` | A última tentativa da thread de polling (D6) de contatar `${base_url}/metrics` falhou por motivo de rede: timeout HTTP (D5), conexão recusada, host incorreto, ou resposta HTTP não-2xx (inclui `401`/`403` de autenticação inválida — esta feature não distingue "credencial errada" de "host inacessível" dentro deste mesmo `reason`, por não haver requisito de FR-015/016 pedindo essa granularidade; um refinamento futuro poderia introduzir `metrics_auth_failed` separadamente). |
 | `-32007` | `metrics_parse_error` | `widget/get` | A última tentativa obteve uma resposta HTTP, mas o corpo não é reconhecível como `/metrics` Prometheus válido do Uptime Kuma (nenhuma linha `monitor_status{...}` encontrada, ou algum valor de `monitor_status` fora de `{0,1,2,3}` — D7/parsing, Edge Case do spec). |
 
 Reutilizados sem alteração (já normativos, `protocol/SPEC.md` §8.2):
 
-- **`-32003` `exec_unavailable`**: reutilizado especificamente para "o binário `op` (1Password CLI)
-  não está disponível no `PATH`" — distinto de `not_configured` (D8 acima já traça essa distinção:
-  ambiente quebrado/ferramenta ausente vs. credencial simplesmente não resolvível pelo `op` presente).
 - **`-32000` `protocol_version_incompatible`**: já genérico a qualquer plugin (caminho de recusa do
   lado do plugin no handshake) — não específico de `git-local`, reaproveitável sem qualquer mudança.
 
-**Não reutilizados nesta feature** (não fazem sentido para um plugin sem ações): `-32001
-fetch_failed`, `-32002 action_timeout` — ambos ligados a `action/invoke`, que este plugin nunca expõe
-(FR-004).
+**Não reutilizados nesta feature**:
+- **`-32003` `exec_unavailable`**: continua existindo no catálogo geral do protocolo (usado por
+  `git-local` para o binário `git`), mas **sem uso neste plugin** desde a revisão de D8 — `uptime-kuma`
+  não invoca mais nenhum binário externo (a chamada `op` que justificava reaproveitar este `reason` não
+  existe mais).
+- `-32001 fetch_failed`, `-32002 action_timeout` — ambos ligados a `action/invoke`, que este plugin
+  nunca expõe (FR-004).
 
-### Lógica de detecção de "não configurado" — unifica FR-008 e FR-019
+### Lógica de detecção de "não configurado" — unifica FR-008 e FR-019 (revisada, D8)
+
+Dois níveis, não mais um só:
 
 ```text
-No arranque do processo (antes de iniciar a thread de polling, D6):
-  1. Lê o arquivo de configuração (mesmo padrão XDG de git-local, ver contracts/uptime-kuma-plugin.md).
-     base_url ausente/vazio → not_configured = true, motivo "sem base_url".
-  2. Se base_url presente: tenta `op read "op://Dev/UptimeKuma/API Keys/farol"` (referência fixa, D1).
-     - binário `op` ausente do PATH → exec_unavailable (-32003), não not_configured.
-     - `op` presente mas retorna erro (returncode != 0: item não encontrado, sessão não autenticada)
-         → not_configured = true, motivo "credencial não resolvível via 1Password".
-  3. Se ambos presentes → not_configured = false; thread de polling inicia.
+Nível 1 — core, antes/depois do spawn (caminho primário, D8):
+  1. Core spawna o processo do plugin normalmente (injeta como variável de ambiente cada item de
+     required_config para o qual encontrou valor em config.toml/secrets.toml; itens sem valor
+     simplesmente não viram variável de ambiente).
+  2. Handshake completa normalmente — o plugin sempre responde com sucesso, declarando
+     required_config (a lista é fixa, independe de haver valor ou não).
+  3. Core compara required_config recebido contra o que conseguiu injetar no passo 1.
+     - Algum item sem valor injetado → PluginState = Unavailable{NotConfigured}; core NÃO chama
+       widget/get para esta conexão; view renderiza a tela de setup (D8) em vez do widget.
+     - Todos os itens com valor → PluginState = Ready; ciclo normal de widget/get começa.
 
-Se not_configured (por qualquer um dos dois motivos): todo widget/get subsequente devolve
-error(-32005, "not_configured"), permanentemente para a vida deste processo.
+Nível 2 — dentro do próprio plugin, no handler de widget/get (salvaguarda, defesa em profundidade):
+  Para cada nome declarado em required_config: lê os.environ.get(env_var_name) (convenção
+  FAROL_PLUGIN_..., D8).
+     - Algum valor ausente/vazio → not_configured = true; a thread de polling (D6) nunca inicia; todo
+       widget/get subsequente devolve error(-32005, "not_configured").
+     - Todos presentes → not_configured = false; thread de polling inicia normalmente.
+  Este nível só é alcançável, na prática, se o Nível 1 já deveria ter barrado a conexão em
+  Unavailable{NotConfigured} — cobre divergência entre o que o core acha que injetou e o que o plugin
+  de fato recebeu (ex.: bug, ambiente do processo filho alterado por outro meio).
 ```
 
-**Rationale**: FR-019 pede explicitamente esse tratamento unificado (*"Ausência de credencial
-configurada no keyring MUST receber o mesmo tratamento de estado explícito de 'não configurado' já
-previsto em FR-008"*) — uma única condição observável (`not_configured`) cobre as duas causas raiz,
-sem exigir que quem consome o protocolo (o core, a UI) distinga "faltou URL" de "faltou credencial"
-como dois estados de UI diferentes; a mensagem humana (`error.message`, nunca destinada a parsing
-programático — `protocol/SPEC.md` §8) pode, e deve, ser específica sobre qual das duas causas se
-aplica, para ajudar o usuário a corrigir.
+**Rationale**: FR-019 pede explicitamente tratamento unificado de "URL ausente" e "credencial
+ausente" (*"Ausência de credencial... MUST receber o mesmo tratamento de estado explícito de 'não
+configurado' já previsto em FR-008"*) — a decisão desta sessão preserva essa unificação e a estende:
+qualquer item de `required_config` sem valor (`base_url` ou `api_key`, sem distinção de motivo)
+produz o mesmo estado observável em ambos os níveis. A mudança em relação ao desenho original (D9
+antes desta revisão) é só de **onde** o estado fica primariamente visível: antes, um erro pontual de
+`widget/get` que o widget precisava saber renderizar distintamente de "0 monitores"; agora, uma tela
+de setup dedicada, mais direta para o usuário resolver (ele digita o valor ali mesmo, sem precisar
+editar arquivo).
 
 **Alternativas consideradas**:
-- *Dois `reason`s separados (`no_base_url`, `no_credential`)*: rejeitada — FR-019 explicitamente pede
-  "o mesmo tratamento" de FR-008, não um tratamento paralelo distinto; um único `reason` com
-  `message`/`data.detail` humano específico atende ao requisito sem introduzir uma distinção que a
-  spec não pediu.
-- *Sinalizar "não configurado" já na resposta do handshake (erro em vez de `result`)*: rejeitada — a
-  Acceptance Scenario 4 de FR-008/US1 fala especificamente do **widget** reportando o estado
-  ("*o widget reporta um estado explícito de 'não configurado'*"), não do handshake falhando; um
-  handshake que falha impediria até o processo de ficar `Ready`/visível como plugin ativo, o que é
-  mais destrutivo do que o requisito pede — o handshake MUST completar normalmente (processo vivo,
-  widget declarado), só `widget/get` carrega o sinal de erro, exatamente como o padrão já
-  estabelecido para `scan_root_unreadable` (`-32004`) do `git-local`.
+- *Manter só o Nível 2 (erro pontual de `widget/get`), sem gate de `PluginState` no core*: rejeitada —
+  não atende à decisão do usuário de que o setup acontece "de dentro do próprio Farol" com uma tela
+  dedicada; um erro de widget, por si só, não é lugar natural para um formulário de entrada de dados.
+- *Sinalizar "não configurado" recusando o handshake (erro em vez de `result`)*: rejeitada — o mesmo
+  motivo já registrado na versão anterior desta seção: um handshake que falha impediria até o processo
+  de declarar `required_config`, que é exatamente o que o core precisa para montar a tela de setup;
+  o handshake MUST completar normalmente (processo vivo, `required_config` declarado).
 
 ---
 
@@ -650,14 +756,14 @@ aplica, para ajudar o usuário a corrigir.
 
 | # | Decisão | Resolve |
 |---|---|---|
-| D1 | `CapabilityManifest` evolui para `Capability[]` estruturada por `kind` (`exec`/`network`/`secret`); bump `protocol_version` para `"0.2"` (MINOR, sob `MAJOR == 0`); `git-local` quebra e a migração dele fica registrada como débito técnico rastreável (issue GitHub obrigatória antes de encerrar a feature, não criada nesta sessão) | FR-005, Clarifications Q1, constitution Governance ("Dívida técnica rastreável") |
+| D1 | `CapabilityManifest` evolui para `Capability[]` estruturada por `kind` (`exec`/`network`); bump `protocol_version` para `"0.2"` (MINOR, sob `MAJOR == 0`); `git-local` quebra e a migração dele fica registrada como débito técnico rastreável (issue GitHub #4, já aberta). `kind: "secret"` removido nesta revisão — ver D8. | FR-005, Clarifications Q1, constitution Governance ("Dívida técnica rastreável") |
 | D2 | Framing NDJSON inalterado (reafirma D2 da feature 001) | FR-001 |
-| D3 | Concorrência do core inalterada — executor tokio + worker `Subscription` (reafirma D4/D5 da feature 001) | — |
+| D3 | Concorrência do core inalterada — executor tokio + worker `Subscription` (reafirma D4/D5 da feature 001); revisão desta sessão: múltiplas `PluginConnection`/subscription simultâneas (uma por plugin), não uma só (C2 do checklist de auditoria) | — |
 | D4 | Novo `kind` de widget `monitor-status-grid` + `MonitorStatusItem`, não reaproveita `status-grid` como schemado hoje | FR-014, Assumptions |
 | D5 | `RPC_TIMEOUT_CONTROL`/`RPC_TIMEOUT_ACTION` inalterados; timeout HTTP interno do plugin (10s) como parâmetro separado, não normativo do protocolo | FR-010 |
 | D6 | Thread de polling em background + cache em memória (`last_success`/`last_error`, lock); `widget/get` só lê o cache, nunca faz I/O de rede | FR-010, FR-009, FR-015/016/017 |
 | D7 | Python 3 stdlib (reafirma D3 da feature 001); `urllib.request` + Basic Auth para HTTP; parser Prometheus mínimo próprio (sem `prometheus_client`) | FR-019, FR-011, FR-016 |
-| D8 | Credencial via **1Password** (CLI `op`, `op read "op://vault/item/campo"`) por `subprocess`, reaproveitando a capacidade `exec` já existente; core nunca resolve a credencial (declarado, não aplicado) | FR-019, Princípio IV |
-| D9 | Novos `reason`s `-32005 not_configured`, `-32006 metrics_unreachable`, `-32007 metrics_parse_error`; reaproveita `-32003 exec_unavailable` para binário `op` ausente; lógica unificada de detecção "não configurado" | FR-008, FR-015, FR-016, FR-019 |
+| D8 | **(revisado)** Configuração/segredos gerenciados pelo **core** via `required_config` (novo campo de `HandshakeHelloResult`) + `config.toml`/`secrets.toml` (0600) + injeção por variável de ambiente no spawn (`FAROL_PLUGIN_<PLUGIN>_<NAME>`) + tela de setup no app `iced`; substitui a decisão anterior de 1Password/CLI `op`. Plugin só lê `os.environ`, nunca arquivo. | FR-019, Princípio IV |
+| D9 | Novos `reason`s `-32005 not_configured` (revisado: salvaguarda, não mais caminho primário), `-32006 metrics_unreachable`, `-32007 metrics_parse_error`; `-32003 exec_unavailable` sem uso neste plugin (D8 revisado); lógica de detecção em dois níveis (core via `PluginState`, plugin via `widget/get`) | FR-008, FR-015, FR-016, FR-019 |
 
 Nenhum item acima permanece como `NEEDS CLARIFICATION`.

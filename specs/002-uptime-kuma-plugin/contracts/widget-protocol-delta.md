@@ -44,7 +44,11 @@ handler nunca faz I/O de rede, só lê um cache mantido por uma thread de pollin
   estado válido (Edge Case do spec, análogo a diretório sem repositórios git da feature 001).
 - Cada item é `MonitorStatusItem` (`data-model.md` §1.3) — **não** `WidgetItem` (que continua
   exclusivo de `kind: "status-grid"`, inalterado). Nenhum campo de ação: este widget nunca tem
-  `fetch_action`/qualquer `ActionDeclaration` associada (FR-004).
+  `fetch_action`/qualquer `ActionDeclaration` associada (FR-004). **Correção C3 da auditoria
+  pós-plan**: no binding Rust real (`crates/farol-protocol/src/messages.rs`), isso exige que
+  `WidgetGetResult.items` deixe de ser `Vec<WidgetItem>` fixo e passe a ser uma união discriminada
+  entre `WidgetItem` e `MonitorStatusItem` — ver `data-model.md` §1.4 para o desenho completo; não é
+  só uma reinterpretação de tipo em runtime sem mudança de código.
 - `status` é sempre um dos quatro valores do enum (FR-012). Um monitor cujo `monitor_status` bruto
   estivesse fora de `{0,1,2,3}` não aparece como um item com status desconhecido — invalida a
   resposta inteira daquela tentativa de leitura, tratada como `metrics_parse_error` (ver

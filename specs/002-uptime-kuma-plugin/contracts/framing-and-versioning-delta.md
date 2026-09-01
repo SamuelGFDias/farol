@@ -9,8 +9,8 @@
 Nenhuma mudança. Continua stdin/stdout do processo filho, NDJSON (uma linha de JSON compacto por
 mensagem, `\n`, UTF-8), sem `Content-Length`. `research.md` D2 desta feature reafirma
 explicitamente D2 da feature 001 sem redesenho — nenhum requisito desta feature (leitura periódica de
-rede, credencial via 1Password, novo widget) toca o canal NDJSON entre core e plugin; a chamada HTTP
-acontece inteiramente dentro do processo do plugin, nunca no canal de protocolo.
+rede, configuração/segredo geridos pelo core, novo widget) toca o canal NDJSON entre core e plugin; a
+chamada HTTP acontece inteiramente dentro do processo do plugin, nunca no canal de protocolo.
 
 ## Versionamento — bump para `"0.2"`
 

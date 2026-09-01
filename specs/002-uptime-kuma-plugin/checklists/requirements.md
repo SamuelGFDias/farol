@@ -40,11 +40,14 @@ completas na seção `## Clarifications` do spec.md, com fontes citadas (wiki of
 PR #101 de `louislam/uptime-kuma`):
 
 1. **FR-005** — decisão de rumo registrada: o protocolo MUST evoluir de capacidades como lista de
-   strings simples para uma lista de capacidades estruturadas (`kind` + campos por tipo). O desenho
-   exato do schema fica para `/speckit-plan` desta feature.
+   strings simples para uma lista de capacidades estruturadas (`kind` + campos por tipo); o plugin
+   também passa a declarar, num campo próprio do handshake, as variáveis de configuração
+   necessárias (host/endpoint e credencial), separado do manifesto de capacidades. O desenho exato
+   dos schemas fica para `/speckit-plan` desta feature.
 2. **FR-016 → FR-019** — confirmado que `/metrics` exige HTTP Basic Auth mesmo no caso feliz; a
-   credencial (API Key ou usuário/senha) MUST vir do keyring do sistema (Princípio IV), nunca de
-   arquivo de configuração em texto plano.
+   credencial (API Key ou usuário/senha) MUST vir de um armazenamento dedicado gerenciado
+   exclusivamente pelo core (Princípio IV), nunca de arquivo de configuração em texto plano
+   gerenciado pelo plugin, nem lido/escrito diretamente por ele.
 3. **FR-011/FR-012** — formato confirmado: `monitor_status` (gauge, 1=UP/0=DOWN/2=PENDING/
    3=MAINTENANCE) e `monitor_response_time` (gauge, ms), com labels sanitizados pelo próprio Uptime
    Kuma (nota registrada em Assumptions).
