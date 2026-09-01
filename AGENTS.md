@@ -43,20 +43,26 @@ usa caminhos relativos (`plugins/git-local/main.py`, `plugins/uptime-kuma/main.p
   `PluginConnection` e canal de worker.
 - `model.rs` — tipos de estado puro: `PluginState` (`Starting → Handshaking → Ready`, ou
   `Unavailable{reason}` — `FailedToStart`/`VersionIncompatible`/`Crashed`/`Unresponsive` são
-  terminais; `NotConfigured` é a **única exceção não-terminal**, com caminho de volta via tela de
-  setup ainda não implementada, T029-T035 da feature 002).
+  terminais; `NotConfigured` é a **única exceção não-terminal**, com caminho de volta via
+  `SetupForm` + `Message::SetupSubmitted`, que incrementa `PluginConnection::setup_attempt` e força
+  a reconexão do worker — feature 002, T029-T035, completo).
 - `plugin_worker.rs` — spawn do processo filho, I/O assíncrona via `iced::stream::channel` +
   `tokio::process`, handshake, ciclo `widget/get`/`action/invoke`. Uma `Subscription` por plugin via
-  `Subscription::run_with_id(plugin_name, stream)` (necessário desde que virou multi-plugin —
-  `Subscription::run` simples não aceita capturar `config`).
+  `Subscription::run_with_id("{plugin_name}-{setup_attempt}", stream)` — o `setup_attempt` no `id`
+  é o que faz o `iced` encerrar o processo filho antigo (`kill_on_drop`) e iniciar um novo quando a
+  tela de setup é submetida (`Subscription::run` simples não aceita capturar `config` nem esse
+  contador).
 - `update.rs` — transições `Message → Farol`. `subscription()` monta uma `Subscription` por plugin
-  + timer de refresh por conexão `Ready`.
-- `view.rs` — renderização condicionada a `PluginState`.
-- `config_store.rs`/`secrets_store.rs` — leitura de `~/.config/farol/plugins/<nome>/config.toml` e
-  `~/.config/farol/secrets.toml`, injetados no spawn do plugin como variável de ambiente
-  `FAROL_PLUGIN_<NOME>_<CAMPO>` (maiúsculo, `-`→`_`) — **não** system keyring (ver nota de decisão
-  abaixo). `save_plugin_config`/`save_plugin_secrets` existem mas ainda não têm chamador (tela de
-  setup, T029-T035, pendente).
+  (worker) + uma `Subscription` de timer de refresh por conexão `Ready` (`refresh_tick_stream`, ver
+  armadilha abaixo — **não** usa `iced::time::every` diretamente).
+- `view.rs` — renderização condicionada a `PluginState`, incluindo `view_setup_form` (tela de setup,
+  `TextInput`/botão ligados a `Message::SetupFieldChanged`/`SetupSubmitted`) quando
+  `Unavailable{NotConfigured}`.
+- `config_store.rs`/`secrets_store.rs` — leitura/escrita de
+  `~/.config/farol/plugins/<nome>/config.toml` e `~/.config/farol/secrets.toml`, injetados no spawn
+  do plugin como variável de ambiente `FAROL_PLUGIN_<NOME>_<CAMPO>` (maiúsculo, `-`→`_`) — **não**
+  system keyring (ver nota de decisão abaixo). Escrita (`save_plugin_config`/`save_plugin_secrets`)
+  chamada por `Farol::handle_setup_submitted` (update.rs) ao confirmar a tela de setup.
 
 ### Armadilha real já corrigida: `iced::Subscription::map` exige closure não-capturante
 
@@ -69,12 +75,34 @@ verdade rodando sob o runtime `iced`). Só um `cargo run` real revela o panic �
 seguir para as próximas fases.
 
 Padrão correto quando um valor por-plugin (como `plugin_name`) precisa ir dentro da `Message`
-produzida por uma `Subscription`: embuti-lo no **stream** via `futures::StreamExt::map` (sem essa
-restrição, por não passar pelo `Subscription::map` do `iced`) antes de envolver em `Subscription`,
-e só then usar `Subscription::map` com um closure que só usa seu próprio parâmetro (zero-sized).
-Ver `plugin_worker::subscription` (devolve `Subscription<(String, WorkerEvent)>`) e
+produzida por uma `Subscription`: embuti-lo no **stream** via `futures::StreamExt::map`/dentro de um
+`iced::stream::channel` (sem essa restrição, por não passar pelo `Subscription::map` do `iced`)
+antes de envolver em `Subscription`, e só então usar `Subscription::map` com um closure que só usa
+seu próprio parâmetro (zero-sized), ou nem usar `.map()` nenhum se o stream já produz o tipo final
+diretamente. Ver `plugin_worker::subscription` (devolve `Subscription<(String, WorkerEvent)>`) e
 `update.rs::subscription` (`.map(|(plugin_name, event)| Message::Worker { plugin_name, event })`)
 para o padrão de referência.
+
+**Esse bug apareceu duas vezes na mesma feature (002), em dois pontos diferentes de
+`Farol::subscription()`** — cada um só alcançável sob uma condição de runtime distinta que nenhum
+teste unitário nem execução manual anterior tinha exercitado:
+1. A `Subscription` do worker de cada plugin (`.map(move |event| Message::Worker { plugin_name:
+   worker_plugin_name.clone(), event })`) — pega em **qualquer** execução real, corrigido durante a
+   task T023.
+2. O timer de refresh periódico (`iced::time::every(interval).map(move |_instant| Message::
+   RefreshTick { plugin_name: tick_plugin_name.clone() })`), dentro de `if slot.connection.state ==
+   PluginState::Ready { ... }` — só é alcançado quando **algum plugin de fato chega a `Ready`**, o
+   que só passou a acontecer depois que a feature 002 implementou o handshake/widget real do
+   `uptime-kuma` (T024-T035); corrigido substituindo `iced::time::every(...).map(...)` por um stream
+   próprio (`refresh_tick_stream`, via `iced::stream::channel` + `tokio::time::interval`, primeiro
+   tick descartado para não duplicar o "fetch imediato ao ficar Ready" já existente).
+
+**Lição para revisão de código nesta base**: `grep -n "Subscription::map\|\.map(move \|"` em
+`update.rs`/`plugin_worker.rs` não basta como checklist estático — qualquer `Subscription` nova
+precisa ser exercitada de verdade (`cargo run`, não só `cargo test`) sob a condição de runtime que a
+constrói, não só revisada por leitura. Um teste unitário que chama `Farol::subscription()`
+diretamente só prova algo se o `Farol` de teste estiver no estado (`PluginState`, contadores, etc.)
+que ativa o branch em questão — `Farol::default()` não ativa nenhum dos dois casos acima.
 
 ## Protocolo (`crates/farol-protocol`, `protocol/`)
 
@@ -100,11 +128,9 @@ injetados como variável de ambiente no spawn — não há dependência de keyri
 
 ## Testes
 
-- `cargo test --workspace` — 61 testes (unit `farol-core` + unit/contract `farol-protocol`, este
+- `cargo test --workspace` — 71 testes (unit `farol-core` + unit/contract `farol-protocol`, este
   último validando (de)serialização contra os JSON Schemas via `jsonschema` crate).
-- `cargo clippy --workspace --all-targets` — deve ficar limpo (só warnings pré-existentes de
-  `dead_code` em funções ainda sem chamador, ex.: `save_plugin_config`/`save_plugin_secrets`,
-  aguardando a tela de setup).
+- `cargo clippy --workspace --all-targets` — deve ficar limpo, sem warning nenhum.
 - `tests/integration/` e `tests/contract/` (raiz do repo, fora de qualquer crate) são **só
   documentação** — `cargo test` nunca os descobre (Cargo só compila `tests/*.rs` dentro de cada
   crate). `tests/integration/README.md` referencia um `harness.sh` que nunca chegou a ser
