@@ -54,13 +54,11 @@ impl Farol {
 
         for slot in &self.plugins {
             let plugin_name = slot.spawn_config.plugin_name.clone();
-            let worker_plugin_name = plugin_name.clone();
-            let worker_subscription = plugin_worker::subscription(slot.spawn_config.clone()).map(
-                move |event| Message::Worker {
-                    plugin_name: worker_plugin_name.clone(),
-                    event,
-                },
-            );
+            // Closure não-capturante (só usa o próprio parâmetro) — requisito de
+            // `iced::Subscription::map` (ver docstring de `plugin_worker::subscription`
+            // sobre a correção que moveu o `plugin_name` para dentro do stream).
+            let worker_subscription = plugin_worker::subscription(slot.spawn_config.clone())
+                .map(|(plugin_name, event)| Message::Worker { plugin_name, event });
             subscriptions.push(worker_subscription);
 
             if slot.connection.state == PluginState::Ready {

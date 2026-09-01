@@ -257,7 +257,7 @@ plugin `uptime-kuma` pode começar antes de 2a estar completa.
 
 ### Validação da Fase Foundational (cenário de `quickstart.md` — consequência do bump de versão)
 
-- [ ] T023 Executar Cenário 8 de `quickstart.md` (renumerado nesta sessão — era Cenário 9) — rodar
+- [X] T023 Executar Cenário 8 de `quickstart.md` (renumerado nesta sessão — era Cenário 9) — rodar
   `farol-core` (recompilado com `farol-protocol` em `"0.2"`, T008–T012) com o plugin `git-local` da
   feature 001 **inalterado** configurado (junto de `uptime-kuma`, graças a T014/T015); confirmar
   `PluginState = Unavailable{VersionIncompatible}` para `git-local`, mensagem legível citando `"0.1"`
@@ -266,6 +266,37 @@ plugin `uptime-kuma` pode começar antes de 2a estar completa.
   deliberada de D1 antes de investir em US1/US2, e valida a correção C1 (T011) especificamente: sem
   ela, o resultado observado seria `Unresponsive`, não `VersionIncompatible` (depende de T003, T008,
   T009, T010, T011, T012, T014, T015)
+
+  **Execução real (`cargo run --bin farol` com os dois plugins spawnados, config/secrets já
+  cadastrados em `~/.config/farol/`)**: revelou um bug de execução não coberto por nenhum teste
+  unitário — `Farol::subscription` (`update.rs`) montava `plugin_worker::subscription(...).map(move
+  |event| Message::Worker { plugin_name: worker_plugin_name.clone(), event })`, um closure
+  **capturante**. `iced::Subscription::map` exige `size_of::<F>() == 0` (`debug_assert!` em
+  `iced_futures::subscription::Subscription::map`) e entra em panic assim que a primeira
+  `Subscription` é montada — o core morria no primeiro frame, antes de qualquer handshake, com todo
+  plugin configurado (não só com `git-local`/versão incompatível). Nenhum teste unitário existente
+  exercitava `Farol::subscription` (todos chamam `handle_worker_event`/`handle_handshake_outcome`
+  diretamente), então isso só apareceu num `cargo run` real — exatamente o motivo desta task existir
+  em vez de confiar só na suíte automatizada.
+
+  **Correção aplicada**: `plugin_worker::subscription` passou a devolver
+  `Subscription<(String, WorkerEvent)>` — o `plugin_name` é embutido no stream via
+  `futures::StreamExt::map` (sem a restrição de closure não-capturante, por não passar pelo
+  `Subscription::map` do `iced`) *antes* de virar `Subscription`, em vez de ser anexado depois por um
+  closure capturante. `update.rs::subscription` agora usa `.map(|(plugin_name, event)| Message::Worker
+  { plugin_name, event })` — não captura nada do ambiente, só usa o próprio parâmetro. Suíte completa
+  (61 testes) e `cargo clippy --workspace --all-targets` permanecem limpos após a correção.
+
+  **Resultado observado** (log de diagnóstico temporário em `handle_worker_event`, removido após a
+  validação): `git-local` → `HandshakeCompleted(VersionIncompatible { plugin_version: 0.1,
+  core_version: 0.2 })` — exatamente o resultado esperado, confirmando a correção C1 (T011).
+  `uptime-kuma` → `HandshakeCompleted(Unresponsive)`, não `Ready`: esperado e fora do escopo desta
+  task (T023 não depende de T020–T022/T024–T028) — `handle_handshake_hello` em
+  `plugins/uptime-kuma/main.py` ainda é um placeholder que devolve erro JSON-RPC (`TODO US1`), então
+  o probe de versão do core não encontra `result.protocol_version` e cai em `Unresponsive`; a
+  claúsula "uptime-kuma continua funcionando normalmente" da descrição acima só se torna válida
+  depois de T024. Em nenhum dos dois casos o core travou ou saiu do processo — critério central desta
+  task confirmado.
 
 ---
 

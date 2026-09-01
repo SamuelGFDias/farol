@@ -300,9 +300,30 @@ pub enum WorkerEvent {
 /// pelo `plugin_name` — é isso que permite ao `iced` manter uma conexão por
 /// plugin conhecido rodando simultaneamente, sem uma recriar/matar a outra
 /// entre re-renders.
-pub fn subscription(config: PluginSpawnConfig) -> Subscription<WorkerEvent> {
+///
+/// **Correção (T023, execução real com múltiplos plugins)**: devolve
+/// `Subscription<(String, WorkerEvent)>` em vez de `Subscription<WorkerEvent>`
+/// — o `plugin_name` já sai embutido em cada item do stream, produzido aqui
+/// via `futures::StreamExt::map` (sem a restrição abaixo, por não passar
+/// pelo `Subscription::map` do `iced`) em vez de deixar `update.rs` anexá-lo
+/// depois. Antes desta correção, `update.rs::subscription` fazia
+/// `plugin_worker::subscription(...).map(move |event| Message::Worker {
+/// plugin_name: worker_plugin_name.clone(), event })` — um closure que
+/// **captura** `worker_plugin_name`. `iced::Subscription::map` exige
+/// `size_of::<F>() == 0` (`debug_assert!` em `iced_futures::subscription`,
+/// mensagem "the closure ... is capturing") justamente para impedir esse
+/// padrão, porque a forma como o runtime identifica/dedupa subscriptions
+/// entre re-renders depende do tipo do closure, não do seu conteúdo
+/// capturado — um closure capturante quebraria essa identidade em silêncio.
+/// Isso nunca apareceu nos testes unitários (que exercitam `update.rs`
+/// diretamente, sem passar pelo runtime `iced`) — só um `cargo run` real
+/// (T023) o revela, como panic em `main` assim que a primeira `Subscription`
+/// é montada.
+pub fn subscription(config: PluginSpawnConfig) -> Subscription<(String, WorkerEvent)> {
     let id = config.plugin_name.clone();
-    Subscription::run_with_id(id, worker(config))
+    let plugin_name = config.plugin_name.clone();
+    let stream = worker(config).map(move |event| (plugin_name.clone(), event));
+    Subscription::run_with_id(id, stream)
 }
 
 /// Probe leve de `protocol_version`, usado pela correção C1 (T011) — ver
