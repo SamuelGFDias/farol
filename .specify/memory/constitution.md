@@ -1,24 +1,32 @@
 <!--
 Sync Impact Report
-- Version change: 0.2.0 → 0.3.0 (amendment)
-- Bump rationale: MINOR, não PATCH — nova regra de processo adicionada à seção "Governance"
-  (dívida técnica identificada e deliberadamente não corrigida MUST virar issue no tracker antes
-  de a mudança correspondente ser considerada concluída). É expansão material de uma seção
-  existente, não mero ajuste de redação (não é PATCH), e não remove nem redefine de forma
-  incompatível nenhum dos 7 Core Principles nem nenhuma das regras de Governance já existentes
-  (não é MAJOR) — conforme a própria política de versionamento da seção "Governance": "MINOR:
-  adição de novo princípio ou expansão material de uma seção existente".
-- Modified principles: nenhum (os 7 Core Principles não foram tocados)
-- Modified sections:
-  - Governance: novo bullet adicionado — "Dívida técnica rastreável" — exigindo registro em issue
-    no tracker do projeto (GitHub Issues) para toda dívida técnica identificada durante o
-    desenvolvimento e deliberadamente deixada sem correção imediata (ex.: workaround documentado
-    em comentário, decisão de adiar um ajuste, limitação conhecida de uma dependência);
-    comentário de código ou nota de sessão sozinhos deixam de ser suficientes.
-- Added sections: nenhuma (novo bullet dentro de "Governance", seção já existente)
+- Version change: 0.3.0 → 1.0.0 (amendment)
+- Bump rationale: MAJOR — redefinição incompatível de um princípio existente (Princípio IV,
+  bullet "Segredos"). A versão anterior exigia, em texto normativo, que credenciais de plugin
+  viessem do keyring do sistema operacional (Secret Service/libsecret, 1Password CLI ou
+  equivalente); essa exigência é removida e substituída por um mecanismo diferente — armazenamento
+  dedicado gerenciado pelo core (hoje um arquivo `secrets.toml` com permissão `0600`), nunca pelo
+  plugin. Não é adição de princípio novo nem expansão material de uma seção já existente (não é
+  MINOR), nem esclarecimento de redação sem mudança semântica (não é PATCH) — conforme a própria
+  política de versionamento da seção "Governance": "MAJOR: remoção ou redefinição incompatível de
+  um princípio existente". A garantia central do princípio (o plugin nunca gerencia, lê nem
+  escreve o armazenamento de credencial diretamente) é preservada; o mecanismo concreto que a
+  implementa muda.
+- Modified principles:
+  - IV. Permissões Explícitas por Manifesto — bullet "Segredos" reescrito: troca "elas vêm do
+    keyring do sistema" por "armazenamento dedicado gerenciado pelo core, nunca pelo plugin",
+    deixando explícito que o mecanismo concreto (hoje um arquivo com permissão restrita) pode
+    evoluir no futuro (inclusive para keyring do SO) sem mudar o contrato com o plugin, que sempre
+    recebe o valor já resolvido via variável de ambiente no spawn do processo filho.
+- Modified sections: Core Principles (Princípio IV apenas)
+- Added sections: nenhuma
 - Removed sections: nenhuma
-- Templates requiring follow-up: none checked in this run — this command only writes the
-  constitution; dependent templates (plan/spec/tasks) read it at runtime and were not touched.
+- Templates requiring follow-up:
+  - specs/002-uptime-kuma-plugin/spec.md — referencia o texto anterior do bullet "Segredos"
+    (keyring do sistema) em múltiplos pontos (linha ~62, FR-005, FR-019, glossário, notas de Out
+    of Scope/Assumptions); reconciliação tratada na mesma sessão desta emenda, fora deste comando.
+  - Nenhum outro template (plan/spec/tasks) verificado neste comando — este comando escreve
+    somente a constitution; templates dependentes leem-na em runtime.
 - Deferred / TODO placeholders: nenhum.
 -->
 
@@ -82,8 +90,14 @@ que está declarado. No mínimo, o manifesto cobre:
 
 - **Rede**: acesso de rede restrito a uma allowlist de hosts declarada; sem acesso de rede
   irrestrito por padrão.
-- **Segredos**: quando um plugin precisa de credenciais, elas vêm do keyring do sistema — nunca de
-  arquivo de configuração em texto plano gerenciado pelo plugin.
+- **Segredos**: quando um plugin precisa de credenciais, o valor vem de um armazenamento dedicado
+  gerenciado exclusivamente pelo core — nunca de arquivo de configuração em texto plano gerenciado
+  pelo próprio plugin, e o plugin NUNCA lê nem escreve esse armazenamento diretamente. Hoje esse
+  armazenamento é um arquivo dedicado com permissão de sistema de arquivos restrita (`0600`), fora
+  do `config.toml` do plugin; o mecanismo concreto PODE evoluir no futuro (por exemplo, para o
+  keyring do sistema operacional) sem mudar o contrato com o plugin, que sempre recebe o valor já
+  resolvido pelo core como variável de ambiente no spawn do processo filho — nunca por acesso
+  direto ao armazenamento.
 - **Execução de comando (exec)**: rodar processos externos é uma capacidade sinalizada à parte,
   não implícita em nenhuma outra permissão.
 
@@ -170,4 +184,4 @@ repositório, esta constitution prevalece até que seja formalmente emendada.
   lido; uma issue no tracker é o único registro que sobrevive à sessão que a criou e que pode
   entrar em backlog, milestone ou priorização futura.
 
-**Version**: 0.3.0 | **Ratified**: 2026-08-31 | **Last Amended**: 2026-08-31
+**Version**: 1.0.0 | **Ratified**: 2026-08-31 | **Last Amended**: 2026-09-01
