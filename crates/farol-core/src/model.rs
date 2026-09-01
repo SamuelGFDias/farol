@@ -158,6 +158,29 @@ pub struct PluginConnection {
     /// mantidos e só este campo é atualizado, para a UI poder sinalizar o
     /// problema sem perder os dados já exibidos.
     pub last_widget_error: Option<String>,
+    /// T029/T031 (`data-model.md` §3.1) — análogo de `items`/
+    /// `last_widget_error` acima, mas para o widget `monitor-status-grid`
+    /// do plugin `uptime-kuma`. Populado por `update::handle_widget_outcome`
+    /// a partir da variante `farol_protocol::messages::WidgetItems::Monitor`.
+    /// Continua com o `Default` vazio (`MonitorWidgetViewModel::default()`)
+    /// para qualquer conexão cujo widget declarado seja `status-grid`
+    /// (`git-local`) — nunca populado nesse caso.
+    pub monitor_widget: MonitorWidgetViewModel,
+    /// T030 (D8) — formulário de setup ativo para esta conexão, presente
+    /// se e somente se `state == Unavailable{reason: NotConfigured, ..}`
+    /// (`update::handle_handshake_outcome` constrói/limpa este campo junto
+    /// com a transição de `state`). `None` em qualquer outro estado.
+    pub setup_form: Option<SetupForm>,
+    /// T032 (D8) — contador de "tentativa de setup". Incrementado ao
+    /// processar a submissão do formulário de setup deste plugin; usado
+    /// para compor o `id` da `Subscription` do worker
+    /// (`plugin_worker::subscription`, ver `research.md` D8 "Decisão — tela
+    /// de setup"), forçando o `iced` a encerrar a conexão antiga (mata o
+    /// processo filho anterior, `kill_on_drop`) e iniciar uma nova sempre
+    /// que o valor muda — é assim que o novo processo passa a enxergar as
+    /// variáveis de ambiente recém-persistidas em `config.toml`/
+    /// `secrets.toml`.
+    pub setup_attempt: u32,
 }
 
 /// Repositório exibido na UI, somando `farol_protocol::WidgetItem` (repo +
@@ -190,6 +213,66 @@ pub struct RepositoryViewModel {
     pub last_error: Option<String>,
 }
 
+/// Estado de UI do widget `monitor-status-grid` do plugin `uptime-kuma`
+/// (`specs/002-uptime-kuma-plugin/data-model.md` §3.1, T029) — análogo, para
+/// este widget, de `items`/`last_widget_error` em `PluginConnection` para o
+/// widget `status-grid`.
+///
+/// **Tipo de `last_error`**: `Option<String>`, não um tipo `PluginError`
+/// dedicado. Não existe nenhum tipo genérico de erro assim em
+/// `farol_protocol` (só `farol_protocol::ErrorObject`, o envelope JSON-RPC
+/// completo) — o padrão já estabelecido nesta base para "erro pontual de um
+/// ciclo de `widget/get`, guardado no `Model`" é
+/// `PluginConnection::last_widget_error: Option<String>`, alimentado por
+/// `plugin_worker::WidgetOutcome::PluginError(String)`, que por sua vez já
+/// descarta `ErrorObject.data`/`reason` e guarda só `error.message` (texto
+/// legível). Este tipo segue o mesmo padrão, em vez de inventar um novo tipo
+/// de erro estruturado só para este widget.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct MonitorWidgetViewModel {
+    /// Último `items` recebido com sucesso de `widget/get` para o
+    /// `widget_id` `"uptime-kuma-monitors"`. Mantido inalterado quando uma
+    /// chamada de `widget/get` retorna erro pontual (`protocol/SPEC.md`
+    /// §5.2) — o core preserva o último estado bom para exibição, mesmo
+    /// mecanismo já usado para `RepositoryViewModel`/`items`.
+    pub monitors: Vec<farol_protocol::messages::MonitorStatusItem>,
+    /// Preenchido quando a última `widget/get` para este widget retornou
+    /// `error` (`not_configured`/`metrics_unreachable`/`metrics_parse_error`);
+    /// limpo no próximo sucesso. Distinto de `PluginState::Unavailable` — um
+    /// erro de leitura pontual não muda o estado geral de disponibilidade da
+    /// conexão (FR-017).
+    pub last_error: Option<String>,
+}
+
+/// Estado de UI do formulário de setup de um plugin
+/// (`specs/002-uptime-kuma-plugin/data-model.md` §3.2, T030, D8) —
+/// consumido pela `view` quando `PluginState::Unavailable{reason:
+/// NotConfigured, ..}`, em vez do widget normal daquele plugin.
+///
+/// **Desvio de local documentado**: `data-model.md` §3.2 descreve este tipo
+/// como vivendo "fora de `PluginConnection`", associado à conexão só por um
+/// identificador de plugin (`Farol`, em `main.rs`, agrega múltiplas
+/// conexões desde a correção C2). Esta subtarefa (T029-T035) foi escopada
+/// para tocar só `model.rs`/`update.rs`/`view.rs` (e a assinatura de
+/// `plugin_worker::subscription`) — `main.rs`, onde vivem `Farol`,
+/// `PluginSlot` e `Message`, está fora do escopo autorizado. Guardar
+/// `SetupForm` como campo de `PluginConnection`
+/// (`PluginConnection::setup_form`) é o jeito de associá-lo à conexão certa
+/// sem editar `main.rs`; a associação por `plugin_name` que a nota do
+/// `data-model.md` pede continua satisfeita (o campo `plugin_name` abaixo
+/// é redundante com a chave de `PluginSlot.spawn_config.plugin_name`, mas
+/// preservado porque `data-model.md` o especifica explicitamente) — só a
+/// localização física do campo dentro do `Model` muda.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SetupForm {
+    /// Identifica a qual conexão este formulário pertence.
+    pub plugin_name: String,
+    /// Um par (`item` declarado no handshake, valor digitado até agora) por
+    /// item de `required_config` — inicializado com string vazia por campo;
+    /// `secret: true` ⟹ a `view` MUST renderizar como campo mascarado.
+    pub fields: Vec<(farol_protocol::messages::RequiredConfigItem, String)>,
+}
+
 impl From<farol_protocol::WidgetItem> for RepositoryViewModel {
     /// Converte um item recém-chegado de `widget/get` sem nenhum estado de
     /// UI anterior (`fetch_in_flight: false`, `last_error: None`) — quem
@@ -217,6 +300,9 @@ impl Default for PluginConnection {
             widgets: Vec::new(),
             items: Vec::new(),
             last_widget_error: None,
+            monitor_widget: MonitorWidgetViewModel::default(),
+            setup_form: None,
+            setup_attempt: 0,
         }
     }
 }

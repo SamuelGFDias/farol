@@ -316,44 +316,55 @@ de monitores aparece corretamente na janela do Farol logo em seguida, sem qualqu
 
 ### Implementação para User Story 1
 
-- [ ] T024 [P] [US1] Handler de `handshake/hello` em `plugins/uptime-kuma/main.py` — responde
+- [X] T024 [P] [US1] Handler de `handshake/hello` em `plugins/uptime-kuma/main.py` — responde
   `plugin_name: "uptime-kuma"`, `protocol_version: "0.2"`, `capabilities.capabilities`
   (`{"kind":"network","host":...,"port":...}` só quando `base_url` resolvido — **sem** `exec`, **sem**
   `secret`, D8 revisado), `required_config` (sempre os dois itens — `base_url` não-secreto, `api_key`
   secreto, D8), `widgets: [{"id":"uptime-kuma-monitors","kind":"monitor-status-grid","title":"Uptime
   Kuma","suggested_refresh_interval_ms":30000}]`, `actions: []` sempre (FR-002–FR-006,
   `contracts/handshake-delta.md`) (depende de T020, T021, T022, T008, T009)
-- [ ] T025 [P] [US1] Cliente HTTP com Basic Auth em `plugins/uptime-kuma/metrics_client.py` —
+- [X] T025 [P] [US1] Cliente HTTP com Basic Auth em `plugins/uptime-kuma/metrics_client.py` —
   `urllib.request` contra `${base_url}/metrics`, header `Authorization: Basic base64(":"+api_key)`,
   timeout de 10s (D5/D7 de `research.md`, `contracts/uptime-kuma-plugin.md` § Autenticação HTTP)
   (depende de T021, T022)
-- [ ] T026 [P] [US1] Parser Prometheus mínimo em `plugins/uptime-kuma/metrics_parser.py` — reconhece
+- [X] T026 [P] [US1] Parser Prometheus mínimo em `plugins/uptime-kuma/metrics_parser.py` — reconhece
   só `monitor_status{monitor_name="...",...}` e `monitor_response_time{monitor_name="...",...}`,
   mapeia `monitor_status` para `status` (`1→up`, `0→down`, `2→pending`, `3→maintenance`, FR-012),
   `metrics_parse_error` quando nenhuma linha `monitor_status{...}` é encontrada ou algum valor está
   fora de `{0,1,2,3}` (falha da resposta inteira daquela tentativa, não item a item), linhas
   malformadas isoladas são puladas (D7 de `research.md`, `contracts/uptime-kuma-plugin.md` § Parsing)
-- [ ] T027 [US1] Thread de polling em background + cache (`last_success`/`last_error`,
+- [X] T027 [US1] Thread de polling em background + cache (`last_success`/`last_error`,
   `threading.Lock`) em `plugins/uptime-kuma/poller.py` — laço estritamente sequencial a cada
   `suggested_refresh_interval_ms` (30000 default), chama `metrics_client`/`metrics_parser`, nunca duas
   chamadas HTTP concorrentes por construção, estado inicial pré-populado com `last_error = "aguardando
   primeira leitura"` (D6 de `research.md`, resolve FR-010, `data-model.md` §2.3–§2.4) (depende de
   T025, T026)
-- [ ] T028 [US1] Handler de `widget/get` em `plugins/uptime-kuma/main.py` — lê exclusivamente o cache
+- [X] T028 [US1] Handler de `widget/get` em `plugins/uptime-kuma/main.py` — lê exclusivamente o cache
   do poller sob o mesmo lock (nunca I/O de rede síncrono); lógica: `not_configured` (`-32005`,
   **salvaguarda** — D8/D9 revisados, o caminho primário é T019 no core) se
   `base_url`/`api_key` ausentes das variáveis de ambiente; senão `last_error` (`-32006`/`-32007`) se
   `last_success is None` ou `last_error.at >= last_success.at`; senão sucesso com `items =
   last_success.monitors` (D6/D9 de `research.md`, `data-model.md` §2.3, `contracts/widget-protocol-delta.md`)
   (mesmo arquivo de T024 — sequencial, depende de T024, T027)
-- [ ] T029 [P] [US1] Adicionar `MonitorWidgetViewModel` (`monitors: MonitorStatusItem[]`,
+
+  **Execução (T024-T028, delegado a `executor-padrao` em modo arquiteto)**: implementados juntos, um
+  agente por área de arquivo (`plugins/uptime-kuma/`). Verificação independente do arquiteto:
+  `python3 -m py_compile` limpo, `ruff check .` limpo, e leitura direta dos 4 arquivos (`main.py`,
+  `metrics_client.py`, `metrics_parser.py`, `poller.py`) confirmando fidelidade ao contrato — nomes
+  de campo de `MonitorStatusItem` (`name`/`status`/`response_time_ms`) batendo com
+  `crates/farol-protocol/src/messages.rs`, cache com lock único, laço de polling estritamente
+  sequencial (nunca duas chamadas HTTP concorrentes), `not_configured` como salvaguarda em
+  `widget/get`. Smoke test manual do agente contra um servidor HTTP fake local confirmou handshake e
+  `widget/get` end-to-end. Validação com uma instância Uptime Kuma real de verdade fica para T036 em
+  diante (cenários de `quickstart.md`, dependem também da Fase 3 do lado core, T029-T035).
+- [X] T029 [P] [US1] Adicionar `MonitorWidgetViewModel` (`monitors: MonitorStatusItem[]`,
   `last_error: Option<PluginError>`) em `crates/farol-core/src/model.rs`, per `data-model.md` §3.1
   (depende de T010)
-- [ ] T030 [US1] **[D8]** Adicionar estado de UI do formulário de setup em
+- [X] T030 [US1] **[D8]** Adicionar estado de UI do formulário de setup em
   `crates/farol-core/src/model.rs` — `UnavailableReason::NotConfigured` (já introduzido pela mudança
   de tipo em T019, aqui consumido pela UI) e `SetupForm { plugin_name: String, fields:
   Vec<(RequiredConfigItem, String)> }`, per `data-model.md` §3.2 (depende de T019, T009)
-- [ ] T031 [US1] Popular `MonitorWidgetViewModel` a partir do resultado de `widget/get` do widget
+- [X] T031 [US1] Popular `MonitorWidgetViewModel` a partir do resultado de `widget/get` do widget
   `uptime-kuma-monitors` em `crates/farol-core/src/update.rs` — sucesso atualiza `monitors`; qualquer
   erro pontual (`not_configured`/`metrics_unreachable`/`metrics_parse_error`) atualiza só
   `last_error`, preservando `monitors` anterior, sem alterar `PluginState` (FR-017, mesmo mecanismo
@@ -361,27 +372,50 @@ de monitores aparece corretamente na janela do Farol logo em seguida, sem qualqu
   introduzida por T010 (correção C3) — generaliza `merge_widget_items` (`update.rs:291-306`, hoje
   tipado só para `Vec<farol_protocol::WidgetItem>`) para também aceitar `MonitorStatusItem` (depende
   de T029, T010)
-- [ ] T032 [US1] **[D8]** Mensagens novas em `crates/farol-core/src/update.rs` —
+- [X] T032 [US1] **[D8]** Mensagens novas em `crates/farol-core/src/update.rs` —
   `Message::SetupFieldChanged { plugin_name, field_name, value }` (atualiza `SetupForm.fields`) e
   `Message::SetupSubmitted { plugin_name }` (persiste cada valor em `config.toml`/`secrets.toml`
   conforme `secret` do item, T016/T017, e dispara a reconexão do worker daquele plugin — mecanismo de
   restart da `Subscription`, `research.md` D8, "Decisão — tela de setup") (depende de T030, T016,
   T017, T018)
-- [ ] T033 [US1] Renderizar o `kind: "monitor-status-grid"` em `crates/farol-core/src/view.rs` — lista
+- [X] T033 [US1] Renderizar o `kind: "monitor-status-grid"` em `crates/farol-core/src/view.rs` — lista
   de monitores (nome, status `up`/`down`/`pending`/`maintenance`, tempo de resposta quando aplicável)
   mapeando `MonitorStatusItem`; qualquer `last_error` presente (incluindo `not_configured`) MUST
   renderizar um estado explícito, visivelmente distinto de "0 monitores" (FR-008, FR-013, FR-014,
   SC-001, SC-005) (depende de T031, T010)
-- [ ] T034 [US1] Exibir a capacidade `network` (host/port) do manifesto deste plugin na UI, mesmo
+- [X] T034 [US1] Exibir a capacidade `network` (host/port) do manifesto deste plugin na UI, mesmo
   padrão apenas declarativo já usado para `exec` na feature 001 (FR-005/FR-006) em
   `crates/farol-core/src/view.rs` — **correção desta sessão**: nenhuma capacidade `secret` a exibir
   mais (removida, D1/D8 revisados); usa a correção H2 (T013) para iterar `Vec<Capability>` estruturado
   (mesmo arquivo de T033 — sequencial, depende de T008, T013, T033)
-- [ ] T035 [US1] **[D8]** View novo em `crates/farol-core/src/view.rs` para renderizar o formulário de
+- [X] T035 [US1] **[D8]** View novo em `crates/farol-core/src/view.rs` para renderizar o formulário de
   setup (`SetupForm`, T030) quando `PluginState = Unavailable{NotConfigured}` — um campo de texto por
   item de `required_config` (mascarado quando `secret: true`), rótulo = `description`, botão de
   confirmar (dispara `Message::SetupSubmitted`, T032); renderizado **em vez do** widget normal daquele
   plugin (`data-model.md` §3.2) (mesmo arquivo de T033/T034 — sequencial, depende de T030, T032, T034)
+
+  **Execução (T029-T035, delegado em modo arquiteto)**: duas rodadas. (1) `executor-complexo`
+  implementou T029/T031/T033/T034 completos e T030/T032/T035 parcialmente — bloqueou em T032/T035 ao
+  constatar que `Message` (enum) vive em `main.rs`, fora dos arquivos que a subtarefa autorizava;
+  reportou o bloqueio com o código exato pronto para religar, em vez de extrapolar o escopo
+  autorizado. (2) Pré-condição corrigida pelo arquiteto (autorização estreita de `main.rs`) e
+  re-delegado a um `executor-mecanico` só para colar as duas variantes de `Message` + dois braços de
+  `match` + dois `.on_input`/`.on_press` já documentados em comentário pelo agente anterior — sem
+  nenhuma decisão nova.
+
+  **Bug real encontrado na verificação do arquiteto (2ª ocorrência do mesmo bug de T023)**: rodar o
+  binário de verdade, agora com `uptime-kuma` de fato chegando a `PluginState::Ready` (nunca tinha
+  acontecido antes nesta sessão — T023 só viu `VersionIncompatible`/`Unresponsive`), revelou uma
+  segunda instância do panic de `Subscription::map` capturante — desta vez no timer de refresh
+  periódico (`iced::time::every(interval).map(move |_instant| ...)`, só construído quando
+  `slot.connection.state == PluginState::Ready`, branch nunca exercitado antes por nenhum teste nem
+  execução manual anterior). Corrigido no mesmo padrão já documentado (stream próprio via
+  `iced::stream::channel`, `plugin_name` capturado dentro do stream, não do `Subscription::map`) —
+  ver `crates/farol-core/src/update.rs`, função `refresh_tick_stream`. Teste de regressão novo
+  (`subscription_does_not_panic_with_a_ready_plugin`) cobre o branch que nenhum teste anterior
+  alcançava. Gate completo do workspace (71 testes, `cargo clippy --workspace --all-targets`) e
+  execução real de 12s sem panic, verificados pelo arquiteto de forma independente do relato dos
+  subagentes.
 
 ### Validação da User Story 1 (cenários de `quickstart.md`, renumerados nesta sessão)
 

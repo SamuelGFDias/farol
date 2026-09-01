@@ -13,11 +13,16 @@
 //! são silenciosamente ignoradas, mesmo padrão defensivo que o código já
 //! aplicava para "canal do worker ainda não existe" antes desta feature.
 
+use std::collections::BTreeMap;
 use std::time::Duration;
 
+use iced::futures::Stream;
+use iced::stream;
 use iced::Subscription;
 
-use crate::model::{self, PluginIdentity, PluginState, RepositoryViewModel, UnavailableReason};
+use crate::model::{
+    self, PluginIdentity, PluginState, RepositoryViewModel, SetupForm, UnavailableReason,
+};
 use crate::plugin_worker::{
     self, ActionOutcome, HandshakeOutcome, WidgetOutcome, WorkerEvent, WorkerInput,
 };
@@ -27,6 +32,18 @@ use crate::{Farol, Message, PluginSlot};
 /// handshake (`WidgetDeclaration.suggested_refresh_interval_ms` ausente) —
 /// FR-011.
 const DEFAULT_REFRESH_INTERVAL: Duration = Duration::from_millis(30_000);
+
+/// `kind` do widget do plugin `uptime-kuma` (`data-model.md` §1.5, D4 de
+/// `research.md`) — usado para distinguir, num `WorkerEvent::WidgetGetCompleted`
+/// de erro (`WidgetOutcome::PluginError`, que não carrega o `widget_id`/`kind`
+/// que originou a chamada), se o erro pertence ao widget `monitor-status-grid`
+/// (T031: deve atualizar só `PluginConnection::monitor_widget.last_error`) ou
+/// ao widget `status-grid` (deve atualizar `PluginConnection::last_widget_error`,
+/// mecanismo já existente da feature 001). Cada plugin conhecido declara
+/// exatamente um widget relevante (`slot.connection.widgets.first()`, mesma
+/// suposição já usada por `refresh_interval`/`handle_refresh_tick`), então
+/// checar `slot.connection.widgets` é suficiente para essa distinção.
+const MONITOR_WIDGET_KIND: &str = "monitor-status-grid";
 
 impl Farol {
     pub(crate) fn update(&mut self, message: Message) {
@@ -39,6 +56,12 @@ impl Farol {
                 target,
                 timeout_hint_ms,
             } => self.handle_fetch_requested(&plugin_name, action_id, target, timeout_hint_ms),
+            Message::SetupFieldChanged {
+                plugin_name,
+                field_name,
+                value,
+            } => self.handle_setup_field_changed(&plugin_name, &field_name, value),
+            Message::SetupSubmitted { plugin_name } => self.handle_setup_submitted(&plugin_name),
         }
     }
 
@@ -57,18 +80,24 @@ impl Farol {
             // Closure não-capturante (só usa o próprio parâmetro) — requisito de
             // `iced::Subscription::map` (ver docstring de `plugin_worker::subscription`
             // sobre a correção que moveu o `plugin_name` para dentro do stream).
-            let worker_subscription = plugin_worker::subscription(slot.spawn_config.clone())
-                .map(|(plugin_name, event)| Message::Worker { plugin_name, event });
+            // T032 (D8): `slot.connection.setup_attempt` é passado como argumento
+            // comum de função (não capturado por nenhum closure de
+            // `Subscription::map`) — é ele que muda o `id` da `Subscription`
+            // dentro de `plugin_worker::subscription` sempre que a tela de setup
+            // deste plugin é submetida, forçando a reconexão do worker.
+            let worker_subscription = plugin_worker::subscription(
+                slot.spawn_config.clone(),
+                slot.connection.setup_attempt,
+            )
+            .map(|(plugin_name, event)| Message::Worker { plugin_name, event });
             subscriptions.push(worker_subscription);
 
             if slot.connection.state == PluginState::Ready {
                 let interval = refresh_interval(&slot.connection);
-                let tick_plugin_name = plugin_name.clone();
-                let refresh_subscription = iced::time::every(interval).map(move |_instant| {
-                    Message::RefreshTick {
-                        plugin_name: tick_plugin_name.clone(),
-                    }
-                });
+                let refresh_subscription = Subscription::run_with_id(
+                    format!("{plugin_name}-refresh"),
+                    refresh_tick_stream(plugin_name.clone(), interval),
+                );
                 subscriptions.push(refresh_subscription);
             }
         }
@@ -154,6 +183,10 @@ impl Farol {
                 all_required_config_present,
             } => {
                 if let Some(slot) = self.slot_mut(plugin_name) {
+                    // T030: capturado antes de `result.plugin_name`/`.widgets`
+                    // serem movidos abaixo — precisamos dele para (re)construir
+                    // `SetupForm` quando `all_required_config_present` é falso.
+                    let required_config = result.required_config.clone();
                     slot.connection.identity = Some(PluginIdentity {
                         plugin_name: result.plugin_name,
                         protocol_version: result.protocol_version,
@@ -161,12 +194,28 @@ impl Farol {
                     });
                     slot.connection.widgets = result.widgets;
                     slot.connection.state = if all_required_config_present {
+                        // T030: sai de `NotConfigured` (se estava) — não há
+                        // mais formulário a exibir.
+                        slot.connection.setup_form = None;
                         PluginState::Ready
                     } else {
                         // T019: única variante não-terminal de `Unavailable`
                         // nesta feature — ver `UnavailableReason::NotConfigured`
-                        // (model.rs) para o caminho de volta (tela de setup,
-                        // T029-T035, fora do escopo desta subtarefa).
+                        // (model.rs) para o caminho de volta (tela de setup).
+                        //
+                        // T030: (re)constrói o formulário de setup a partir do
+                        // `required_config` deste handshake — um campo por
+                        // item, inicializado vazio (`data-model.md` §3.2:
+                        // "reexibido" após uma tentativa que ainda falhou não
+                        // reaproveita valores digitados antes, já que o
+                        // processo do plugin foi reiniciado do zero, T032).
+                        slot.connection.setup_form = Some(SetupForm {
+                            plugin_name: plugin_name.to_string(),
+                            fields: required_config
+                                .into_iter()
+                                .map(|item| (item, String::new()))
+                                .collect(),
+                        });
                         PluginState::Unavailable {
                             reason: UnavailableReason::NotConfigured,
                             detail:
@@ -220,24 +269,54 @@ impl Farol {
         }
     }
 
-    /// T026: aplica o resultado de um ciclo de `widget/get`. Um erro pontual
-    /// do plugin não muda `state` (`widget-protocol.md`); só timeout
+    /// T026/T031: aplica o resultado de um ciclo de `widget/get`. Um erro
+    /// pontual do plugin não muda `state` (`widget-protocol.md`); só timeout
     /// (`Unresponsive`) transiciona a conexão para `Unavailable`.
+    ///
+    /// **T031**: generalizado para também tratar a variante `Monitor` de
+    /// `farol_protocol::messages::WidgetItems` (widget `monitor-status-grid`
+    /// do plugin `uptime-kuma`) — sucesso popula
+    /// `PluginConnection::monitor_widget.monitors`; um erro pontual
+    /// (`not_configured`/`metrics_unreachable`/`metrics_parse_error`) popula
+    /// só `monitor_widget.last_error`, preservando `monitors` anterior, sem
+    /// alterar `PluginState` — mesmo mecanismo genérico de `protocol/SPEC.md`
+    /// §5.2 já usado para `git-local`/`last_widget_error`. `WidgetOutcome::
+    /// PluginError` não carrega o `widget_id`/`kind` que originou a chamada
+    /// (só a mensagem de erro), então `is_monitor_widget` (abaixo) decide,
+    /// pelo `kind` já congelado em `slot.connection.widgets` no handshake,
+    /// qual dos dois campos de erro atualizar — cada plugin conhecido só
+    /// declara um widget relevante (mesma suposição de
+    /// `refresh_interval`/`handle_refresh_tick`).
     fn handle_widget_outcome(&mut self, plugin_name: &str, outcome: WidgetOutcome) {
         let Some(slot) = self.slot_mut(plugin_name) else {
             return;
         };
+        let is_monitor_widget = slot
+            .connection
+            .widgets
+            .iter()
+            .any(|widget| widget.kind == MONITOR_WIDGET_KIND);
         match outcome {
-            WidgetOutcome::Success(result) => {
-                // T035: preserva `fetch_in_flight`/`last_error` dos
-                // repositórios já conhecidos — um refresh periódico não
-                // deve apagar o feedback de uma ação em andamento/com erro
-                // que ainda não terminou (ver `merge_widget_items`).
-                slot.connection.items = merge_widget_items(&slot.connection.items, result.items);
-                slot.connection.last_widget_error = None;
-            }
+            WidgetOutcome::Success(result) => match merge_widget_items(&slot.connection.items, result.items) {
+                MergedWidgetItems::Git(items) => {
+                    // T035: preserva `fetch_in_flight`/`last_error` dos
+                    // repositórios já conhecidos — um refresh periódico não
+                    // deve apagar o feedback de uma ação em andamento/com
+                    // erro que ainda não terminou (ver `merge_widget_items`).
+                    slot.connection.items = items;
+                    slot.connection.last_widget_error = None;
+                }
+                MergedWidgetItems::Monitor(monitors) => {
+                    slot.connection.monitor_widget.monitors = monitors;
+                    slot.connection.monitor_widget.last_error = None;
+                }
+            },
             WidgetOutcome::PluginError(message) => {
-                slot.connection.last_widget_error = Some(message);
+                if is_monitor_widget {
+                    slot.connection.monitor_widget.last_error = Some(message);
+                } else {
+                    slot.connection.last_widget_error = Some(message);
+                }
             }
             WidgetOutcome::Unresponsive => {
                 slot.connection.state = PluginState::Unavailable {
@@ -372,6 +451,84 @@ impl Farol {
             widget_id: widget.id.clone(),
         });
     }
+
+    /// T032 (D8): atualiza o valor digitado de um campo do formulário de
+    /// setup deste plugin (`Message::SetupFieldChanged`, disparada por
+    /// keystroke na `view` — T035). Só tem efeito quando a conexão tem um
+    /// `SetupForm` ativo (`state == Unavailable{NotConfigured}`, ver
+    /// `handle_handshake_outcome`); nas demais situações não há formulário
+    /// para editar e a chamada é silenciosamente ignorada — mesmo padrão
+    /// defensivo do resto deste arquivo (T015).
+    fn handle_setup_field_changed(&mut self, plugin_name: &str, field_name: &str, value: String) {
+        let Some(slot) = self.slot_mut(plugin_name) else {
+            return;
+        };
+        let Some(form) = slot.connection.setup_form.as_mut() else {
+            return;
+        };
+        if let Some((_, current_value)) =
+            form.fields.iter_mut().find(|(item, _)| item.name == field_name)
+        {
+            *current_value = value;
+        }
+    }
+
+    /// T032 (D8): submissão do formulário de setup deste plugin
+    /// (`Message::SetupSubmitted`, disparada pelo botão de confirmar —
+    /// T035). Persiste cada valor digitado em `config.toml`
+    /// (`config_store::save_plugin_config`, itens com `secret: false`) ou
+    /// `secrets.toml` (`secrets_store::save_plugin_secrets`, itens com
+    /// `secret: true`), conforme a flag `secret` de cada
+    /// `RequiredConfigItem` — mesma fonte que
+    /// `plugin_worker::resolve_required_config_value` usa para decidir qual
+    /// dos dois arquivos ler. Erros de I/O ao persistir (disco cheio,
+    /// permissão) são silenciosamente ignorados aqui — mesma tolerância já
+    /// adotada em todo o resto do mecanismo de config/secrets (D8: um
+    /// arquivo de storage do core ausente/malformado nunca impede o
+    /// processo do plugin de subir; se a persistência falhar aqui, o
+    /// próximo handshake simplesmente encontra o mesmo item ainda ausente e
+    /// a conexão volta a `NotConfigured`, com o formulário reexibido).
+    ///
+    /// Dispara a reconexão do worker deste plugin incrementando
+    /// `PluginConnection::setup_attempt` (consumido por
+    /// `Farol::subscription` acima / `plugin_worker::subscription` — ver a
+    /// documentação daquela função para o mecanismo completo de
+    /// reconexão). Reseta `state` para `Starting`, `identity` para `None` e
+    /// `worker_sender` para `None` imediatamente — mesmo shape do estado
+    /// inicial de qualquer conexão (`PluginConnection::default`) — para que
+    /// a UI não continue mostrando o formulário/erro antigo enquanto a
+    /// reconexão está em andamento; o handshake do novo processo (fluxo já
+    /// existente, T021/T022) decide depois `Ready` vs.
+    /// `Unavailable{NotConfigured}` de novo.
+    fn handle_setup_submitted(&mut self, plugin_name: &str) {
+        let Some(slot) = self.slot_mut(plugin_name) else {
+            return;
+        };
+        let Some(form) = slot.connection.setup_form.take() else {
+            return;
+        };
+
+        let mut config_values: BTreeMap<String, String> = BTreeMap::new();
+        let mut secret_values: BTreeMap<String, String> = BTreeMap::new();
+        for (item, value) in form.fields {
+            if item.secret {
+                secret_values.insert(item.name, value);
+            } else {
+                config_values.insert(item.name, value);
+            }
+        }
+        if !config_values.is_empty() {
+            let _ = crate::config_store::save_plugin_config(plugin_name, &config_values);
+        }
+        if !secret_values.is_empty() {
+            let _ = crate::secrets_store::save_plugin_secrets(plugin_name, &secret_values);
+        }
+
+        slot.connection.setup_attempt += 1;
+        slot.connection.state = PluginState::Starting;
+        slot.connection.identity = None;
+        slot.worker_sender = None;
+    }
 }
 
 /// Intervalo efetivo do refresh periódico de uma conexão (data-model.md
@@ -389,6 +546,42 @@ fn refresh_interval(connection: &model::PluginConnection) -> Duration {
         .unwrap_or(DEFAULT_REFRESH_INTERVAL)
 }
 
+/// Stream do timer de refresh periódico de um plugin `Ready` (T026).
+///
+/// Segunda ocorrência real da armadilha documentada no `AGENTS.md`
+/// ("`iced::Subscription::map` exige closure não-capturante"):
+/// `iced::time::every(interval).map(move |_| ...)` captura `plugin_name`
+/// dentro do closure passado a `Subscription::map`, que exige
+/// `size_of::<F>() == 0` e panica em runtime. Mesma correção de
+/// `plugin_worker::worker`: embutir `plugin_name` dentro do *stream* via
+/// `iced::stream::channel` (permitido — a restrição de zero-size é só de
+/// `Subscription::map`), e dar identidade estável via
+/// `Subscription::run_with_id` no chamador (`Farol::subscription`).
+fn refresh_tick_stream(plugin_name: String, interval: Duration) -> impl Stream<Item = Message> {
+    stream::channel(1, move |mut output| async move {
+        use iced::futures::SinkExt;
+
+        let mut ticker = tokio::time::interval(interval);
+        // `tokio::time::interval` dispara o primeiro tick imediatamente na
+        // criação — descartado aqui de propósito, sem emitir `RefreshTick`:
+        // o primeiro `widget/get` de uma conexão que acabou de ficar `Ready`
+        // já é disparado por outro mecanismo ("Correção pós-onda: fetch
+        // imediato ao ficar Ready", ver `Farol::handle_handshake_outcome`) —
+        // se este stream também emitisse no instante zero, haveria um fetch
+        // duplicado logo na entrada em `Ready`.
+        ticker.tick().await;
+        loop {
+            ticker.tick().await;
+            let message = Message::RefreshTick {
+                plugin_name: plugin_name.clone(),
+            };
+            if output.send(message).await.is_err() {
+                break;
+            }
+        }
+    })
+}
+
 /// T036: marca o erro da última invocação de fetch para `repo_id`, limpando
 /// o indicador de "em andamento" — os dados de `repo` já conhecidos
 /// (ahead/behind, dirty) são preservados (FR-018: nenhum dado é perdido por
@@ -401,50 +594,64 @@ fn set_fetch_error(items: &mut [RepositoryViewModel], repo_id: &str, message: St
     }
 }
 
-/// T035: funde uma nova lista de itens (recém-chegada de `widget/get`) com
-/// os `RepositoryViewModel` já conhecidos, preservando
-/// `fetch_in_flight`/`last_error` de qualquer repositório presente em ambas
-/// as listas (casado por `repo.id`). Repositórios que somem da nova lista
-/// são descartados; repositórios novos entram sem estado de UI prévio
-/// (`RepositoryViewModel::from`).
+/// Resultado de [`merge_widget_items`] — união discriminada pelo mesmo
+/// `kind` que já discrimina `farol_protocol::messages::WidgetItems` (T031).
+/// Existe porque as duas variantes de entrada produzem tipos de saída
+/// diferentes: `Git` funde com o `RepositoryViewModel` já conhecido
+/// (preservando `fetch_in_flight`/`last_error` de UI local); `Monitor` não
+/// tem nenhum estado de UI local por item a preservar (`MonitorStatusItem`
+/// não carrega `ActionDeclaration`/estado de fetch, `data-model.md` §1.3 —
+/// diferente de `WidgetItem`/`RepositoryViewModel`), então é só a lista
+/// recém-chegada, repassada como está.
+enum MergedWidgetItems {
+    Git(Vec<RepositoryViewModel>),
+    Monitor(Vec<farol_protocol::messages::MonitorStatusItem>),
+}
+
+/// T031 (generaliza T035 original — feature 001): funde uma nova lista de
+/// itens (recém-chegada de `widget/get`) com o estado de UI já conhecido.
+/// Para a variante `Git`, preserva `fetch_in_flight`/`last_error` de
+/// qualquer repositório presente em ambas as listas (casado por `repo.id`)
+/// — repositórios que somem da nova lista são descartados; repositórios
+/// novos entram sem estado de UI prévio (`RepositoryViewModel::from`). Para
+/// a variante `Monitor`, não há nada a preservar por item (ver
+/// [`MergedWidgetItems`]) — o chamador (`handle_widget_outcome`) é quem
+/// decide, a partir da variante devolvida aqui, qual campo de
+/// `PluginConnection` atualizar (`items` vs. `monitor_widget.monitors`).
 ///
-/// **Correção H2 (T013)**: `new_items` deixou de ser `Vec<farol_protocol::WidgetItem>`
-/// fixo e passou a ser `farol_protocol::WidgetItems` — a união discriminada
-/// introduzida pela correção C3 (T010) para `WidgetGetResult.items` aceitar
-/// tanto `WidgetItem` (git, widget `status-grid`) quanto `MonitorStatusItem`
-/// (uptime-kuma, widget `monitor-status-grid`). Esta função continua
-/// tratando só a variante `Git` com a mesma lógica de sempre — a variante
-/// `Monitor` ainda não tem um view-model próprio no `Model`
-/// (`MonitorWidgetViewModel`, `data-model.md` §3.1 da feature 002, chega em
-/// T029-T031, fora do escopo desta subtarefa): por ora, uma resposta
-/// `Monitor` simplesmente preserva `previous` sem alteração — um no-op
-/// seguro que nem perde os dados git já exibidos, nem inventa um campo de
-/// estado que ainda não existe no `Model`. `handle_widget_outcome` já
-/// garante, por construção (T015, um slot por plugin), que só o slot de
-/// `uptime-kuma` deveria receber uma resposta `Monitor`, e só o de
-/// `git-local` uma resposta `Git` — mas esta função não assume isso, apenas
-/// trata cada variante da forma correspondente, sem panic em nenhum caso.
+/// **Correção H2 (T013) + T031 (feature 002)**: `new_items` deixou de ser
+/// `Vec<farol_protocol::WidgetItem>` fixo e passou a ser
+/// `farol_protocol::WidgetItems` — a união discriminada introduzida pela
+/// correção C3 (T010) para `WidgetGetResult.items` aceitar tanto
+/// `WidgetItem` (git, widget `status-grid`) quanto `MonitorStatusItem`
+/// (uptime-kuma, widget `monitor-status-grid`). Antes de T031, a variante
+/// `Monitor` era um no-op que só preservava `previous`, porque
+/// `MonitorWidgetViewModel` (`data-model.md` §3.1) ainda não existia no
+/// `Model` — T029 introduziu o tipo, T031 conecta esta função a ele.
 fn merge_widget_items(
     previous: &[RepositoryViewModel],
     // `farol_protocol::WidgetItems` (novo em v0.2) ainda não está na lista de re-exports de
     // `crates/farol-protocol/src/lib.rs` — mesmo gap documentado em `plugin_worker.rs`/`view.rs`,
     // fora do escopo desta subtarefa corrigir; referenciado via `farol_protocol::messages::WidgetItems`.
     new_items: farol_protocol::messages::WidgetItems,
-) -> Vec<RepositoryViewModel> {
+) -> MergedWidgetItems {
     match new_items {
-        farol_protocol::messages::WidgetItems::Git(items) => items
-            .into_iter()
-            .map(|item| {
-                let mut view_model = RepositoryViewModel::from(item);
-                if let Some(prev) = previous.iter().find(|prev| prev.repo.id == view_model.repo.id)
-                {
-                    view_model.fetch_in_flight = prev.fetch_in_flight;
-                    view_model.last_error = prev.last_error.clone();
-                }
-                view_model
-            })
-            .collect(),
-        farol_protocol::messages::WidgetItems::Monitor(_) => previous.to_vec(),
+        farol_protocol::messages::WidgetItems::Git(items) => MergedWidgetItems::Git(
+            items
+                .into_iter()
+                .map(|item| {
+                    let mut view_model = RepositoryViewModel::from(item);
+                    if let Some(prev) =
+                        previous.iter().find(|prev| prev.repo.id == view_model.repo.id)
+                    {
+                        view_model.fetch_in_flight = prev.fetch_in_flight;
+                        view_model.last_error = prev.last_error.clone();
+                    }
+                    view_model
+                })
+                .collect(),
+        ),
+        farol_protocol::messages::WidgetItems::Monitor(items) => MergedWidgetItems::Monitor(items),
     }
 }
 
@@ -925,5 +1132,325 @@ mod tests {
             }
             other => panic!("esperava Ok(RequestWidget{{repo-status}}), obteve {other:?}"),
         }
+    }
+
+    // --- T029-T032 (feature 002): MonitorWidgetViewModel, SetupForm,
+    // reconexão via `setup_attempt` ---
+
+    /// Análogo de `farol_with_widget`, mas para a entrada `uptime-kuma`
+    /// (T015: um slot fixo por plugin conhecido) já `Ready`, com um widget
+    /// `monitor-status-grid` declarado (T031/T033).
+    fn farol_with_monitor_widget() -> Farol {
+        let mut app = Farol::default();
+        let slot = app.slot_mut("uptime-kuma").expect("uptime-kuma é um plugin conhecido");
+        slot.connection.state = PluginState::Ready;
+        slot.connection.identity = Some(PluginIdentity {
+            plugin_name: "uptime-kuma".to_string(),
+            protocol_version: ProtocolVersion::new(0, 2),
+            capabilities: CapabilityManifest {
+                capabilities: vec![Capability::Known(KnownCapability::Network {
+                    host: "monitor.example.com".to_string(),
+                    port: Some(443),
+                })],
+            },
+        });
+        slot.connection.widgets = vec![farol_protocol::WidgetDeclaration {
+            id: "uptime-kuma-monitors".to_string(),
+            kind: MONITOR_WIDGET_KIND.to_string(),
+            title: "Uptime Kuma".to_string(),
+            suggested_refresh_interval_ms: Some(30_000),
+        }];
+        app
+    }
+
+    fn sample_required_config() -> Vec<farol_protocol::messages::RequiredConfigItem> {
+        vec![
+            farol_protocol::messages::RequiredConfigItem {
+                name: "base_url".to_string(),
+                secret: false,
+                description: "URL base da instância Uptime Kuma".to_string(),
+            },
+            farol_protocol::messages::RequiredConfigItem {
+                name: "api_key".to_string(),
+                secret: true,
+                description: "API Key de métricas do Uptime Kuma".to_string(),
+            },
+        ]
+    }
+
+    fn sample_monitor_item(name: &str) -> farol_protocol::messages::MonitorStatusItem {
+        farol_protocol::messages::MonitorStatusItem {
+            name: name.to_string(),
+            status: farol_protocol::messages::MonitorStatus::Up,
+            response_time_ms: Some(42),
+        }
+    }
+
+    /// T030: `HandshakeOutcome::Ready` com `required_config` incompleto MUST
+    /// (re)construir `PluginConnection::setup_form` — um par
+    /// `(RequiredConfigItem, "")` por item declarado, na mesma ordem, valor
+    /// inicial sempre vazio (`data-model.md` §3.2).
+    #[test]
+    fn handshake_not_configured_outcome_builds_setup_form() {
+        let mut app = Farol::default();
+        let required_config = sample_required_config();
+
+        app.handle_handshake_outcome(
+            "uptime-kuma",
+            HandshakeOutcome::Ready {
+                result: farol_protocol::HandshakeHelloResult {
+                    protocol_version: ProtocolVersion::new(0, 2),
+                    plugin_name: "uptime-kuma".to_string(),
+                    capabilities: CapabilityManifest { capabilities: vec![] },
+                    required_config: required_config.clone(),
+                    widgets: vec![farol_protocol::WidgetDeclaration {
+                        id: "uptime-kuma-monitors".to_string(),
+                        kind: MONITOR_WIDGET_KIND.to_string(),
+                        title: "Uptime Kuma".to_string(),
+                        suggested_refresh_interval_ms: None,
+                    }],
+                    actions: vec![],
+                },
+                all_required_config_present: false,
+            },
+        );
+
+        let slot = app.slot_mut("uptime-kuma").unwrap();
+        match &slot.connection.state {
+            PluginState::Unavailable { reason, .. } => {
+                assert_eq!(*reason, UnavailableReason::NotConfigured);
+            }
+            other => panic!("esperava Unavailable{{NotConfigured}}, obteve {other:?}"),
+        }
+        let form = slot
+            .connection
+            .setup_form
+            .as_ref()
+            .expect("setup_form deveria estar preenchido em NotConfigured");
+        assert_eq!(form.plugin_name, "uptime-kuma");
+        assert_eq!(
+            form.fields,
+            required_config
+                .into_iter()
+                .map(|item| (item, String::new()))
+                .collect::<Vec<_>>()
+        );
+    }
+
+    /// T030: uma vez que `all_required_config_present` é `true`, qualquer
+    /// `setup_form` anterior (de uma tentativa `NotConfigured` prévia) MUST
+    /// ser limpo.
+    #[test]
+    fn handshake_ready_outcome_clears_previous_setup_form() {
+        let mut app = Farol::default();
+        {
+            let slot = app.slot_mut("git-local").unwrap();
+            slot.connection.setup_form = Some(model::SetupForm {
+                plugin_name: "git-local".to_string(),
+                fields: vec![],
+            });
+        }
+
+        app.handle_handshake_outcome(
+            "git-local",
+            HandshakeOutcome::Ready {
+                result: sample_handshake_result(vec![]),
+                all_required_config_present: true,
+            },
+        );
+
+        let slot = app.slot_mut("git-local").unwrap();
+        assert!(slot.connection.setup_form.is_none());
+    }
+
+    /// T031: sucesso de `widget/get` para o widget `monitor-status-grid`
+    /// popula `monitor_widget.monitors` (não `items`, usado só pelo widget
+    /// `status-grid`/`git-local`) e limpa `monitor_widget.last_error`.
+    #[test]
+    fn widget_success_outcome_with_monitor_items_populates_monitor_widget() {
+        let mut app = farol_with_monitor_widget();
+        {
+            let slot = app.slot_mut("uptime-kuma").unwrap();
+            slot.connection.monitor_widget.last_error = Some("erro antigo".to_string());
+        }
+
+        let result = farol_protocol::WidgetGetResult {
+            widget_id: "uptime-kuma-monitors".to_string(),
+            items: WidgetItems::Monitor(vec![sample_monitor_item("api")]),
+        };
+        app.handle_widget_outcome("uptime-kuma", WidgetOutcome::Success(result));
+
+        let slot = app.slot_mut("uptime-kuma").unwrap();
+        assert_eq!(slot.connection.monitor_widget.monitors.len(), 1);
+        assert_eq!(slot.connection.monitor_widget.monitors[0].name, "api");
+        assert!(slot.connection.monitor_widget.last_error.is_none());
+        // `items` (git) MUST NOT ser tocado por uma resposta `Monitor`.
+        assert!(slot.connection.items.is_empty());
+    }
+
+    /// T031: um erro pontual de `widget/get` para o widget
+    /// `monitor-status-grid` (`not_configured`/`metrics_unreachable`/
+    /// `metrics_parse_error`) MUST atualizar só `monitor_widget.last_error`,
+    /// preservando `monitor_widget.monitors` anterior e sem alterar
+    /// `PluginState` (FR-017) — nunca `last_widget_error` (campo do
+    /// mecanismo genérico de `git-local`).
+    #[test]
+    fn widget_plugin_error_for_monitor_widget_updates_only_monitor_last_error() {
+        let mut app = farol_with_monitor_widget();
+        {
+            let slot = app.slot_mut("uptime-kuma").unwrap();
+            slot.connection.monitor_widget.monitors = vec![sample_monitor_item("api")];
+        }
+
+        app.handle_widget_outcome(
+            "uptime-kuma",
+            WidgetOutcome::PluginError("not_configured".to_string()),
+        );
+
+        let slot = app.slot_mut("uptime-kuma").unwrap();
+        assert_eq!(slot.connection.state, PluginState::Ready);
+        assert_eq!(slot.connection.monitor_widget.monitors.len(), 1);
+        assert_eq!(
+            slot.connection.monitor_widget.last_error.as_deref(),
+            Some("not_configured")
+        );
+        assert!(slot.connection.last_widget_error.is_none());
+    }
+
+    /// T032: `Message::SetupFieldChanged` (aqui exercitada diretamente via
+    /// `handle_setup_field_changed`, ver nota de escopo no próprio método)
+    /// atualiza só o campo cujo `item.name` corresponde a `field_name`,
+    /// preservando os demais.
+    #[test]
+    fn handle_setup_field_changed_updates_only_matching_field() {
+        let mut app = Farol::default();
+        {
+            let slot = app.slot_mut("uptime-kuma").unwrap();
+            slot.connection.setup_form = Some(model::SetupForm {
+                plugin_name: "uptime-kuma".to_string(),
+                fields: sample_required_config()
+                    .into_iter()
+                    .map(|item| (item, String::new()))
+                    .collect(),
+            });
+        }
+
+        app.handle_setup_field_changed("uptime-kuma", "api_key", "s3cr3t".to_string());
+
+        let slot = app.slot_mut("uptime-kuma").unwrap();
+        let form = slot.connection.setup_form.as_ref().unwrap();
+        let base_url_value = &form.fields.iter().find(|(item, _)| item.name == "base_url").unwrap().1;
+        let api_key_value = &form.fields.iter().find(|(item, _)| item.name == "api_key").unwrap().1;
+        assert_eq!(base_url_value, "");
+        assert_eq!(api_key_value, "s3cr3t");
+    }
+
+    /// T032: sem `setup_form` ativo (conexão não está em `NotConfigured`),
+    /// a mensagem é silenciosamente ignorada — mesmo padrão defensivo do
+    /// resto do arquivo.
+    #[test]
+    fn handle_setup_field_changed_without_active_form_is_noop() {
+        let mut app = Farol::default();
+        app.handle_setup_field_changed("uptime-kuma", "api_key", "s3cr3t".to_string());
+        let slot = app.slot_mut("uptime-kuma").unwrap();
+        assert!(slot.connection.setup_form.is_none());
+    }
+
+    /// T032 (D8): submissão do formulário incrementa `setup_attempt`
+    /// (mecanismo de reconexão via `id` da `Subscription`, ver
+    /// `plugin_worker::subscription`), reseta a conexão para `Starting` e
+    /// limpa `setup_form`/`identity`/`worker_sender`.
+    ///
+    /// Usa um `SetupForm` sem `fields` (lista vazia) deliberadamente — evita
+    /// exercitar `config_store::save_plugin_config`/
+    /// `secrets_store::save_plugin_secrets` de verdade neste teste, que
+    /// dependem de `$XDG_CONFIG_HOME`/`$HOME` do ambiente real (mesma
+    /// cautela já documentada nos testes de `config_store`/`secrets_store`:
+    /// "não deve ser mutado por um teste unitário"). O caminho de
+    /// persistência em si (`item.secret` decidindo `config.toml` vs.
+    /// `secrets.toml`) é uma chamada direta e trivial às duas funções já
+    /// testadas isoladamente em `config_store`/`secrets_store` — testado
+    /// aqui é o comportamento de reconexão, que é a parte nova desta
+    /// subtarefa.
+    #[test]
+    fn handle_setup_submitted_resets_connection_and_increments_setup_attempt() {
+        let mut app = Farol::default();
+        {
+            let slot = app.slot_mut("uptime-kuma").unwrap();
+            slot.connection.setup_form = Some(model::SetupForm {
+                plugin_name: "uptime-kuma".to_string(),
+                fields: vec![],
+            });
+            slot.connection.setup_attempt = 0;
+            slot.connection.state = PluginState::Unavailable {
+                reason: UnavailableReason::NotConfigured,
+                detail: "configuração obrigatória ausente".to_string(),
+            };
+            slot.connection.identity = Some(PluginIdentity {
+                plugin_name: "uptime-kuma".to_string(),
+                protocol_version: ProtocolVersion::new(0, 2),
+                capabilities: CapabilityManifest { capabilities: vec![] },
+            });
+            let (sender, _receiver) = iced::futures::channel::mpsc::channel::<WorkerInput>(16);
+            slot.worker_sender = Some(sender);
+        }
+
+        app.handle_setup_submitted("uptime-kuma");
+
+        let slot = app.slot_mut("uptime-kuma").unwrap();
+        assert_eq!(slot.connection.setup_attempt, 1);
+        assert_eq!(slot.connection.state, PluginState::Starting);
+        assert!(slot.connection.setup_form.is_none());
+        assert!(slot.connection.identity.is_none());
+        assert!(slot.worker_sender.is_none());
+    }
+
+    /// T032: sem `setup_form` ativo, a submissão é ignorada — `setup_attempt`
+    /// não deve incrementar (não há nada a reconectar).
+    #[test]
+    fn handle_setup_submitted_without_active_form_is_noop() {
+        let mut app = Farol::default();
+        app.handle_setup_submitted("uptime-kuma");
+        let slot = app.slot_mut("uptime-kuma").unwrap();
+        assert_eq!(slot.connection.setup_attempt, 0);
+    }
+
+    /// T032: `Farol::subscription` compõe o `id` da `Subscription` do
+    /// worker usando `setup_attempt` — verificado indiretamente aqui
+    /// checando que `subscription()` não entra em pânico para os dois
+    /// valores possíveis mais comuns (0 = nunca configurado, 1 = após uma
+    /// submissão) e que o app continua com um slot por plugin conhecido
+    /// (a identidade exata de `Subscription` não é inspecionável fora do
+    /// runtime `iced`, mesma limitação documentada no módulo
+    /// `plugin_worker` — só um `cargo run` real exercitaria isso de
+    /// verdade, T023).
+    #[test]
+    fn subscription_does_not_panic_after_setup_attempt_increments() {
+        let mut app = Farol::default();
+        let _ = app.subscription();
+        app.slot_mut("uptime-kuma").unwrap().connection.setup_attempt = 1;
+        let _ = app.subscription();
+        assert_eq!(app.plugins.len(), 2);
+    }
+
+    /// Regressão: `Farol::subscription` panicava em runtime
+    /// (`iced::Subscription::map` — "the closure ... is capturing") assim
+    /// que pelo menos um plugin chegava a `PluginState::Ready`, porque o
+    /// timer de refresh usava `iced::time::every(interval).map(move |_| ...)`
+    /// capturando `plugin_name`. Esse branch (`if slot.connection.state ==
+    /// PluginState::Ready`) só é alcançado com uma conexão `Ready` — nenhum
+    /// outro teste deste módulo exercitava esse caminho (`Farol::default()`
+    /// deixa todos os slots em `Starting`), o que é exatamente o gap de
+    /// cobertura que deixou o bug passar despercebido até uma execução real
+    /// do binário (ver AGENTS.md, "Armadilha real já corrigida:
+    /// `iced::Subscription::map` exige closure não-capturante"). Não há como
+    /// inspecionar a `Subscription` retornada fora do runtime `iced` — o
+    /// teste serve apenas para garantir que a montagem não panica, mesma
+    /// limitação documentada em `subscription_does_not_panic_after_setup_attempt_increments`.
+    #[test]
+    fn subscription_does_not_panic_with_a_ready_plugin() {
+        let app = farol_with_widget(Some(5_000));
+        assert_eq!(connection_state(&app, "git-local"), PluginState::Ready);
+        let _ = app.subscription();
     }
 }

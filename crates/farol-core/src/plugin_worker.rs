@@ -319,8 +319,26 @@ pub enum WorkerEvent {
 /// diretamente, sem passar pelo runtime `iced`) — só um `cargo run` real
 /// (T023) o revela, como panic em `main` assim que a primeira `Subscription`
 /// é montada.
-pub fn subscription(config: PluginSpawnConfig) -> Subscription<(String, WorkerEvent)> {
-    let id = config.plugin_name.clone();
+///
+/// **T032 (D8) — parâmetro `setup_attempt`**: novo, além de `config`. Compõe
+/// o `id` da `Subscription` junto com `plugin_name`
+/// (`format!("{plugin_name}-{setup_attempt}")`) — é o mecanismo de
+/// reconexão descrito em `research.md` D8 ("Decisão — tela de setup"): o
+/// chamador (`update.rs::subscription`) passa
+/// `slot.connection.setup_attempt` (`model::PluginConnection`, incrementado
+/// ao processar a submissão da tela de setup daquele plugin); quando esse
+/// valor muda, o `id` muda, e o `iced` — que identifica/deduplica
+/// `Subscription`s pelo `id` entre re-renders — encerra a `Subscription`
+/// antiga (matando o processo filho anterior, `kill_on_drop` já configurado
+/// em `worker`) e inicia esta função de novo do zero, com `worker(config)`
+/// spawnando um processo novo que já enxerga as variáveis de ambiente
+/// recém-persistidas em `config.toml`/`secrets.toml`. `setup_attempt` é
+/// passado por valor (um `u32`, `Copy`) como argumento desta função — nunca
+/// capturado por um closure de `Subscription::map` (ver a nota acima sobre
+/// a armadilha de `size_of::<F>() == 0`); o único `.map()` aqui embaixo
+/// continua zero-sized, usando só seu próprio parâmetro `event`.
+pub fn subscription(config: PluginSpawnConfig, setup_attempt: u32) -> Subscription<(String, WorkerEvent)> {
+    let id = format!("{}-{setup_attempt}", config.plugin_name);
     let plugin_name = config.plugin_name.clone();
     let stream = worker(config).map(move |event| (plugin_name.clone(), event));
     Subscription::run_with_id(id, stream)

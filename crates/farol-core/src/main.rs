@@ -106,4 +106,16 @@ pub(crate) enum Message {
         target: farol_protocol::ActionTarget,
         timeout_hint_ms: Option<u64>,
     },
+    /// T032 (D8): usuário editou um campo do formulário de setup de um
+    /// plugin (`view_setup_form`, view.rs) — atualiza `SetupForm.fields`
+    /// daquela conexão (`Farol::handle_setup_field_changed`, update.rs).
+    SetupFieldChanged {
+        plugin_name: String,
+        field_name: String,
+        value: String,
+    },
+    /// T032 (D8): usuário confirmou o formulário de setup de um plugin —
+    /// persiste os valores em `config.toml`/`secrets.toml` e dispara a
+    /// reconexão do worker (`Farol::handle_setup_submitted`, update.rs).
+    SetupSubmitted { plugin_name: String },
 }
