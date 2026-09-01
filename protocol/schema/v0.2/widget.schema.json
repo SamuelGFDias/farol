@@ -1,0 +1,207 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://farol.dev/protocol/v0.2/widget.schema.json",
+  "title": "Farol Protocol v0.2 — widget/get",
+  "description": "Request and response envelopes for the widget/get method. See protocol/SPEC.md §5.2 for the normative polling model. The core calls this once per refresh cycle, per widget declared in the handshake result (protocol/SPEC.md §6.3) - the plugin MUST NOT push widget data unsolicited. This file also defines GitRepository, RemoteStatus and the new MonitorStatusItem; it references ActionDeclaration from handshake.schema.json. Evolved from v0.1 (protocol/schema/v0.1/widget.schema.json, retained as-is): adds MonitorStatusItem, the item shape reported for widgets declared with kind \"monitor-status-grid\" (research.md D4, data-model.md §1.3-§1.5). WidgetItem / kind \"status-grid\" are unchanged, copied as-is from v0.1.",
+  "oneOf": [
+    { "$ref": "#/$defs/WidgetGetRequest" },
+    { "$ref": "#/$defs/WidgetGetResponseSuccess" },
+    { "$ref": "#/$defs/WidgetGetResponseError" }
+  ],
+  "$defs": {
+    "RequestId": {
+      "title": "RequestId",
+      "oneOf": [
+        { "type": "integer" },
+        { "type": "string", "minLength": 1 }
+      ]
+    },
+
+    "WidgetGetParams": {
+      "title": "WidgetGetParams",
+      "type": "object",
+      "properties": {
+        "widget_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Must match the `id` of a WidgetDeclaration returned by this plugin's handshake/hello result."
+        }
+      },
+      "required": ["widget_id"],
+      "additionalProperties": false
+    },
+
+    "WidgetGetRequest": {
+      "title": "WidgetGetRequest",
+      "type": "object",
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "id": { "$ref": "#/$defs/RequestId" },
+        "method": { "const": "widget/get" },
+        "params": { "$ref": "#/$defs/WidgetGetParams" }
+      },
+      "required": ["jsonrpc", "id", "method", "params"],
+      "additionalProperties": false
+    },
+
+    "RemoteStatus": {
+      "title": "RemoteStatus",
+      "description": "Discriminated union on `kind`. \"no_remote\" is a distinct serialization from a tracked repo reporting 0 ahead / 0 behind - the core never has to infer \"no remote\" from an absent field.",
+      "oneOf": [
+        {
+          "title": "RemoteStatusTracked",
+          "type": "object",
+          "properties": {
+            "kind": { "const": "tracked" },
+            "ahead": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Commits ahead of the configured upstream."
+            },
+            "behind": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Commits behind the configured upstream."
+            }
+          },
+          "required": ["kind", "ahead", "behind"],
+          "additionalProperties": false
+        },
+        {
+          "title": "RemoteStatusNoRemote",
+          "type": "object",
+          "properties": {
+            "kind": { "const": "no_remote" }
+          },
+          "required": ["kind"],
+          "additionalProperties": false
+        }
+      ]
+    },
+
+    "GitRepository": {
+      "title": "GitRepository",
+      "type": "object",
+      "description": "One repository item reported by widget/get.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable identifier - the repository's absolute filesystem path."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Short display name (e.g. the directory name)."
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Absolute filesystem path."
+        },
+        "dirty": {
+          "type": "boolean",
+          "description": "true = working tree has pending changes; false = clean."
+        },
+        "remote_status": {
+          "$ref": "#/$defs/RemoteStatus",
+          "description": "MUST be kind=\"no_remote\" if and only if this repository's corresponding fetch ActionDeclaration has enabled=false (protocol/SPEC.md invariant carried over from data-model.md)."
+        }
+      },
+      "required": ["id", "name", "path", "dirty", "remote_status"],
+      "additionalProperties": false
+    },
+
+    "WidgetItem": {
+      "title": "WidgetItem",
+      "type": "object",
+      "description": "Pairs one GitRepository with its corresponding fetch ActionDeclaration. This is how the actions[] list, possibly empty at handshake time, reaches the core in practice (protocol/SPEC.md §6.3.1). Exclusive to widgets declared with kind=\"status-grid\" - unchanged from v0.1.",
+      "properties": {
+        "repo": { "$ref": "#/$defs/GitRepository" },
+        "fetch_action": {
+          "$ref": "https://farol.dev/protocol/v0.2/handshake.schema.json#/$defs/ActionDeclaration",
+          "description": "MUST have enabled=false whenever repo.remote_status.kind == \"no_remote\"."
+        }
+      },
+      "required": ["repo", "fetch_action"],
+      "additionalProperties": false
+    },
+
+    "MonitorStatusItem": {
+      "title": "MonitorStatusItem",
+      "type": "object",
+      "description": "One monitor item reported by widget/get for a widget declared with kind=\"monitor-status-grid\" (new in v0.2, research.md D4, data-model.md §1.3). Reported by the uptime-kuma reference plugin. Unlike WidgetItem, it never carries an ActionDeclaration - this plugin never declares actions (FR-004); the field simply does not exist on this type, it is not an empty optional field.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Monitor display name, from the `monitor_name` label of the /metrics response - possibly sanitized relative to the original Uptime Kuma display name."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["up", "down", "pending", "maintenance"],
+          "description": "Mapped from the raw `monitor_status` value: 1->up, 0->down, 2->pending, 3->maintenance. A raw value outside {0,1,2,3} does not produce this item - it invalidates the entire widget/get response for that read (reason \"metrics_parse_error\", see error-model-delta.md)."
+        },
+        "response_time_ms": {
+          "type": ["integer", "null"],
+          "description": "From `monitor_response_time` (ms), when applicable to the monitor's status; explicit null when not applicable - an explicit union, never inferred from an absent field (same spirit as RemoteStatus.NoRemote in v0.1). Required and nullable, never absent."
+        }
+      },
+      "required": ["name", "status", "response_time_ms"],
+      "additionalProperties": false
+    },
+
+    "WidgetGetResult": {
+      "title": "WidgetGetResult",
+      "type": "object",
+      "description": "`items` is a discriminated union: WidgetItem[] for a widget_id declared with kind=\"status-grid\", or MonitorStatusItem[] for a widget_id declared with kind=\"monitor-status-grid\" (data-model.md §1.4). The expected element shape is determined by the kind the widget_id declared at handshake time - no ambiguity at runtime.",
+      "properties": {
+        "widget_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Echoes the widget_id from the request."
+        },
+        "items": {
+          "anyOf": [
+            {
+              "type": "array",
+              "items": { "$ref": "#/$defs/WidgetItem" }
+            },
+            {
+              "type": "array",
+              "items": { "$ref": "#/$defs/MonitorStatusItem" }
+            }
+          ],
+          "description": "MAY be empty for any kind - a configured scan root with no repositories under it, or an Uptime Kuma instance with no monitors registered, are both valid states, not errors."
+        }
+      },
+      "required": ["widget_id", "items"],
+      "additionalProperties": false
+    },
+
+    "WidgetGetResponseSuccess": {
+      "title": "WidgetGetResponseSuccess",
+      "type": "object",
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "id": { "$ref": "#/$defs/RequestId" },
+        "result": { "$ref": "#/$defs/WidgetGetResult" }
+      },
+      "required": ["jsonrpc", "id", "result"],
+      "additionalProperties": false
+    },
+
+    "WidgetGetResponseError": {
+      "title": "WidgetGetResponseError",
+      "type": "object",
+      "description": "E.g. code -32004 / reason \"scan_root_unreadable\" (git-local), or code -32005/-32006/-32007 / reason \"not_configured\"/\"metrics_unreachable\"/\"metrics_parse_error\" (uptime-kuma). A pointwise error here does not, by itself, mark the plugin connection unavailable - the core keeps the last known items (protocol/SPEC.md §5.2).",
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "id": { "$ref": "#/$defs/RequestId" },
+        "error": { "$ref": "https://farol.dev/protocol/v0.2/error.schema.json" }
+      },
+      "required": ["jsonrpc", "id", "error"],
+      "additionalProperties": false
+    }
+  }
+}

@@ -1,35 +1,54 @@
 //! Worker assíncrono do plugin — spawn do processo filho, handshake, ciclo
 //! de `widget/get` e `action/invoke`, e detecção de crash (T020, T021, T026,
-//! T033, T038).
+//! T033, T038; T011-T019 da feature 002 — protocolo `"0.2"`, múltiplos
+//! plugins, injeção de `required_config`).
 //!
 //! Modelado como uma `iced::Subscription` de longa duração (padrão D5 de
-//! `research.md`): a função [`worker`] é passada para `Subscription::run`,
-//! que a executa como um `Stream` dentro do próprio executor tokio que o
-//! `iced` já embarca (feature `tokio` do crate `iced`, D4) — nunca um
-//! segundo runtime tokio criado manualmente.
+//! `research.md`): a função [`worker`] é passada para
+//! `Subscription::run_with_id` (T015 — antes `Subscription::run`, um
+//! ponteiro de função sem captura; passou a ser `run_with_id` porque agora
+//! cada conexão precisa de uma configuração própria — comando, args, nome do
+//! plugin — capturada por `worker`, não mais constantes globais), que a
+//! executa como um `Stream` dentro do próprio executor tokio que o `iced` já
+//! embarca (feature `tokio` do crate `iced`, D4) — nunca um segundo runtime
+//! tokio criado manualmente.
 //!
 //! Fluxo:
-//! 1. `spawn()` do processo filho do plugin. Falha ⟹ [`WorkerEvent::SpawnFailed`],
-//!    stream encerra (equivalente a `Unavailable{FailedToStart}` depois de
+//! 1. `spawn()` do processo filho do plugin, com cada valor já persistido em
+//!    `config.toml`/`secrets.toml` para este plugin injetado como variável
+//!    de ambiente (T018 — ver [`stored_plugin_config_values`] para a decisão
+//!    de design completa). Falha ⟹ [`WorkerEvent::SpawnFailed`], stream
+//!    encerra (equivalente a `Unavailable{FailedToStart}` depois de
 //!    interpretado por `update.rs`) — T043, já coberto desde T020.
 //! 2. Sucesso ⟹ o worker registra um canal de entrada (`mpsc`) e emite
 //!    [`WorkerEvent::Ready`] com o `Sender` — é assim que `update.rs` passa a
 //!    poder mandar pedidos para este worker (D5, passo 2).
 //! 3. Envia `handshake/hello` e aguarda a resposta com timeout de
-//!    [`RPC_TIMEOUT_CONTROL`] (T021). Resultado ⟹ [`WorkerEvent::HandshakeCompleted`].
-//!    Se o handshake não resultar em `Ready`, o worker encerra o stream —
-//!    `Unavailable` é terminal nesta feature (data-model.md §3), não há
-//!    motivo para o worker continuar vivo.
-//! 4. Se `Ready`: loop recebendo [`WorkerInput`] pelo canal de entrada —
-//!    `RequestWidget` (T026, disparado por um tick de refresh) responde com
-//!    [`WorkerEvent::WidgetGetCompleted`] e um timeout aqui encerra o worker
-//!    (D6 — timeout no ciclo de refresh marca a conexão inteira como
-//!    indisponível); `InvokeAction` (T033, disparado por um clique de
-//!    "Fetch") responde com [`WorkerEvent::ActionInvokeCompleted`] usando o
-//!    orçamento próprio [`RPC_TIMEOUT_ACTION`] (ou `timeout_hint_ms` da
-//!    ação) — ao contrário de `widget/get`, um erro ou timeout aqui NUNCA
-//!    encerra o worker nem marca `Unresponsive` (D6, `contracts/action-protocol.md`),
-//!    só é reportado como falha pontual daquela ação.
+//!    [`RPC_TIMEOUT_CONTROL`] (T021). A resposta é primeiro decodificada
+//!    como `serde_json::Value` (não mais diretamente como
+//!    `HandshakeHelloResponse` tipado) e interpretada por
+//!    [`interpret_handshake_response`] — correção C1/T011, ver a
+//!    documentação daquela função para o porquê. Resultado ⟹
+//!    [`WorkerEvent::HandshakeCompleted`]. Se o handshake não resultar em
+//!    `Ready` (versão compatível — `Ready` aqui não significa
+//!    `PluginState::Ready`, ver nota em [`HandshakeOutcome::Ready`]), o
+//!    worker encerra o stream — `Unavailable` é terminal para
+//!    `VersionIncompatible`/`Unresponsive`/`FailedToStart`/`Crashed` nesta
+//!    feature (data-model.md §3), não há motivo para o worker continuar
+//!    vivo. Quando o handshake É compatível mas `required_config` está
+//!    incompleto (T019), o worker segue vivo normalmente (`update.rs` é
+//!    quem decide não chamar `widget/get` nesse caso).
+//! 4. Se a versão for compatível: loop recebendo [`WorkerInput`] pelo canal
+//!    de entrada — `RequestWidget` (T026, disparado por um tick de refresh)
+//!    responde com [`WorkerEvent::WidgetGetCompleted`] e um timeout aqui
+//!    encerra o worker (D6 — timeout no ciclo de refresh marca a conexão
+//!    inteira como indisponível); `InvokeAction` (T033, disparado por um
+//!    clique de "Fetch") responde com [`WorkerEvent::ActionInvokeCompleted`]
+//!    usando o orçamento próprio [`RPC_TIMEOUT_ACTION`] (ou
+//!    `timeout_hint_ms` da ação) — ao contrário de `widget/get`, um erro ou
+//!    timeout aqui NUNCA encerra o worker nem marca `Unresponsive` (D6,
+//!    `contracts/action-protocol.md`), só é reportado como falha pontual
+//!    daquela ação.
 //!    Concorrentemente a cada uma dessas operações (incluindo o período
 //!    ocioso entre pedidos), o worker também observa `child.wait()` via
 //!    `tokio::select!` (T038, D6) — se o processo morrer a qualquer momento,
@@ -50,10 +69,15 @@ use std::time::Duration;
 
 use farol_protocol::{
     decode, encode, ActionInvokeParams, ActionInvokeRequest, ActionInvokeResponse,
-    ActionInvokeResult, ActionTarget, HandshakeHello, HandshakeHelloRequest,
-    HandshakeHelloResponse, HandshakeHelloResult, ProtocolVersion, RequestId, WidgetGetParams,
-    WidgetGetRequest, WidgetGetResponse, WidgetGetResult,
+    ActionInvokeResult, ActionTarget, HandshakeHello, HandshakeHelloRequest, HandshakeHelloResponse,
+    HandshakeHelloResult, ProtocolVersion, RequestId, WidgetGetParams, WidgetGetRequest,
+    WidgetGetResponse, WidgetGetResult,
 };
+// `RequiredConfigItem` (novo em v0.2) ainda não está na lista de re-exports de
+// `crates/farol-protocol/src/lib.rs` (`pub use messages::{...}`) — gap na entrega prévia dessa
+// dependência, fora do escopo desta subtarefa tocar (`farol-protocol` é off-limits). Referenciado
+// aqui via `farol_protocol::messages::RequiredConfigItem` (o módulo e o tipo são ambos `pub`).
+use farol_protocol::messages::RequiredConfigItem;
 use iced::futures::channel::mpsc;
 use iced::futures::sink::SinkExt;
 use iced::futures::{Stream, StreamExt};
@@ -62,22 +86,51 @@ use iced::Subscription;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 
-/// Comando usado para iniciar o processo do plugin. Não há plugin Python
-/// real ainda nesta subtarefa (T023-T025 são de outra pessoa/onda) — até que
-/// `plugins/git-local/main.py` exista, `spawn()` deste comando MAY falhar
-/// (binário `python3` ausente do `PATH`) ou, se `python3` existir mas o
-/// script não, o processo filho MAY morrer imediatamente ao tentar abrir o
-/// arquivo. Qualquer um desses casos é o comportamento correto e esperado
-/// desta subtarefa: `Unavailable{FailedToStart}` (spawn falhou) ou
-/// `Unavailable{Unresponsive}` (processo subiu mas nunca respondeu ao
-/// handshake dentro do timeout) — nunca um pânico do core.
-pub const PLUGIN_COMMAND: &str = "python3";
+/// Configuração de spawn de um plugin conhecido (T014, correção C2 parte 1).
+///
+/// Substitui as constantes `PLUGIN_COMMAND`/`PLUGIN_ARGS` de antes desta
+/// feature — comando e argumentos deixam de ser globais e passam a variar
+/// por conexão, já que agora existe mais de um plugin conhecido
+/// simultaneamente (T015, correção C2 parte 2). `plugin_name` acumula um
+/// segundo papel além de identificar a conexão: é a chave usada para
+/// localizar `config.toml`/`secrets.toml` (`crate::config_store`/
+/// `crate::secrets_store`) e para derivar o prefixo de variável de ambiente
+/// injetada no spawn (`FAROL_PLUGIN_<PLUGIN_NAME>_<NAME>`, T018, D8) —
+/// MUST bater exatamente com o `plugin_name` que o próprio processo declara
+/// de volta no `handshake/hello` (nenhuma correlação de protocolo garante
+/// isso automaticamente; é uma convenção do registro fixo em
+/// [`known_plugins`], responsabilidade de quem adicionar uma entrada nova
+/// manter os dois lados consistentes).
+#[derive(Debug, Clone)]
+pub struct PluginSpawnConfig {
+    pub plugin_name: String,
+    pub command: String,
+    pub args: Vec<String>,
+}
 
-/// Argumentos do comando acima. Caminho relativo à raiz do repositório —
-/// só resolve corretamente se `farol-core` for executado com o `cwd` na
-/// raiz do repo (ex.: via `cargo run` a partir da raiz). Ponto de
-/// fragilidade conhecido, aceitável nesta fase de walking skeleton.
-pub const PLUGIN_ARGS: &[&str] = &["plugins/git-local/main.py"];
+/// Registro fixo dos plugins conhecidos por este core (T014/T015, correção
+/// C2) — `git-local` (feature 001) e `uptime-kuma` (feature 002). Um
+/// registry federado/descoberto em runtime é Fora de Escopo do `spec.md`
+/// desta feature; esta lista é deliberadamente hardcoded.
+///
+/// Caminho de `args` relativo à raiz do repositório — só resolve
+/// corretamente se `farol-core` for executado com o `cwd` na raiz do repo
+/// (ex.: via `cargo run` a partir da raiz). Ponto de fragilidade conhecido,
+/// herdado da feature 001, aceitável nesta fase.
+pub fn known_plugins() -> Vec<PluginSpawnConfig> {
+    vec![
+        PluginSpawnConfig {
+            plugin_name: "git-local".to_string(),
+            command: "python3".to_string(),
+            args: vec!["plugins/git-local/main.py".to_string()],
+        },
+        PluginSpawnConfig {
+            plugin_name: "uptime-kuma".to_string(),
+            command: "python3".to_string(),
+            args: vec!["plugins/uptime-kuma/main.py".to_string()],
+        },
+    ]
+}
 
 /// Orçamento de timeout para chamadas de controle (`handshake/hello` e
 /// `widget/get`) — `protocol/SPEC.md` §7.1 / `RPC_TIMEOUT_CONTROL`. Não se
@@ -95,9 +148,11 @@ pub const RPC_TIMEOUT_ACTION: Duration = Duration::from_secs(120);
 
 /// Versão de protocolo que este core fala (`protocol/SPEC.md` §6.4). Usada
 /// tanto para preencher `HandshakeHello.protocol_version` quanto como o lado
-/// "core" da checagem de compatibilidade (D7,
-/// `ProtocolVersion::is_compatible_with`).
-const CORE_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 0, minor: 1 };
+/// "core" da checagem de compatibilidade (D7, `ProtocolVersion::is_compatible_with`).
+///
+/// **Correção H1 (T012)**: `"0.1"` → `"0.2"` — bump normativo de
+/// `research.md` D1 desta feature (`specs/002-uptime-kuma-plugin/research.md`).
+const CORE_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 0, minor: 2 };
 
 /// Identificação informativa deste core no handshake (`HandshakeHello.core_name`).
 const CORE_NAME: &str = "farol-core";
@@ -126,12 +181,28 @@ pub enum WorkerInput {
 }
 
 /// Resultado da tentativa de handshake — o que [`WorkerEvent::HandshakeCompleted`]
-/// carrega. Mapeado para `PluginState` em `update.rs` (T022).
+/// carrega. Mapeado para `PluginState` em `update.rs` (T022/T019).
 #[derive(Debug, Clone)]
 pub enum HandshakeOutcome {
     /// Handshake respondido dentro do timeout, com versão compatível
-    /// (`ProtocolVersion::is_compatible_with`, D7).
-    Ready(HandshakeHelloResult),
+    /// (`ProtocolVersion::is_compatible_with`, D7). **Nota (T019, D8)**:
+    /// "Ready" aqui significa só "handshake válido, versão compatível" — NÃO
+    /// implica `PluginState::Ready` diretamente. `update.rs` MUST checar
+    /// `all_required_config_present` e, se `false`, transicionar para
+    /// `Unavailable{NotConfigured}` em vez de `Ready` (a conexão continua
+    /// viva/o worker continua rodando em ambos os casos; só o que `update.rs`
+    /// faz com o resultado difere).
+    Ready {
+        result: HandshakeHelloResult,
+        /// `true` ⟹ todo item de `result.required_config` resolveu contra
+        /// `config.toml`/`secrets.toml` no momento em que este handshake
+        /// completou (mesma fonte de dados usada para injetar variáveis de
+        /// ambiente no spawn, T018 — ver [`required_config_fully_present`]
+        /// para a checagem exata e a nota de design sobre por que ela é
+        /// recomputada aqui, e não apenas "lembrada" do que foi de fato
+        /// injetado no spawn).
+        all_required_config_present: bool,
+    },
     /// Handshake respondido dentro do timeout, mas com versão incompatível
     /// (FR-005).
     VersionIncompatible {
@@ -199,7 +270,7 @@ pub enum WorkerEvent {
     /// `spawn()` do processo filho falhou (T020 — binário ausente/não
     /// executável, ou qualquer outro erro de SO ao iniciar o processo).
     SpawnFailed(String),
-    /// Resultado do handshake (T021/T022).
+    /// Resultado do handshake (T021/T022, T011/T019).
     HandshakeCompleted(HandshakeOutcome),
     /// Resultado de um ciclo de `widget/get` (T026).
     WidgetGetCompleted(WidgetOutcome),
@@ -219,33 +290,217 @@ pub enum WorkerEvent {
 /// `Farol::subscription` (main.rs/update.rs) para que o `iced` efetivamente
 /// rode o worker (D5: uma `Subscription` só produz efeitos enquanto for
 /// devolvida ao runtime a cada ciclo).
-pub fn subscription() -> Subscription<WorkerEvent> {
-    Subscription::run(worker)
+///
+/// **T015 (correção C2 parte 2)**: usa `Subscription::run_with_id` em vez de
+/// `Subscription::run` — antes desta feature, `worker` era um ponteiro de
+/// função sem captura (`fn() -> S`, único plugin conhecido, comando/args
+/// hardcoded em constantes globais); agora `worker` precisa capturar
+/// `config` (comando/args/nome variam por plugin conhecido, T014), o que
+/// `Subscription::run` não permite. `run_with_id` identifica a `Subscription`
+/// pelo `plugin_name` — é isso que permite ao `iced` manter uma conexão por
+/// plugin conhecido rodando simultaneamente, sem uma recriar/matar a outra
+/// entre re-renders.
+pub fn subscription(config: PluginSpawnConfig) -> Subscription<WorkerEvent> {
+    let id = config.plugin_name.clone();
+    Subscription::run_with_id(id, worker(config))
+}
+
+/// Probe leve de `protocol_version`, usado pela correção C1 (T011) — ver
+/// [`interpret_handshake_response`].
+#[derive(serde::Deserialize)]
+struct HandshakeSuccessVersionProbe {
+    protocol_version: ProtocolVersion,
+}
+
+#[derive(serde::Deserialize)]
+struct HandshakeResponseVersionProbe {
+    result: Option<HandshakeSuccessVersionProbe>,
+}
+
+/// Interpreta a linha bruta de resposta do handshake (já decodificada como
+/// `serde_json::Value`, não mais como `HandshakeHelloResponse` tipado
+/// diretamente) — **correção C1/T011**.
+///
+/// Problema que esta função resolve: antes desta correção, a resposta do
+/// handshake era desserializada como `HandshakeHelloResponse` tipado
+/// **antes** de checar `protocol_version`. Com `Capability` tagueado por
+/// `kind` (T008), a resposta `v0.1` de um plugin desatualizado
+/// (`{"capabilities": ["exec"]}`, formato `string[]`) não desserializa em
+/// nenhuma variante de `HandshakeHelloResponse` — o decode falhava primeiro
+/// e o core nunca chegava a comparar a versão, caindo em `Unresponsive` em
+/// vez de `VersionIncompatible` (Cenário 8 de `quickstart.md`, feature 002).
+///
+/// Correção: extrai só `protocol_version` via [`HandshakeResponseVersionProbe`]
+/// **antes** de tentar o decode tipado completo — esse probe só exige que
+/// `result.protocol_version` exista e seja uma string `"MAJOR.MINOR"`
+/// válida, sem se importar com a forma do restante do objeto
+/// (`capabilities`, `required_config`, ...). Se o probe conseguir extrair a
+/// versão e ela for incompatível, retorna `VersionIncompatible` imediatamente,
+/// sem sequer tentar o decode tipado completo (que falharia de qualquer
+/// forma para um payload `v0.1`, mas por um motivo diferente e menos
+/// informativo). Só quando o probe não se aplica (resposta de erro
+/// JSON-RPC, sem campo `result`, ou JSON malformado) ou a versão já é
+/// compatível, o código segue para o decode tipado completo — preservando o
+/// comportamento anterior para esses dois casos (que já convergiam para
+/// `Unresponsive`/`Ready`).
+fn interpret_handshake_response(raw: serde_json::Value, plugin_name: &str) -> HandshakeOutcome {
+    if let Ok(HandshakeResponseVersionProbe {
+        result: Some(probe_result),
+    }) = serde_json::from_value::<HandshakeResponseVersionProbe>(raw.clone())
+    {
+        if !probe_result
+            .protocol_version
+            .is_compatible_with(&CORE_PROTOCOL_VERSION)
+        {
+            return HandshakeOutcome::VersionIncompatible {
+                plugin_version: probe_result.protocol_version,
+                core_version: CORE_PROTOCOL_VERSION,
+            };
+        }
+    }
+
+    match serde_json::from_value::<HandshakeHelloResponse>(raw) {
+        Err(_decode_error) => HandshakeOutcome::Unresponsive,
+        Ok(HandshakeHelloResponse::Error { .. }) => HandshakeOutcome::Unresponsive,
+        Ok(HandshakeHelloResponse::Success { result, .. }) => {
+            if !result
+                .protocol_version
+                .is_compatible_with(&CORE_PROTOCOL_VERSION)
+            {
+                // Alcançável só se o probe acima não tiver decodificado
+                // (ex.: campo ausente do payload por algum motivo) — mantém
+                // a checagem como salvaguarda mesmo assim.
+                return HandshakeOutcome::VersionIncompatible {
+                    plugin_version: result.protocol_version,
+                    core_version: CORE_PROTOCOL_VERSION,
+                };
+            }
+            let all_required_config_present =
+                required_config_fully_present(plugin_name, &result.required_config);
+            HandshakeOutcome::Ready {
+                result,
+                all_required_config_present,
+            }
+        }
+    }
+}
+
+/// **T018 (D8) — decisão de implementação, documentada por instrução
+/// explícita da subtarefa**: `required_config` só é conhecido **depois** do
+/// handshake (é o próprio plugin quem o declara na resposta) — no momento
+/// em que o processo é spawnado, o core ainda não sabe quais nomes de
+/// variável esperar. Duas alternativas foram consideradas:
+///
+/// 1. Spawnar sem nenhuma variável de ambiente do plugin e, só depois do
+///    handshake revelar `required_config`, respawnar o processo (matando o
+///    primeiro) já com as variáveis certas — mais fiel a "só injeta o que é
+///    declaradamente necessário", mas exige uma segunda tentativa de spawn
+///    inteira (handshake → kill → respawn → handshake de novo) só para
+///    injetar env vars, adicionando uma complexidade de fluxo (e uma latência
+///    de duplo handshake) desproporcional ao problema.
+/// 2. **(Escolhida)** Injetar, já na primeira tentativa de spawn, **todo**
+///    valor já persistido para este `plugin_name` em `config.toml`/
+///    `secrets.toml` (T016/T017) — não filtrado por `required_config`
+///    (que ainda não existe neste ponto). Um valor injetado que a versão
+///    atual do plugin não declarar mais em `required_config` simplesmente
+///    não é lido por ele (sem efeito colateral observável: o plugin só lê
+///    as variáveis cujo nome ele mesmo deriva do seu próprio
+///    `required_config`, D8) — o único custo é uma variável de ambiente a
+///    mais no processo filho, que já herda dezenas de outras do processo
+///    pai de qualquer forma.
+///
+/// Depois do handshake, [`required_config_fully_present`] refaz a mesma
+/// consulta (`config_store`/`secrets_store`), desta vez filtrada pelos
+/// itens que o `required_config` recém-recebido efetivamente declara, para
+/// decidir `Ready` vs. `Unavailable{NotConfigured}` (T019, `update.rs`) —
+/// mesma fonte de verdade (disco) usada aqui, então a decisão é consistente
+/// com o que foi de fato injetado, sem precisar carregar um registro
+/// separado de "quais env vars foram setadas nesta tentativa de spawn".
+/// Risco aceito conscientemente: uma mutação de `config.toml`/`secrets.toml`
+/// entre o spawn e a conclusão do handshake (janela de milissegundos, sem
+/// concorrência esperada nesta feature) poderia, em teoria, fazer a checagem
+/// pós-handshake divergir do que foi realmente injetado — não coberto por
+/// nenhum requisito desta feature, sinalizado aqui para revisão.
+fn stored_plugin_config_values(plugin_name: &str) -> Vec<(String, String)> {
+    let mut values: Vec<(String, String)> = crate::config_store::load_plugin_config(plugin_name)
+        .into_iter()
+        .collect();
+    values.extend(crate::secrets_store::load_plugin_secrets(plugin_name));
+    values
+}
+
+/// Deriva o nome da variável de ambiente injetada para um item
+/// (`plugin_name`, `name`) — convenção normativa de `research.md` D8
+/// (`FAROL_PLUGIN_<PLUGIN_MAIÚSCULO>_<NAME_MAIÚSCULO>`, com qualquer
+/// caractere não alfanumérico virando `_`), aplicada aqui de forma
+/// determinística e idêntica ao que `plugins/uptime-kuma/config.py`/
+/// `secrets.py` (T021/T022, fora do escopo desta subtarefa) devem aplicar
+/// do lado do plugin — nenhum dos dois lados transmite o nome já prefixado
+/// por protocolo, ambos derivam independentemente.
+fn env_var_name(plugin_name: &str, item_name: &str) -> String {
+    format!(
+        "FAROL_PLUGIN_{}_{}",
+        shout_snake(plugin_name),
+        shout_snake(item_name)
+    )
+}
+
+fn shout_snake(value: &str) -> String {
+    value
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_uppercase() } else { '_' })
+        .collect()
+}
+
+/// `true` ⟹ todo item de `required_config` resolve contra `config.toml`
+/// (não-secreto) ou `secrets.toml` (secreto), conforme a flag `secret` de
+/// cada item — usa `config_store::resolve_required_config_value`, a mesma
+/// função que decide de qual dos dois arquivos ler (T016/T017/T018, D8).
+/// Ver [`stored_plugin_config_values`] para a nota de design completa sobre
+/// por que esta checagem é recomputada aqui, e não apenas "lembrada" da
+/// injeção de spawn.
+fn required_config_fully_present(plugin_name: &str, required_config: &[RequiredConfigItem]) -> bool {
+    required_config.iter().all(|item| {
+        crate::config_store::resolve_required_config_value(plugin_name, &item.name, item.secret)
+            .is_some()
+    })
 }
 
 /// Corpo do worker — ver a documentação do módulo para o fluxo completo.
 ///
-/// Assinatura exigida por `Subscription::run` (`fn() -> S` — ponteiro de
-/// função sem captura, D5/D4): por isso os parâmetros de configuração
-/// (`PLUGIN_COMMAND`, `RPC_TIMEOUT_CONTROL`, etc.) são constantes do módulo
-/// em vez de argumentos.
-fn worker() -> impl Stream<Item = WorkerEvent> {
-    stream::channel(16, |mut output| async move {
-        let mut command = Command::new(PLUGIN_COMMAND);
+/// Recebe `config` por valor (movido para dentro do `async move` do stream)
+/// — desde T015/correção C2 parte 2, `worker` deixou de ser um ponteiro de
+/// função sem captura (exigido por `Subscription::run`) porque agora precisa
+/// variar por plugin conhecido; `Subscription::run_with_id` (ver
+/// [`subscription`]) aceita qualquer `Stream`, não só um `fn() -> S`, o que
+/// libera esta função para capturar `config` livremente.
+fn worker(config: PluginSpawnConfig) -> impl Stream<Item = WorkerEvent> {
+    stream::channel(16, move |mut output| async move {
+        let mut command = Command::new(&config.command);
         command
-            .args(PLUGIN_ARGS)
+            .args(&config.args)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
             .kill_on_drop(true);
+
+        // T018 (D8): injeta cada valor já persistido para este plugin como
+        // variável de ambiente do processo filho — ver a documentação de
+        // `stored_plugin_config_values` para a decisão de design completa
+        // (por que não filtrado por `required_config`, ainda desconhecido
+        // neste ponto).
+        for (key, value) in stored_plugin_config_values(&config.plugin_name) {
+            command.env(env_var_name(&config.plugin_name, &key), value);
+        }
 
         let mut child = match command.spawn() {
             Ok(child) => child,
             Err(err) => {
                 let _ = output
                     .send(WorkerEvent::SpawnFailed(format!(
-                        "falha ao iniciar '{PLUGIN_COMMAND} {}': {err}",
-                        PLUGIN_ARGS.join(" ")
+                        "falha ao iniciar '{} {}': {err}",
+                        config.command,
+                        config.args.join(" ")
                     )))
                     .await;
                 return;
@@ -282,7 +537,7 @@ fn worker() -> impl Stream<Item = WorkerEvent> {
             return;
         }
 
-        // --- Handshake (T021) ---
+        // --- Handshake (T021, correção C1/T011) ---
 
         let mut next_request_id: i64 = 2; // id=1 é o handshake em si.
         let hello_request = HandshakeHelloRequest::new(
@@ -298,33 +553,20 @@ fn worker() -> impl Stream<Item = WorkerEvent> {
         } else {
             match tokio::time::timeout(
                 RPC_TIMEOUT_CONTROL,
-                read_response::<HandshakeHelloResponse>(&mut reader),
+                read_response::<serde_json::Value>(&mut reader),
             )
             .await
             {
                 Err(_elapsed) => HandshakeOutcome::Unresponsive,
                 Ok(Err(_io_or_decode_error)) => HandshakeOutcome::Unresponsive,
                 Ok(Ok(None)) => HandshakeOutcome::Unresponsive, // EOF antes de responder.
-                Ok(Ok(Some(HandshakeHelloResponse::Error { .. }))) => {
-                    HandshakeOutcome::Unresponsive
-                }
-                Ok(Ok(Some(HandshakeHelloResponse::Success { result, .. }))) => {
-                    if result
-                        .protocol_version
-                        .is_compatible_with(&CORE_PROTOCOL_VERSION)
-                    {
-                        HandshakeOutcome::Ready(result)
-                    } else {
-                        HandshakeOutcome::VersionIncompatible {
-                            plugin_version: result.protocol_version,
-                            core_version: CORE_PROTOCOL_VERSION,
-                        }
-                    }
+                Ok(Ok(Some(raw_value))) => {
+                    interpret_handshake_response(raw_value, &config.plugin_name)
                 }
             }
         };
 
-        let is_ready = matches!(handshake_outcome, HandshakeOutcome::Ready(_));
+        let is_ready = matches!(handshake_outcome, HandshakeOutcome::Ready { .. });
         if output
             .send(WorkerEvent::HandshakeCompleted(handshake_outcome))
             .await
@@ -333,8 +575,12 @@ fn worker() -> impl Stream<Item = WorkerEvent> {
             return;
         }
         if !is_ready {
-            // `Unavailable` é terminal nesta feature (data-model.md §3) — o
-            // worker encerra; não há retry automático.
+            // `Unavailable` é terminal para este caso nesta feature
+            // (data-model.md §3) — o worker encerra; não há retry
+            // automático. (Quando `is_ready` é `true` mas
+            // `all_required_config_present` é `false` — `NotConfigured`,
+            // T019 — o worker segue vivo abaixo; é `update.rs` quem decide
+            // não chamar `widget/get` para essa conexão.)
             return;
         }
 

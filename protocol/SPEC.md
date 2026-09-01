@@ -1,15 +1,20 @@
-# Farol Plugin Protocol — Especificação v0.1
+# Farol Plugin Protocol — Especificação v0.2
 
-**Status**: Normativo. **Versão do protocolo descrita neste documento**: `0.1`.
+**Status**: Normativo. **Versão do protocolo descrita neste documento**: `0.2`.
 
 Este documento é a fonte da verdade, agnóstica de linguagem, do protocolo de comunicação entre o
 core do Farol (`farol-core`) e um processo filho de plugin. Junto com os JSON Schemas em
-`protocol/schema/v0.1/*.schema.json`, ele é suficiente, por si só, para implementar um plugin
+`protocol/schema/v0.2/*.schema.json`, ele é suficiente, por si só, para implementar um plugin
 compatível em qualquer linguagem — nenhum outro artefato do repositório (incluindo qualquer crate
 Rust) é normativo sobre o formato das mensagens. Um binding de linguagem específica (ex.: o crate
 Rust `farol-protocol`, usado pelo core) é uma implementação *desta* especificação, nunca a origem
 dela: toda mudança de protocolo é feita primeiro aqui e nos schemas; um binding é atualizado depois,
 para acompanhar.
+
+`protocol/schema/v0.1/*.schema.json` permanece intocado como registro histórico do formato `"0.1"`
+que o plugin `git-local` (feature 001, inalterado) ainda fala — um core em `"0.2"` recusa esse
+plugin por incompatibilidade de versão (§6.4), não por remoção do schema antigo (ver
+`contracts/framing-and-versioning-delta.md` da feature 002).
 
 ## 1. Convenções
 
@@ -41,7 +46,7 @@ regras específicas do Farol por cima dele.
   (ou `null` apenas no caso — não exercitado por esta versão do protocolo — de a requisição nem ter
   sido parseável) e `error`, um objeto no formato definido em §6.
 - Notificações JSON-RPC (mensagem sem `id`, sem resposta esperada) não são usadas nesta versão do
-  protocolo (v0.1) — nem pelo core, nem pelo plugin. O plugin MUST NOT enviar mensagens não
+  protocolo (v0.2) — nem pelo core, nem pelo plugin. O plugin MUST NOT enviar mensagens não
   solicitadas; toda leitura de estado é iniciada pelo core (modelo de *polling*, ver `widget/get` em
   §5.2).
 - O core é sempre quem envia a primeira requisição de uma conexão (§4). O plugin MUST NOT enviar
@@ -110,15 +115,15 @@ Duas mensagens consecutivas no stream de stdout do plugin, exatamente como apare
 (quebra de linha real após cada `}`):
 
 ```
-{"jsonrpc":"2.0","id":1,"result":{"protocol_version":"0.1","plugin_name":"git-local","capabilities":{"capabilities":["exec"]},"widgets":[{"id":"repo-status","kind":"status-grid","title":"Repositórios Git"}],"actions":[]}}
+{"jsonrpc":"2.0","id":1,"result":{"protocol_version":"0.2","plugin_name":"git-local","capabilities":{"capabilities":[{"kind":"exec"}]},"required_config":[],"widgets":[{"id":"repo-status","kind":"status-grid","title":"Repositórios Git"}],"actions":[]}}
 {"jsonrpc":"2.0","id":2,"result":{"widget_id":"repo-status","items":[]}}
 ```
 
 ## 5. Métodos RPC
 
-Esta versão (`0.1`) do protocolo define exatamente três métodos. Cada um tem seu request/response
+Esta versão (`0.2`) do protocolo define exatamente três métodos. Cada um tem seu request/response
 totalmente especificado, campo a campo, no JSON Schema correspondente em
-`protocol/schema/v0.1/` — este documento descreve o papel de cada método, sua sequência de uso e
+`protocol/schema/v0.2/` — este documento descreve o papel de cada método, sua sequência de uso e
 seu orçamento de timeout; os schemas são a fonte normativa da forma exata de cada mensagem.
 
 | Método | Quem inicia | Quando | Orçamento de timeout | Schema |
@@ -260,7 +265,7 @@ core                                     plugin (processo filho)
   "id": 1,
   "method": "handshake/hello",
   "params": {
-    "protocol_version": "0.1",
+    "protocol_version": "0.2",
     "core_name": "farol-core"
   }
 }
@@ -276,16 +281,22 @@ core                                     plugin (processo filho)
   "jsonrpc": "2.0",
   "id": 1,
   "result": {
-    "protocol_version": "0.1",
-    "plugin_name": "git-local",
+    "protocol_version": "0.2",
+    "plugin_name": "uptime-kuma",
     "capabilities": {
-      "capabilities": ["exec"]
+      "capabilities": [
+        { "kind": "network", "host": "monitor.example.com", "port": 443 }
+      ]
     },
+    "required_config": [
+      { "name": "base_url", "secret": false, "description": "URL base da instância Uptime Kuma" },
+      { "name": "api_key", "secret": true, "description": "API Key de métricas do Uptime Kuma" }
+    ],
     "widgets": [
       {
-        "id": "repo-status",
-        "kind": "status-grid",
-        "title": "Repositórios Git",
+        "id": "uptime-kuma-monitors",
+        "kind": "monitor-status-grid",
+        "title": "Uptime Kuma",
         "suggested_refresh_interval_ms": 30000
       }
     ],
@@ -296,10 +307,44 @@ core                                     plugin (processo filho)
 
 - `protocol_version`: a versão de protocolo que o plugin fala (§6.4).
 - `plugin_name`: identidade do plugin.
-- `capabilities`: o manifesto de capacidades do plugin — um objeto com o campo `capabilities`
-  (lista de strings, ex.: `"exec"` para plugins que rodam subprocessos). Esta versão do protocolo
-  não define enforcement algum sobre este manifesto: o core apenas registra e exibe o que o plugin
-  declara; não há distinção entre "capacidade solicitada" e "capacidade concedida".
+- `capabilities`: o manifesto de capacidades do plugin — um objeto com o campo `capabilities`, uma
+  lista de objetos `Capability`, cada um discriminado por um campo `kind` (string, obrigatório,
+  não-vazio) mais campos adicionais específicos daquele `kind`. `capabilities` MAY ser uma lista
+  vazia (`[]`) — não há mínimo de itens exigido. Dois `kind`s são conhecidos por esta versão do
+  protocolo:
+
+  | `kind` | Campos além de `kind` | Obrigatório | Notas |
+  |---|---|---|---|
+  | `exec` | nenhum | — | Plugin roda subprocessos (ex.: `git-local`, invocando o binário `git`). Objeto de um campo só: `{"kind": "exec"}`. |
+  | `network` | `host` (string, não-vazia) | sim | Nome de host ou IP que o plugin acessa pela rede. |
+  | `network` | `port` (integer, 1–65535) | não | Porta, quando fixa/conhecida (ex.: 443 para HTTPS). Ausente = não declarado. |
+
+  Não há `kind: "secret"` nesta versão do protocolo: capacidades expressam *permissão de acesso a
+  sistema* (executar um binário, falar com um host de rede), não credencial — ver `required_config`
+  abaixo para como uma credencial ou outro dado de configuração é declarado. O vocabulário de `kind`
+  permanece aberto: o core MAY simplesmente não reconhecer um `kind` desconhecido, registrando e
+  exibindo genericamente o que o plugin declara, sem que isso seja, por si só, um erro de protocolo
+  (§10). Esta versão do protocolo não define enforcement algum sobre o manifesto: o core apenas
+  registra e exibe o que o plugin declara; não há distinção entre "capacidade solicitada" e
+  "capacidade concedida".
+- `required_config`: lista de itens de configuração — secretos ou não — que o plugin precisa
+  receber do usuário para funcionar, campo irmão de `capabilities`/`widgets`/`actions`. Cada item
+  (`RequiredConfigItem`) tem três campos, todos obrigatórios:
+
+  | Campo | Tipo | Descrição |
+  |---|---|---|
+  | `name` | `string` (não-vazia) | Identificador estável da variável, escolhido pelo plugin (ex.: `"base_url"`, `"api_key"`). |
+  | `secret` | `boolean` | `true` ⟹ o core MUST tratar o valor como sensível (armazenamento e mascaramento de UI são decisão do core, fora do escopo deste documento de protocolo). |
+  | `description` | `string` (não-vazia) | Rótulo legível para exibição em UI de configuração. |
+
+  `required_config` é a lista **fixa** do que o plugin sempre precisa — diferente de `capabilities`
+  (que só declara algo como `network` quando já há um valor concreto resolvido), o plugin declara
+  `required_config` de forma estável a cada handshake, independentemente de já haver ou não um valor
+  armazenado para cada item — é assim que o core sabe o que pedir ao usuário mesmo antes de qualquer
+  valor jamais ter existido. O plugin nunca lê estes valores de um arquivo por conta própria: eles
+  chegam ao processo do plugin por um mecanismo fora do canal NDJSON deste protocolo (ex.: variável
+  de ambiente injetada pelo core no `spawn()`), cuja convenção concreta é decisão de cada
+  implementação de core, não normativa deste documento.
 - `widgets`: lista de declarações de widget que este plugin oferece (`WidgetDeclaration`, ver
   `handshake.schema.json`). Esta lista é congelada no momento do handshake — não muda depois, pelo
   resto da conexão.
@@ -307,9 +352,9 @@ core                                     plugin (processo filho)
   ser uma lista vazia nesta resposta.** Ver §6.3.1 para o porquê.
 
 Um plugin declara pelo menos um widget ou uma capacidade de forma consistente com o que efetivamente
-oferece; esta especificação não impõe um mínimo de widgets/ações declarados — um plugin sem nenhum
-widget é uma configuração válida (embora sem utilidade visível), assim como `actions: []` é sempre
-válido.
+oferece; esta especificação não impõe um mínimo de widgets/ações/capacidades declarados — um plugin
+sem nenhum widget é uma configuração válida (embora sem utilidade visível), assim como
+`actions: []` e `capabilities: []` são sempre válidos.
 
 #### 6.3.1 Por que `actions` pode vir vazio no handshake
 
@@ -366,8 +411,11 @@ explícita do plugin, entregue no handshake ou em uma atualização subsequente.
   a conexão para um estado terminal de "indisponível por versão incompatível" e MUST exibir uma
   mensagem legível citando ambas as versões declaradas, por exemplo:
   `"plugin 'git-local' declara protocolo 0.2; este core suporta 0.1 — versões incompatíveis"`.
-- Esta especificação (v0.1) fixa `protocol_version = "0.1"` como o único valor válido esperado de
-  ambos os lados enquanto esta for a versão vigente do protocolo.
+- Esta especificação (v0.2) fixa `protocol_version = "0.2"` como o único valor válido esperado de
+  ambos os lados enquanto esta for a versão vigente do protocolo. Um plugin que ainda declare
+  `"0.1"` (ex.: `git-local`, feature 001, inalterado) é, por essa mesma regra de igualdade exata,
+  rejeitado por um core em `"0.2"` — consequência deliberada, não um defeito (ver nota no topo de
+  §1).
 
 ## 7. Orçamentos de timeout
 
@@ -464,12 +512,26 @@ protocolo define os seguintes:
 | `-32002` | `action_timeout` | sintetizado pelo core, não pelo plugin — quando `RPC_TIMEOUT_ACTION` (§7.2) estoura numa invocação pontual de `action/invoke` | A invocação de ação não respondeu dentro do orçamento; não implica, por si só, que a conexão esteja indisponível (§7.2). |
 | `-32003` | `exec_unavailable` | resposta de `handshake/hello` ou `action/invoke` | Um binário/executável do qual o plugin depende para uma capacidade declarada (ex.: `exec`) não está disponível no ambiente. O plugin reporta isso como falha pontual daquela operação, sem encerrar seu próprio processo. |
 | `-32004` | `scan_root_unreadable` | resposta de `widget/get` | Um caminho configurado que o plugin precisa ler existe mas não é acessível (erro de permissão) — distinto de "não existe/vazio", que MUST ser tratado como sucesso com dado vazio (ex.: `items: []`), nunca como erro. |
+| `-32005` | `not_configured` | resposta de `widget/get` (salvaguarda — ver nota abaixo) | Algum item de `required_config` (§6.3) declarado pelo plugin não tem valor resolvido/injetado no processo do plugin. |
+| `-32006` | `metrics_unreachable` | resposta de `widget/get` | A fonte de dados remota do plugin (ex.: um endpoint HTTP monitorado) está inacessível — timeout, conexão recusada, host incorreto ou resposta não-sucesso. `data.detail` MAY carregar a mensagem de exceção subjacente. |
+| `-32007` | `metrics_parse_error` | resposta de `widget/get` | A resposta obtida da fonte de dados remota do plugin não é reconhecível no formato esperado (ex.: corpo que não é `/metrics` Prometheus válido, ou valor de campo fora do vocabulário conhecido) — tratado como falha da resposta inteira daquela tentativa. |
 
-Esta tabela é normativa para o plugin de referência `git-local`. Um plugin futuro MAY reservar
-outros valores de `reason` dentro da mesma faixa de `code` (`-32000`–`-32099`), desde que
-documentados na seção específica desse plugin (fora do escopo desta versão do documento formalizar
-um mecanismo de registro central de `reason`s — apenas a faixa de `code` está reservada aqui para
-evitar colisão futura).
+Esta tabela é normativa para os plugins de referência `git-local` (`-32000`–`-32004`) e
+`uptime-kuma` (`-32005`–`-32007`). Um plugin futuro MAY reservar outros valores de `reason` dentro
+da mesma faixa de `code` (`-32000`–`-32099`), desde que documentados na seção específica desse
+plugin (fora do escopo desta versão do documento formalizar um mecanismo de registro central de
+`reason`s — apenas a faixa de `code` está reservada aqui para evitar colisão futura).
+
+**Papel de `not_configured` (`-32005`): salvaguarda, não caminho primário.** O caminho **primário**
+pelo qual um usuário percebe "plugin não configurado" não é um erro de `widget/get` — é o **core**
+recusando avançar a conexão para o estado `Ready`: ao comparar o `required_config` recebido no
+handshake (§6.3) contra os valores que conseguiu resolver/injetar, o core transiciona a conexão para
+`PluginState::Unavailable{NotConfigured}` (um `UnavailableReason` específico) em vez de `Ready`, e
+não chama `widget/get` para essa conexão enquanto ela estiver neste estado — a mesma regra geral já
+existente de que `widget/get` só é disparado quando a conexão está `Ready`. `error(-32005,
+not_configured)` de `widget/get` existe apenas como salvaguarda de defesa em profundidade,
+alcançável na prática só se essa barreira do core, por algum motivo, deixar passar uma conexão sem
+todos os valores de `required_config` injetados.
 
 ### 8.3 Regra geral: nenhum erro desta tabela derruba um processo
 
@@ -513,9 +575,10 @@ decisão opera (§7, §8), não a arquitetura interna de nenhum lado.
   (§6.4) — nunca de MAJOR.
 - Remover um campo obrigatório, mudar a semântica de um campo existente, ou remover um método MUST
   ser introduzido como um bump de MAJOR.
-- Um plugin MAY declarar capacidades (`capabilities`, §6.3) além de `"exec"`; o vocabulário de
-  capacidades não é fechado por esta especificação. O core MAY simplesmente não reconhecer uma
-  capacidade desconhecida — isso não é, por si só, um erro de protocolo.
+- Um plugin MAY declarar um `kind` de `Capability` (`capabilities`, §6.3) além de `exec`/`network`;
+  o vocabulário de `kind` não é fechado por esta especificação. O core MAY simplesmente não
+  reconhecer um `kind` desconhecido — isso não é, por si só, um erro de protocolo; o objeto
+  `{"kind": "...", ...}` é aceito e registrado genericamente, com seus campos extras ignorados.
 - Um plugin MAY declarar um `kind` de widget (§6.3, §5.2) que o core não sabe renderizar; nesse
   caso o widget correspondente MUST ser ignorado silenciosamente (não renderizado), sem que isso
   afete o restante da conexão.
@@ -526,16 +589,19 @@ decisão opera (§7, §8), não a arquitetura interna de nenhum lado.
 ## 11. Relação com os JSON Schemas
 
 Este documento e os quatro arquivos abaixo, em conjunto, são a especificação completa e normativa
-do protocolo v0.1. Nenhum deles é suficiente isoladamente: este documento descreve a sequência,
+do protocolo v0.2. Nenhum deles é suficiente isoladamente: este documento descreve a sequência,
 o transporte, o framing, o versionamento e os orçamentos de timeout; os schemas descrevem, campo a
 campo, a forma exata de cada mensagem.
 
 | Arquivo | Cobre |
 |---|---|
-| `protocol/schema/v0.1/handshake.schema.json` | Request/response de `handshake/hello` (§6) — inclui `WidgetDeclaration`, `ActionDeclaration`, `ActionTarget`, `CapabilityManifest`. |
-| `protocol/schema/v0.1/widget.schema.json` | Request/response de `widget/get` (§5.2) — inclui `GitRepository`, `RemoteStatus`. |
-| `protocol/schema/v0.1/action.schema.json` | Request/response de `action/invoke` (§5.3). |
-| `protocol/schema/v0.1/error.schema.json` | O objeto de erro JSON-RPC (§8) usado por qualquer resposta de erro de qualquer um dos três métodos. |
+| `protocol/schema/v0.2/handshake.schema.json` | Request/response de `handshake/hello` (§6) — inclui `WidgetDeclaration`, `ActionDeclaration`, `ActionTarget`, `CapabilityManifest`, `RequiredConfigItem`. |
+| `protocol/schema/v0.2/widget.schema.json` | Request/response de `widget/get` (§5.2). |
+| `protocol/schema/v0.2/action.schema.json` | Request/response de `action/invoke` (§5.3). |
+| `protocol/schema/v0.2/error.schema.json` | O objeto de erro JSON-RPC (§8) usado por qualquer resposta de erro de qualquer um dos três métodos. |
+
+`protocol/schema/v0.1/*.schema.json` permanece como registro histórico do formato `"0.1"` (§1) —
+não é normativo para a versão vigente do protocolo descrita por este documento.
 
 Os quatro arquivos são JSON Schema Draft 2020-12 e são desenhados para serem carregados **em
 conjunto** por um validador — cada um declara um `$id` estável, e os três primeiros referenciam

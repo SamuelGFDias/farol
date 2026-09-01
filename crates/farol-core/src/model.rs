@@ -23,7 +23,15 @@
 /// Guardar o resultado inteiro aqui duplicaria esses dois campos em dois
 /// lugares do `Model`; este subconjunto evita a duplicação mantendo só o
 /// que `data-model.md` §2.1 de fato atribui a `identity`.
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// **Correção H2 (T013)**: perdeu `derive(Eq)` — `capabilities` agora é
+/// `farol_protocol::CapabilityManifest`, que carrega `Capability::Unknown`
+/// (via `UnknownCapability.extra: serde_json::Map<String, serde_json::Value>`),
+/// e `serde_json::Value` não implementa `Eq` (só `PartialEq`, por causa de
+/// `f64` em números). `PartialEq` continua suficiente para os usos atuais
+/// (comparação em teste/asserção), só `Eq`/`Hash` deixam de estar
+/// disponíveis.
+#[derive(Debug, Clone, PartialEq)]
 pub struct PluginIdentity {
     pub plugin_name: String,
     pub protocol_version: farol_protocol::ProtocolVersion,
@@ -52,6 +60,27 @@ pub enum UnavailableReason {
     /// (`RPC_TIMEOUT_ACTION` / `action/invoke`) — esse caso não produz este
     /// estado (ver `contracts/action-protocol.md`).
     Unresponsive,
+    /// **Novo (T019, D8)**: o handshake completou (versão compatível), mas o
+    /// core comparou o `required_config` declarado pelo plugin contra o que
+    /// conseguiu resolver/injetar como variável de ambiente no spawn
+    /// (`plugin_worker::required_config_fully_present`, T018) e encontrou ao
+    /// menos um item sem valor armazenado (`config.toml`/`secrets.toml`
+    /// ausente ou incompleto para este plugin).
+    ///
+    /// **Diferente das quatro variantes acima, esta MUST NOT ser tratada como
+    /// terminal** — é a única exceção à regra "`Unavailable` é terminal
+    /// nesta feature" herdada da feature 001 (`PluginState`, abaixo):
+    /// `data-model.md` §3.2 desta feature (002) documenta um caminho de
+    /// volta a `Starting`/`Handshaking` via uma tela de setup dentro do
+    /// próprio Farol (`SetupForm`) que, ao ser submetida, persiste os
+    /// valores em `config.toml`/`secrets.toml` e reinicia a `Subscription`
+    /// do worker deste plugin com as novas variáveis de ambiente já
+    /// injetadas. Essa tela de setup (e o mecanismo de reconexão que ela
+    /// dispara) é tarefa futura (T029-T035 do `tasks.md` desta feature,
+    /// fora do escopo desta subtarefa) — este comentário só registra que o
+    /// tipo já MUST modelar `NotConfigured` como não-terminal, para não
+    /// travar essa tela futura num dead-end de máquina de estados.
+    NotConfigured,
 }
 
 /// Estado da conexão com um plugin (data-model.md §3 — máquina de estados).
@@ -63,15 +92,20 @@ pub enum UnavailableReason {
 /// Starting     ──(spawn ok)───────────────────────► Handshaking
 /// Handshaking  ──(timeout RPC_TIMEOUT_CONTROL)────► Unavailable{Unresponsive}
 /// Handshaking  ──(resposta, versão incompatível)──► Unavailable{VersionIncompatible}
-/// Handshaking  ──(resposta, versão compatível)────► Ready
+/// Handshaking  ──(resposta, versão compatível, required_config OK)──► Ready
+/// Handshaking  ──(resposta, versão compatível, required_config faltando)──► Unavailable{NotConfigured}
 /// Ready        ──(child.wait() resolve)───────────► Unavailable{Crashed}
 /// Ready        ──(timeout RPC_TIMEOUT_CONTROL)────► Unavailable{Unresponsive}
 /// Ready        ──(widget/get e action/invoke ok)──► Ready (permanece)
-/// Unavailable  ──(nenhuma transição nesta feature)► (terminal)
+/// Unavailable{FailedToStart,VersionIncompatible,Crashed,Unresponsive} ──(nenhuma transição)► (terminal)
+/// Unavailable{NotConfigured} ──(usuário submete a tela de setup, T029-T035)──► Starting/Handshaking (não-terminal, T019)
 /// ```
 ///
-/// `Unavailable` é terminal nesta feature — reinício automático de plugin é
-/// Fora de Escopo do `spec.md`.
+/// `Unavailable` é terminal nesta feature para quatro das cinco variantes —
+/// reinício automático de plugin continua Fora de Escopo do `spec.md` para
+/// elas. `NotConfigured` (T019, D8 de `specs/002-uptime-kuma-plugin/research.md`)
+/// é a única exceção: precisa de um caminho de volta, documentado em
+/// `UnavailableReason::NotConfigured` acima.
 ///
 /// T017 define apenas este tipo; a lógica de transição fica para tasks
 /// posteriores (T022, T026), que vivem fora do escopo desta subtarefa.

@@ -1,10 +1,18 @@
-//! Tipos de mensagem do protocolo Farol v0.1.
+//! Tipos de mensagem do protocolo Farol v0.2.
 //!
-//! Espelha, campo a campo, os quatro JSON Schemas normativos em `protocol/schema/v0.1/`:
+//! Espelha, campo a campo, os quatro JSON Schemas normativos em `protocol/schema/v0.2/`:
 //! `handshake.schema.json`, `widget.schema.json`, `action.schema.json` e `error.schema.json` —
 //! juntos com `protocol/SPEC.md`, eles são a fonte da verdade sobre a forma exata de cada
 //! mensagem; este módulo é apenas o binding Rust dessa forma. Nomes de tipo e de campo seguem o
 //! vocabulário exato dos schemas.
+//!
+//! Evolução de v0.1 (`specs/002-uptime-kuma-plugin/research.md` D1/D4/D8,
+//! `specs/002-uptime-kuma-plugin/data-model.md` §1.1-§1.6): `CapabilityManifest.capabilities`
+//! passa de `Vec<String>` para `Vec<Capability>` (objetos discriminados por `kind`, sem mais a
+//! variante `"secret"`); `HandshakeHelloResult` ganha o campo `required_config`; e
+//! `WidgetGetResult.items` passa a aceitar `WidgetItem` (git) **ou** `MonitorStatusItem`
+//! (uptime-kuma) via `WidgetItems`, uma união discriminada pelo `kind` que o `widget_id`
+//! declarou no handshake — nunca misto na mesma resposta.
 //!
 //! Todo `jsonrpc`/`method` de request é um valor `const` no schema (ex.: `"handshake/hello"`);
 //! aqui eles são campos `String` preenchidos pelos construtores `new()` de cada tipo de request a
@@ -73,12 +81,68 @@ impl HandshakeHelloRequest {
     }
 }
 
+/// Uma capacidade com `kind` dentro do vocabulário conhecido desta versão do protocolo
+/// (`protocol/schema/v0.2/handshake.schema.json` `$defs/Capability`). **Sem** variante
+/// `Secret` — removida em v0.2: credencial passa a ser declarada via `RequiredConfigItem`, não
+/// via `Capability` (`research.md` D1/D8).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum KnownCapability {
+    Exec,
+    Network {
+        /// Nome de host ou IP (Princípio IV da constitution: allowlist é por host, não por
+        /// URL/path).
+        host: String,
+        /// Porta, quando fixa/conhecida (ex.: 443). Ausente = não declarado, sem inferência de
+        /// default pelo core.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        port: Option<u16>,
+    },
+}
+
+/// Uma capacidade cujo `kind` está fora do vocabulário conhecido por este binding (forward
+/// compat — ver decisão em [`Capability`]). Preserva o `kind` literal e quaisquer campos
+/// adicionais do objeto, sem interpretá-los.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UnknownCapability {
+    pub kind: String,
+    /// Campos adicionais do objeto além de `kind`, preservados sem interpretação.
+    #[serde(flatten)]
+    pub extra: serde_json::Map<String, serde_json::Value>,
+}
+
+/// Uma capacidade declarada pelo plugin (`protocol/SPEC.md` §6.3, `data-model.md` §1.1). O
+/// vocabulário de `kind` é aberto por desenho (`protocol/SPEC.md` §10) — um `kind` desconhecido
+/// pelo core MUST ser aceito, registrado e exibido genericamente, sem que seus campos extras
+/// sejam interpretados.
+///
+/// **Decisão de forward-compat** (nota de `research.md` D1, resolvida aqui): um enum
+/// `#[serde(tag = "kind")]` puro (internamente tagueado) rejeita, na desserialização, qualquer
+/// `kind` fora do vocabulário conhecido (`"exec"`/`"network"`) — diferente do JSON Schema
+/// ilustrativo (`additionalProperties: true`), que aceita e ignora campos extras de um `kind`
+/// desconhecido em vez de falhar. Para reconciliar isso, `Capability` é modelado como um enum
+/// `#[serde(untagged)]` de duas variantes: [`KnownCapability`], tentada primeiro, e
+/// [`UnknownCapability`] como fallback que preserva o `kind` literal e o restante do objeto em
+/// `extra`. Trade-off aceito conscientemente: um objeto malformado de um `kind` *conhecido*
+/// (ex.: `{"kind":"network"}` sem `host`) também cai em `Unknown` em vez de falhar a
+/// desserialização com um erro específico — o `untagged` não distingue "kind conhecido mas
+/// payload inválido" de "kind desconhecido" sem uma solução mais elaborada (`Deserialize`
+/// manual com peek no campo `kind`), que não se justifica para este binding.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum Capability {
+    Known(KnownCapability),
+    Unknown(UnknownCapability),
+}
+
 /// Manifesto de capacidades declarado pelo plugin (`protocol/SPEC.md` §6.3). Sem enforcement
 /// nesta versão do protocolo — o core apenas registra e exibe o que o plugin declara.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// `capabilities` MAY ser `[]` — um plugin sem nenhuma capacidade concreta para declarar
+/// honestamente ainda (ex.: `uptime-kuma` antes de `base_url` resolvido) reporta lista vazia.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct CapabilityManifest {
-    /// Identificadores de capacidade (ex.: `"exec"`).
-    pub capabilities: Vec<String>,
+    /// Capacidades declaradas, cada uma discriminada por `kind`.
+    pub capabilities: Vec<Capability>,
 }
 
 /// Declara um widget oferecido pelo plugin (`protocol/SPEC.md` §6.3). A lista de
@@ -88,8 +152,10 @@ pub struct WidgetDeclaration {
     /// Identificador estável do widget dentro deste plugin (ex.: `"repo-status"`). Usado como
     /// `widget_id` em requests `widget/get`.
     pub id: String,
-    /// Tipo declarativo do widget (ex.: `"status-grid"`). Vocabulário do core, não do plugin — um
-    /// `kind` desconhecido pelo core MUST ser ignorado silenciosamente (widget não renderizado).
+    /// Tipo declarativo do widget (ex.: `"status-grid"`, `"monitor-status-grid"`). Vocabulário do
+    /// core, não do plugin — um `kind` desconhecido pelo core MUST ser ignorado silenciosamente
+    /// (widget não renderizado). `"monitor-status-grid"` (novo em v0.2, `research.md` D4) reporta
+    /// itens `MonitorStatusItem`, independente do vocabulário `"status-grid"`/`WidgetItem`.
     pub kind: String,
     /// Rótulo legível exibido pelo core (ex.: `"Repositórios Git"`).
     pub title: String,
@@ -133,14 +199,34 @@ pub struct ActionDeclaration {
     pub timeout_hint_ms: Option<u64>,
 }
 
-/// Result de sucesso do `handshake/hello` (`protocol/SPEC.md` §6.3).
+/// Declara uma variável de configuração que o plugin precisa do usuário, secreta ou não
+/// (`research.md` D8, `data-model.md` §1.6.1). O core, não o plugin, resolve, armazena e injeta
+/// o valor — o plugin só lê a variável de ambiente já injetada no seu próprio arranque.
+/// Declarada sempre, por completo, independentemente de já haver um valor armazenado.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RequiredConfigItem {
+    /// Identificador estável da variável, escolhido pelo plugin (ex.: `"base_url"`,
+    /// `"api_key"`). Usado pelo core para derivar o nome da variável de ambiente injetada
+    /// (`FAROL_PLUGIN_<PLUGIN_NAME>_<NAME>`) e para indexar `config.toml`/`secrets.toml`.
+    pub name: String,
+    /// `true` ⟹ o core MUST armazenar em `secrets.toml` (nunca em `config.toml`) e mascarar o
+    /// campo correspondente na tela de setup.
+    pub secret: bool,
+    /// Rótulo legível exibido como label do campo na tela de setup.
+    pub description: String,
+}
+
+/// Result de sucesso do `handshake/hello` (`protocol/SPEC.md` §6.3).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct HandshakeHelloResult {
     /// Versão de protocolo falada pelo plugin.
     pub protocol_version: ProtocolVersion,
     /// Identidade do plugin (ex.: `"git-local"`).
     pub plugin_name: String,
     pub capabilities: CapabilityManifest,
+    /// Variáveis de configuração que o plugin precisa do usuário (`research.md` D8). MAY ser
+    /// vazia para um plugin que não precisa de nenhuma configuração (ex.: `git-local`).
+    pub required_config: Vec<RequiredConfigItem>,
     /// Widgets oferecidos por este plugin. Congelado pelo resto da conexão.
     pub widgets: Vec<WidgetDeclaration>,
     /// Ações já conhecidas no momento do handshake. MAY ser vazia quando a lista completa só é
@@ -207,6 +293,58 @@ pub struct WidgetItem {
     pub fetch_action: ActionDeclaration,
 }
 
+/// Estado de um monitor, mapeado do valor bruto `monitor_status` do `/metrics` do Uptime Kuma
+/// (`research.md` D4, FR-012): `1→up`, `0→down`, `2→pending`, `3→maintenance`. Um valor bruto
+/// fora de `{0,1,2,3}` não produz este item — invalida a leitura inteira (`metrics_parse_error`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MonitorStatus {
+    Up,
+    Down,
+    Pending,
+    Maintenance,
+}
+
+/// Um monitor reportado por `widget/get` para um widget declarado com
+/// `kind: "monitor-status-grid"` (novo em v0.2, `research.md` D4, `data-model.md` §1.3).
+/// Diferente de [`WidgetItem`], nunca carrega nenhuma `ActionDeclaration` associada — este
+/// plugin nunca declara ações (FR-004); o campo simplesmente não existe neste tipo, não é um
+/// campo opcional vazio.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct MonitorStatusItem {
+    /// Nome de exibição do monitor, do label `monitor_name` do `/metrics` — possivelmente
+    /// sanitizado em relação ao nome original do Uptime Kuma.
+    pub name: String,
+    pub status: MonitorStatus,
+    /// De `monitor_response_time` (ms), quando aplicável ao status do monitor; `None` serializa
+    /// como `null` explícito (sem `skip_serializing_if`) — campo obrigatório e nullable, nunca
+    /// ausente, mesmo espírito de `RemoteStatus::NoRemote`.
+    pub response_time_ms: Option<u32>,
+}
+
+/// União discriminada pelo `kind` do widget que originou a resposta de `widget/get` — `Git`
+/// (`Vec<WidgetItem>`) para `kind: "status-grid"`, ou `Monitor` (`Vec<MonitorStatusItem>`) para
+/// `kind: "monitor-status-grid"`. Nunca mista: cada resposta contém só um dos dois vocabulários
+/// (`data-model.md` §1.4, correção C3; `protocol/schema/v0.2/widget.schema.json`
+/// `WidgetGetResult.items`, um `oneOf` de dois arrays).
+///
+/// `#[serde(untagged)]` faz `items` serializar, no wire, como o array simples já fixado pelo
+/// schema JSON — sem tag/envelope extra. Decisão de desenho (item de C3 marcado como "decisão de
+/// implementação"): um enum sobre o `Vec<T>` inteiro, não um enum por elemento nem dois campos
+/// `Option<Vec<T>>` mutuamente exclusivos — porque o discriminante real é o `widget_id`/`kind`
+/// do *pedido* inteiro (conhecido pelo core antes mesmo de receber a resposta, `data-model.md`
+/// §1.4), nunca um dado por item dentro do array. Ambiguidade aceita conscientemente: como as
+/// duas variantes serializam como `Vec<T>` simples, um array vazio `[]` desserializa sempre como
+/// a primeira variante tentada (`Git`, pela ordem de declaração) — inofensivo na prática porque
+/// o core nunca infere a forma pelo conteúdo de `items` isoladamente; ele já sabe, pelo `kind`
+/// que o `widget_id` declarou no handshake, qual variante esperar.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum WidgetItems {
+    Git(Vec<WidgetItem>),
+    Monitor(Vec<MonitorStatusItem>),
+}
+
 /// Params do request `widget/get`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WidgetGetParams {
@@ -240,9 +378,11 @@ impl WidgetGetRequest {
 pub struct WidgetGetResult {
     /// Ecoa o `widget_id` do request.
     pub widget_id: String,
-    /// MAY ser vazia — um `scan_root` configurado sem repositórios embaixo é um estado válido, não
-    /// um erro.
-    pub items: Vec<WidgetItem>,
+    /// `Vec<WidgetItem>` ou `Vec<MonitorStatusItem>`, conforme o `kind` que este `widget_id`
+    /// declarou no handshake (correção C3, `data-model.md` §1.4). MAY ser vazia para qualquer
+    /// `kind` — um `scan_root` configurado sem repositórios embaixo, ou uma instância Uptime Kuma
+    /// sem monitores cadastrados, são ambos estados válidos, não erros.
+    pub items: WidgetItems,
 }
 
 /// Resposta a um `widget/get` — sucesso ou erro pontual (ex.: `-32004`/`scan_root_unreadable`).
@@ -384,18 +524,26 @@ mod tests {
         assert_eq!(req.method, METHOD_HANDSHAKE_HELLO);
     }
 
-    /// Exemplo literal de `protocol/SPEC.md` §4.1 (primeira mensagem do par ilustrativo).
+    /// Adaptado do exemplo de `git-local` em `protocol/SPEC.md` §4.1 para a forma de wire v0.2
+    /// (`capabilities` como objetos, `required_config` novo) — o §4.1 do próprio `SPEC.md` ainda
+    /// traz a forma v0.1 literal naquele parágrafo (ilustra só o framing NDJSON, não o conteúdo
+    /// do handshake); o exemplo atualizado para v0.2 vive em §6.3, reproduzido aqui só para o caso
+    /// `git-local` (sem `required_config`).
     #[test]
     fn handshake_hello_response_success_matches_spec_example() {
-        let raw = r#"{"jsonrpc":"2.0","id":1,"result":{"protocol_version":"0.1","plugin_name":"git-local","capabilities":{"capabilities":["exec"]},"widgets":[{"id":"repo-status","kind":"status-grid","title":"Repositórios Git"}],"actions":[]}}"#;
+        let raw = r#"{"jsonrpc":"2.0","id":1,"result":{"protocol_version":"0.2","plugin_name":"git-local","capabilities":{"capabilities":[{"kind":"exec"}]},"required_config":[],"widgets":[{"id":"repo-status","kind":"status-grid","title":"Repositórios Git"}],"actions":[]}}"#;
 
         let parsed: HandshakeHelloResponse = serde_json::from_str(raw).unwrap();
         match &parsed {
             HandshakeHelloResponse::Success { id, result, .. } => {
                 assert_eq!(*id, RequestId::Integer(1));
-                assert_eq!(result.protocol_version, ProtocolVersion::new(0, 1));
+                assert_eq!(result.protocol_version, ProtocolVersion::new(0, 2));
                 assert_eq!(result.plugin_name, "git-local");
-                assert_eq!(result.capabilities.capabilities, vec!["exec".to_string()]);
+                assert_eq!(
+                    result.capabilities.capabilities,
+                    vec![Capability::Known(KnownCapability::Exec)]
+                );
+                assert!(result.required_config.is_empty());
                 assert_eq!(result.widgets.len(), 1);
                 assert_eq!(result.widgets[0].id, "repo-status");
                 assert_eq!(result.widgets[0].kind, "status-grid");
@@ -407,6 +555,23 @@ mod tests {
 
         // Round-trip: re-serializar deve reproduzir exatamente a mesma linha compacta, já que os
         // campos opcionais ausentes não devem reaparecer na saída.
+        let re_encoded = serde_json::to_string(&parsed).unwrap();
+        assert_eq!(re_encoded, raw);
+    }
+
+    /// `kind` fora do vocabulário conhecido (`Capability::Unknown`) é aceito e preserva o `kind`
+    /// literal e os campos extras, sem interpretá-los (`research.md` D1, forward-compat).
+    #[test]
+    fn capability_unknown_kind_round_trips_preserving_extra_fields() {
+        let raw = r#"{"kind":"gpu","cores":8}"#;
+        let parsed: Capability = serde_json::from_str(raw).unwrap();
+        match &parsed {
+            Capability::Unknown(unknown) => {
+                assert_eq!(unknown.kind, "gpu");
+                assert_eq!(unknown.extra.get("cores").unwrap(), 8);
+            }
+            Capability::Known(_) => panic!("esperava Unknown"),
+        }
         let re_encoded = serde_json::to_string(&parsed).unwrap();
         assert_eq!(re_encoded, raw);
     }
@@ -456,7 +621,7 @@ mod tests {
     fn widget_get_result_round_trips_with_items() {
         let result = WidgetGetResult {
             widget_id: "repo-status".to_string(),
-            items: vec![WidgetItem {
+            items: WidgetItems::Git(vec![WidgetItem {
                 repo: GitRepository {
                     id: "/home/dev/projetos/farol".to_string(),
                     name: "farol".to_string(),
@@ -477,10 +642,40 @@ mod tests {
                     enabled: true,
                     timeout_hint_ms: None,
                 },
-            }],
+            }]),
         };
 
         let json = serde_json::to_string(&result).unwrap();
+        let back: WidgetGetResult = serde_json::from_str(&json).unwrap();
+        assert_eq!(back, result);
+    }
+
+    /// `MonitorStatusItem` — `response_time_ms: None` serializa como `null` explícito (campo
+    /// obrigatório e nullable, nunca ausente), e `WidgetGetResult.items` desta vez carrega a
+    /// variante `Monitor` (correção C3, `data-model.md` §1.4).
+    #[test]
+    fn widget_get_result_round_trips_with_monitor_items() {
+        let result = WidgetGetResult {
+            widget_id: "uptime-kuma-monitors".to_string(),
+            items: WidgetItems::Monitor(vec![
+                MonitorStatusItem {
+                    name: "api_example_com".to_string(),
+                    status: MonitorStatus::Up,
+                    response_time_ms: Some(42),
+                },
+                MonitorStatusItem {
+                    name: "internal_service".to_string(),
+                    status: MonitorStatus::Down,
+                    response_time_ms: None,
+                },
+            ]),
+        };
+
+        let json = serde_json::to_string(&result).unwrap();
+        assert_eq!(
+            json,
+            r#"{"widget_id":"uptime-kuma-monitors","items":[{"name":"api_example_com","status":"up","response_time_ms":42},{"name":"internal_service","status":"down","response_time_ms":null}]}"#
+        );
         let back: WidgetGetResult = serde_json::from_str(&json).unwrap();
         assert_eq!(back, result);
     }

@@ -1,21 +1,33 @@
-//! Teste de contrato (T047): valida que o JSON produzido/aceito pelos tipos de
-//! `farol_protocol::messages` é genuinamente válido contra os 4 JSON Schemas normativos em
-//! `protocol/schema/v0.1/*.schema.json` — não apenas "o Rust concorda consigo mesmo" (isso já é
-//! coberto pelos testes de unidade internos de round-trip em `src/framing.rs`, `src/version.rs` e
-//! `src/messages.rs`), mas "o Rust concorda com o contrato normativo do protocolo".
+//! Teste de contrato: valida que o JSON produzido/aceito pelos tipos de `farol_protocol::messages`
+//! é genuinamente válido contra os 4 JSON Schemas normativos em `protocol/schema/v0.2/*.schema.json`
+//! — não apenas "o Rust concorda consigo mesmo" (isso já é coberto pelos testes de unidade internos
+//! de round-trip em `src/framing.rs`, `src/version.rs` e `src/messages.rs`), mas "o Rust concorda
+//! com o contrato normativo do protocolo".
+//!
+//! ## Correção H3 (`specs/002-uptime-kuma-plugin/tasks.md` T043)
+//!
+//! Este arquivo validava originalmente contra `protocol/schema/v0.1/*.schema.json`, usando o
+//! formato antigo de `CapabilityManifest.capabilities` (`Vec<String>`) e `WidgetGetResult.items`
+//! (`Vec<WidgetItem>` fixo). Os tipos de `farol_protocol::messages` evoluíram para o protocolo
+//! `"0.2"` (`Capability` discriminado por `kind`, `RequiredConfigItem`/`required_config`,
+//! `MonitorStatusItem` e `WidgetItems` como união discriminada) — o formato antigo não compila
+//! mais contra esses tipos. Como o contrato normativo vigente agora é `v0.2`, este arquivo passa a
+//! carregar e validar contra `protocol/schema/v0.2/*.schema.json`; `protocol/schema/v0.1/`
+//! permanece intocado como registro histórico do formato que `git-local` (até a migração da issue
+//! #4/T050) ainda fala.
 //!
 //! ## Por que este arquivo mora aqui e não em `tests/contract/` na raiz do workspace
 //!
-//! A task T047 e `tests/contract/README.md` (na raiz do workspace) descrevem `tests/contract/`
-//! como o diretório conceitual dos testes de contrato do protocolo. Só que o Cargo só reconhece
-//! testes de integração dentro de `<crate>/tests/*.rs` — um diretório `tests/` solto na raiz do
-//! workspace (fora de qualquer crate) não é compilado nem rodado por `cargo test`, seja qual for
-//! o layout de dentro dele. Como este teste depende diretamente dos tipos de `farol_protocol`
-//! (crate de biblioteca), a única forma de fazê-lo rodar via `cargo test` é como teste de
-//! integração dentro do próprio crate, em `crates/farol-protocol/tests/`. O
-//! `tests/contract/README.md` da raiz foi atualizado para apontar para cá e explicar essa
-//! limitação — não é uma decisão arbitrária de layout, é a única forma de o Cargo enxergar o
-//! teste.
+//! A task original (T047, feature 001) e `tests/contract/README.md` (na raiz do workspace)
+//! descrevem `tests/contract/` como o diretório conceitual dos testes de contrato do protocolo. Só
+//! que o Cargo só reconhece testes de integração dentro de `<crate>/tests/*.rs` — um diretório
+//! `tests/` solto na raiz do workspace (fora de qualquer crate) não é compilado nem rodado por
+//! `cargo test`, seja qual for o layout de dentro dele. Como este teste depende diretamente dos
+//! tipos de `farol_protocol` (crate de biblioteca), a única forma de fazê-lo rodar via
+//! `cargo test` é como teste de integração dentro do próprio crate, em
+//! `crates/farol-protocol/tests/`. O `tests/contract/README.md` da raiz foi atualizado para apontar
+//! para cá e explicar essa limitação — não é uma decisão arbitrária de layout, é a única forma de o
+//! Cargo enxergar o teste.
 //!
 //! ## Como os 4 schemas são carregados
 //!
@@ -28,6 +40,13 @@
 use jsonschema::{Registry, Validator};
 use serde_json::{json, Value};
 
+// `Capability`, `KnownCapability`, `RequiredConfigItem`, `MonitorStatus`, `MonitorStatusItem` e
+// `WidgetItems` (todos v0.2, já implementados em `src/messages.rs`) ainda não são reexportados na
+// raiz do crate (`src/lib.rs`, fora do escopo desta task — só este arquivo de teste é editado
+// aqui) — importados via `farol_protocol::messages` diretamente, que já os declara `pub`.
+use farol_protocol::messages::{
+    Capability, KnownCapability, MonitorStatus, MonitorStatusItem, RequiredConfigItem, WidgetItems,
+};
 use farol_protocol::{
     ActionDeclaration, ActionInvokeParams, ActionInvokeRequest, ActionInvokeResponse,
     ActionInvokeResult, ActionTarget, CapabilityManifest, ErrorData, ErrorObject, GitRepository,
@@ -37,11 +56,11 @@ use farol_protocol::{
 };
 
 // Conteúdo bruto dos 4 schemas normativos, embutido em tempo de compilação. Caminho relativo a
-// este arquivo: `crates/farol-protocol/tests/` -> raiz do workspace -> `protocol/schema/v0.1/`.
-const HANDSHAKE_SCHEMA: &str = include_str!("../../../protocol/schema/v0.1/handshake.schema.json");
-const WIDGET_SCHEMA: &str = include_str!("../../../protocol/schema/v0.1/widget.schema.json");
-const ACTION_SCHEMA: &str = include_str!("../../../protocol/schema/v0.1/action.schema.json");
-const ERROR_SCHEMA: &str = include_str!("../../../protocol/schema/v0.1/error.schema.json");
+// este arquivo: `crates/farol-protocol/tests/` -> raiz do workspace -> `protocol/schema/v0.2/`.
+const HANDSHAKE_SCHEMA: &str = include_str!("../../../protocol/schema/v0.2/handshake.schema.json");
+const WIDGET_SCHEMA: &str = include_str!("../../../protocol/schema/v0.2/widget.schema.json");
+const ACTION_SCHEMA: &str = include_str!("../../../protocol/schema/v0.2/action.schema.json");
+const ERROR_SCHEMA: &str = include_str!("../../../protocol/schema/v0.2/error.schema.json");
 
 /// Registra os 4 schemas juntos (por causa do `$ref` cruzado entre eles) e devolve um validador
 /// para cada um, montado sobre esse registry compartilhado.
@@ -59,25 +78,25 @@ fn load_schemas() -> Schemas {
     let error_value: Value = serde_json::from_str(ERROR_SCHEMA).expect("error.schema.json inválido");
 
     // Os 4 documentos são registrados sob suas próprias URLs `$id` para que `$ref` absolutos
-    // (ex.: `https://farol.dev/protocol/v0.1/error.schema.json`) resolvam entre eles.
+    // (ex.: `https://farol.dev/protocol/v0.2/error.schema.json`) resolvam entre eles.
     let registry = Registry::new()
         .add(
-            "https://farol.dev/protocol/v0.1/handshake.schema.json",
+            "https://farol.dev/protocol/v0.2/handshake.schema.json",
             handshake_value.clone(),
         )
         .expect("URI de handshake.schema.json inválida")
         .add(
-            "https://farol.dev/protocol/v0.1/widget.schema.json",
+            "https://farol.dev/protocol/v0.2/widget.schema.json",
             widget_value.clone(),
         )
         .expect("URI de widget.schema.json inválida")
         .add(
-            "https://farol.dev/protocol/v0.1/action.schema.json",
+            "https://farol.dev/protocol/v0.2/action.schema.json",
             action_value.clone(),
         )
         .expect("URI de action.schema.json inválida")
         .add(
-            "https://farol.dev/protocol/v0.1/error.schema.json",
+            "https://farol.dev/protocol/v0.2/error.schema.json",
             error_value.clone(),
         )
         .expect("URI de error.schema.json inválida")
@@ -135,7 +154,7 @@ fn handshake_hello_request_matches_schema() {
     let req = HandshakeHelloRequest::new(
         RequestId::Integer(1),
         HandshakeHello {
-            protocol_version: ProtocolVersion::new(0, 1),
+            protocol_version: ProtocolVersion::new(0, 2),
             core_name: "farol-core".to_string(),
         },
     );
@@ -150,11 +169,12 @@ fn handshake_hello_response_success_matches_schema() {
         jsonrpc: "2.0".to_string(),
         id: RequestId::Integer(1),
         result: HandshakeHelloResult {
-            protocol_version: ProtocolVersion::new(0, 1),
+            protocol_version: ProtocolVersion::new(0, 2),
             plugin_name: "git-local".to_string(),
             capabilities: CapabilityManifest {
-                capabilities: vec!["exec".to_string()],
+                capabilities: vec![Capability::Known(KnownCapability::Exec)],
             },
+            required_config: vec![],
             widgets: vec![WidgetDeclaration {
                 id: "repo-status".to_string(),
                 kind: "status-grid".to_string(),
@@ -165,7 +185,78 @@ fn handshake_hello_response_success_matches_schema() {
         },
     };
     let instance = serde_json::to_value(&resp).unwrap();
-    assert_valid(&schemas.handshake, &instance, "handshake.schema.json", "HandshakeHelloResponse::Success positivo");
+    assert_valid(&schemas.handshake, &instance, "handshake.schema.json", "HandshakeHelloResponse::Success positivo (capability exec)");
+}
+
+/// Caso positivo novo: capacidade `network` (`host`/`port`), declarada por um plugin como
+/// `uptime-kuma` quando `base_url` já foi resolvido (`research.md` D1/D8). Junto com
+/// `required_config` não-vazio, cobre a nova forma estruturada de `Capability` introduzida em
+/// v0.2 (correção H3, T043).
+#[test]
+fn handshake_hello_response_success_with_network_capability_matches_schema() {
+    let schemas = load_schemas();
+    let resp = HandshakeHelloResponse::Success {
+        jsonrpc: "2.0".to_string(),
+        id: RequestId::Integer(2),
+        result: HandshakeHelloResult {
+            protocol_version: ProtocolVersion::new(0, 2),
+            plugin_name: "uptime-kuma".to_string(),
+            capabilities: CapabilityManifest {
+                capabilities: vec![Capability::Known(KnownCapability::Network {
+                    host: "kuma.example.com".to_string(),
+                    port: Some(443),
+                })],
+            },
+            required_config: vec![],
+            widgets: vec![WidgetDeclaration {
+                id: "uptime-kuma-monitors".to_string(),
+                kind: "monitor-status-grid".to_string(),
+                title: "Uptime Kuma".to_string(),
+                suggested_refresh_interval_ms: Some(30000),
+            }],
+            actions: vec![],
+        },
+    };
+    let instance = serde_json::to_value(&resp).unwrap();
+    assert_valid(&schemas.handshake, &instance, "handshake.schema.json", "HandshakeHelloResponse::Success com capability network");
+}
+
+/// Caso positivo novo: `required_config` não-vazio (`RequiredConfigItem`), um item não-secreto
+/// (`base_url`) e um secreto (`api_key`) — forma que `uptime-kuma` sempre declara,
+/// independentemente de já haver valor armazenado (`research.md` D8).
+#[test]
+fn handshake_hello_response_success_with_required_config_matches_schema() {
+    let schemas = load_schemas();
+    let resp = HandshakeHelloResponse::Success {
+        jsonrpc: "2.0".to_string(),
+        id: RequestId::Integer(3),
+        result: HandshakeHelloResult {
+            protocol_version: ProtocolVersion::new(0, 2),
+            plugin_name: "uptime-kuma".to_string(),
+            capabilities: CapabilityManifest { capabilities: vec![] },
+            required_config: vec![
+                RequiredConfigItem {
+                    name: "base_url".to_string(),
+                    secret: false,
+                    description: "URL base da instância Uptime Kuma".to_string(),
+                },
+                RequiredConfigItem {
+                    name: "api_key".to_string(),
+                    secret: true,
+                    description: "API Key da instância Uptime Kuma".to_string(),
+                },
+            ],
+            widgets: vec![WidgetDeclaration {
+                id: "uptime-kuma-monitors".to_string(),
+                kind: "monitor-status-grid".to_string(),
+                title: "Uptime Kuma".to_string(),
+                suggested_refresh_interval_ms: Some(30000),
+            }],
+            actions: vec![],
+        },
+    };
+    let instance = serde_json::to_value(&resp).unwrap();
+    assert_valid(&schemas.handshake, &instance, "handshake.schema.json", "HandshakeHelloResponse::Success com required_config não-vazio");
 }
 
 #[test]
@@ -197,11 +288,32 @@ fn handshake_request_missing_core_name_is_rejected() {
         "id": 1,
         "method": "handshake/hello",
         "params": {
-            "protocol_version": "0.1"
+            "protocol_version": "0.2"
             // "core_name" ausente de propósito
         }
     });
     assert_invalid(&schemas.handshake, &instance, "handshake.schema.json", "HandshakeHelloRequest sem core_name");
+}
+
+/// Caso negativo: `HandshakeHelloResult` sem `required_config` (campo obrigatório em v0.2,
+/// diferente de v0.1) — confirma que o schema realmente exige o campo novo, não só que os tipos
+/// Rust o preenchem.
+#[test]
+fn handshake_result_missing_required_config_is_rejected() {
+    let schemas = load_schemas();
+    let instance = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+            "protocol_version": "0.2",
+            "plugin_name": "uptime-kuma",
+            "capabilities": { "capabilities": [] },
+            // "required_config" ausente de propósito
+            "widgets": [],
+            "actions": []
+        }
+    });
+    assert_invalid(&schemas.handshake, &instance, "handshake.schema.json", "HandshakeHelloResult sem required_config");
 }
 
 // -------------------------------------------------------------------------------------------
@@ -229,7 +341,7 @@ fn widget_get_result_matches_schema() {
         id: RequestId::Integer(2),
         result: WidgetGetResult {
             widget_id: "repo-status".to_string(),
-            items: vec![WidgetItem {
+            items: WidgetItems::Git(vec![WidgetItem {
                 repo: GitRepository {
                     id: "/home/dev/projetos/farol".to_string(),
                     name: "farol".to_string(),
@@ -250,28 +362,59 @@ fn widget_get_result_matches_schema() {
                     enabled: true,
                     timeout_hint_ms: None,
                 },
-            }],
+            }]),
         },
     };
     let instance = serde_json::to_value(&resp).unwrap();
-    assert_valid(&schemas.widget, &instance, "widget.schema.json", "WidgetGetResult positivo (com item)");
+    assert_valid(&schemas.widget, &instance, "widget.schema.json", "WidgetGetResult positivo (com item git, WidgetItems::Git)");
 }
 
-/// Caso positivo adicional: `WidgetGetResult` com `items: []` — MAY ser vazia por desenho
-/// (`protocol/SPEC.md`), não deve ser tratado como erro pelo schema.
+/// Caso positivo novo: `WidgetGetResult` com `items: WidgetItems::Monitor(...)` — o novo
+/// vocabulário `MonitorStatusItem` para widgets `kind: "monitor-status-grid"` (correção C3,
+/// exercitado aqui contra `widget.schema.json` v0.2 pela primeira vez neste arquivo).
 #[test]
-fn widget_get_result_with_empty_items_matches_schema() {
+fn widget_get_result_with_monitor_items_matches_schema() {
     let schemas = load_schemas();
     let resp = WidgetGetResponse::Success {
         jsonrpc: "2.0".to_string(),
-        id: RequestId::Integer(3),
+        id: RequestId::Integer(4),
         result: WidgetGetResult {
-            widget_id: "repo-status".to_string(),
-            items: vec![],
+            widget_id: "uptime-kuma-monitors".to_string(),
+            items: WidgetItems::Monitor(vec![
+                MonitorStatusItem {
+                    name: "api_example_com".to_string(),
+                    status: MonitorStatus::Up,
+                    response_time_ms: Some(42),
+                },
+                MonitorStatusItem {
+                    name: "internal_service".to_string(),
+                    status: MonitorStatus::Down,
+                    response_time_ms: None,
+                },
+            ]),
         },
     };
     let instance = serde_json::to_value(&resp).unwrap();
-    assert_valid(&schemas.widget, &instance, "widget.schema.json", "WidgetGetResult com items vazio");
+    assert_valid(&schemas.widget, &instance, "widget.schema.json", "WidgetGetResult positivo (monitor-status-grid, WidgetItems::Monitor)");
+}
+
+/// Caso positivo: `items: []` com `anyOf` (correção da definição em `widget.schema.json` v0.2).
+/// Com `oneOf`, um array vazio satisfaria *ambas* as alternativas (`WidgetItem[]` vs.
+/// `MonitorStatusItem[]`) — as duas ramas são `{"type":"array","items":{$ref ...}}` sem
+/// discriminador algum e sem `minItems`, então um array vazio satisfaz ambas (nada a validar
+/// contra `$ref` quando não há elementos). Mudanza `oneOf` → `anyOf` permite que `[]` seja
+/// válido (precisa casar com pelo menos uma alternativa, não exatamente uma) e preserva a
+/// discriminação no caso não-vazio (array de `WidgetItem` com propriedades obrigatórias
+/// incompatíveis com `MonitorStatusItem`, e vice-versa).
+#[test]
+fn widget_get_result_with_empty_items_matches_schema_via_any_of() {
+    let schemas = load_schemas();
+    let instance = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": { "widget_id": "repo-status", "items": [] }
+    });
+    assert_valid(&schemas.widget, &instance, "widget.schema.json", "WidgetGetResult com items vazio (anyOf discriminado)");
 }
 
 /// Caso negativo: `GitRepository` sem `remote_status` (campo obrigatório).
@@ -301,6 +444,26 @@ fn widget_get_result_missing_remote_status_is_rejected() {
         }
     });
     assert_invalid(&schemas.widget, &instance, "widget.schema.json", "GitRepository sem remote_status");
+}
+
+/// Caso negativo: `MonitorStatusItem` com `status` fora do vocabulário conhecido
+/// (`"up"|"down"|"pending"|"maintenance"`).
+#[test]
+fn widget_get_result_monitor_item_with_invalid_status_is_rejected() {
+    let schemas = load_schemas();
+    let instance = json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "result": {
+            "widget_id": "uptime-kuma-monitors",
+            "items": [{
+                "name": "api_example_com",
+                "status": "unknown_status",
+                "response_time_ms": null
+            }]
+        }
+    });
+    assert_invalid(&schemas.widget, &instance, "widget.schema.json", "MonitorStatusItem com status inválido");
 }
 
 // -------------------------------------------------------------------------------------------
@@ -411,6 +574,31 @@ fn error_object_without_data_matches_schema() {
     };
     let instance = serde_json::to_value(&error).unwrap();
     assert_valid(&schemas.error, &instance, "error.schema.json", "ErrorObject positivo sem data");
+}
+
+/// Caso positivo adicional: os três novos `reason`s de v0.2 (`not_configured`,
+/// `metrics_unreachable`, `metrics_parse_error`, `research.md` D9) — o catálogo textual é novo,
+/// mas a forma de `ErrorObject`/`ErrorData` não muda; confirma que o schema aceita `reason`
+/// livremente (string aberta, `contracts/error-model-delta.md`).
+#[test]
+fn error_object_with_uptime_kuma_reasons_matches_schema() {
+    let schemas = load_schemas();
+    for (code, reason) in [
+        (-32005, "not_configured"),
+        (-32006, "metrics_unreachable"),
+        (-32007, "metrics_parse_error"),
+    ] {
+        let error = ErrorObject {
+            code,
+            message: format!("erro de domínio: {reason}"),
+            data: Some(ErrorData {
+                reason: Some(reason.to_string()),
+                extra: Default::default(),
+            }),
+        };
+        let instance = serde_json::to_value(&error).unwrap();
+        assert_valid(&schemas.error, &instance, "error.schema.json", &format!("ErrorObject com reason '{reason}'"));
+    }
 }
 
 /// Caso negativo: `ErrorObject` sem `message` (campo obrigatório).

@@ -80,10 +80,10 @@ tests/{contract,integration,unit}/
 exigiam o CLI `op` do 1Password instalado/autenticado antes de começar; essa dependência foi removida
 por D8 revisado).
 
-- [ ] T001 [P] Criar esqueleto de `plugins/uptime-kuma/` (`main.py`, `config.py`, `secrets.py`,
+- [X] T001 [P] Criar esqueleto de `plugins/uptime-kuma/` (`main.py`, `config.py`, `secrets.py`,
   `metrics_client.py`, `metrics_parser.py`, `poller.py` — stubs, apenas stdlib), per `plan.md` §
   Project Structure e D7 de `research.md`
-- [ ] T002 [P] Configurar lint/format de `plugins/uptime-kuma` (Python, stdlib only — sem dependência
+- [X] T002 [P] Configurar lint/format de `plugins/uptime-kuma` (Python, stdlib only — sem dependência
   de runtime externa), mesmo padrão já usado em `plugins/git-local`
 
 ---
@@ -104,7 +104,7 @@ plugin `uptime-kuma` pode começar antes de 2a estar completa.
 
 ### Phase 2a — Evolução do Protocolo para `"0.2"` (bloqueante de tudo o mais — D1, D8)
 
-- [ ] T003 Atualizar `protocol/SPEC.md` — título/versão corrente passam a descrever `"0.2"`; §6.3
+- [X] T003 Atualizar `protocol/SPEC.md` — título/versão corrente passam a descrever `"0.2"`; §6.3
   ganha a nova forma estruturada de `CapabilityManifest`/`Capability` (discriminada por `kind`:
   **`exec`/`network`** — sem `kind: "secret"`, removido nesta revisão, D1/D8 de `research.md`) e o
   campo novo `required_config: RequiredConfigItem[]` (irmão de `capabilities`/`widgets`/`actions` em
@@ -113,7 +113,7 @@ plugin `uptime-kuma` pode começar antes de 2a estar completa.
   `PluginState::Unavailable{NotConfigured}` antes de chamar `widget/get`); `protocol/schema/v0.1/`
   permanece **intocado**, retido como registro histórico do formato que `git-local` (inalterado)
   ainda fala, per `contracts/framing-and-versioning-delta.md`
-- [ ] T004 [P] Criar `protocol/schema/v0.2/handshake.schema.json` — `Capability` discriminada por
+- [X] T004 [P] Criar `protocol/schema/v0.2/handshake.schema.json` — `Capability` discriminada por
   `kind` (`exec` sem campos extras; `network` com `host` obrigatório + `port` opcional; **sem**
   `kind: "secret"`), `CapabilityManifest.capabilities: Capability[]` **sem** `minItems: 1` (MAY ser
   `[]`); + `RequiredConfigItem` (`name`, `secret`, `description`, todos obrigatórios) e o campo
@@ -125,17 +125,17 @@ plugin `uptime-kuma` pode começar antes de 2a estar completa.
   `crates/farol-protocol/tests/contract_schema_validation.rs:20-26`; `v0.1/handshake.schema.json:3`
   e `action.schema.json:30,57` mostram o padrão de `$id`/`$ref` absoluto versionado que MUST ser
   seguido (apontando para `/v0.2/`, não para `/v0.1/`), não copiado
-- [ ] T005 [P] Criar `protocol/schema/v0.2/widget.schema.json` — novo item `MonitorStatusItem`
+- [X] T005 [P] Criar `protocol/schema/v0.2/widget.schema.json` — novo item `MonitorStatusItem`
   (`name`, `status: "up"|"down"|"pending"|"maintenance"`, `response_time_ms: integer|null`) e novo
   valor de `kind` de widget `"monitor-status-grid"`; `WidgetItem`/`kind: "status-grid"` existentes
   permanecem inalterados no mesmo arquivo, per `research.md` D4 e `data-model.md` §1.3–§1.5.
   **Correção H4**: mesmo ajuste de `$id`/`$ref` de T004 (ex.: `v0.1/widget.schema.json:122` referencia
   `handshake.schema.json` de `v0.1` — o equivalente em `v0.2/` MUST referenciar `v0.2/handshake.schema.json`)
-- [ ] T006 [P] Criar `protocol/schema/v0.2/action.schema.json` — forma inalterada em relação a
+- [X] T006 [P] Criar `protocol/schema/v0.2/action.schema.json` — forma inalterada em relação a
   `v0.1/action.schema.json` (copiado/referenciado; ainda usado pelo `git-local` futuro migrado, que
   continua tendo ação de fetch), per `plan.md` § Project Structure. **Correção H4**: mesmo ajuste de
   `$id`/`$ref` de T004/T005
-- [ ] T007 [P] Criar `protocol/schema/v0.2/error.schema.json` — forma do `ErrorObject` inalterada;
+- [X] T007 [P] Criar `protocol/schema/v0.2/error.schema.json` — forma do `ErrorObject` inalterada;
   descrição/catálogo textual ganha os três novos `reason`s (`not_configured` `-32005`,
   `metrics_unreachable` `-32006`, `metrics_parse_error` `-32007`) e documenta que `exec_unavailable`
   (`-32003`) permanece no catálogo geral do protocolo mas **sem uso por `uptime-kuma`** (D8 revisado —
@@ -154,18 +154,18 @@ plugin `uptime-kuma` pode começar antes de 2a estar completa.
 
 ### Phase 2b — `farol-protocol` + `farol-core` (Rust): bindings do novo schema, correções CRITICAL/HIGH e infraestrutura de configuração/segredo (D8)
 
-- [ ] T008 [P] Evoluir `CapabilityManifest` em `crates/farol-protocol/src/messages.rs:76-82` — enum
+- [X] T008 [P] Evoluir `CapabilityManifest` em `crates/farol-protocol/src/messages.rs:76-82` — enum
   `Capability` (`#[serde(tag = "kind", rename_all = "snake_case")]`: `Exec`, `Network { host,
   port: Option<u16> }` — **sem** variante `Secret`, removida nesta revisão), `CapabilityManifest.
   capabilities: Vec<Capability>` (substitui `Vec<String>`), per `research.md` D1/D8 (binding Rust
   ilustrativo) e `data-model.md` §1.1–§1.2; tratamento de `kind` desconhecido (forward-compat) é
   decisão de implementação a resolver aqui, per nota de `research.md` D1 (depende de T004)
-- [ ] T009 Adicionar `RequiredConfigItem { name: String, secret: bool, description: String }` e o
+- [X] T009 Adicionar `RequiredConfigItem { name: String, secret: bool, description: String }` e o
   campo `required_config: Vec<RequiredConfigItem>` em `HandshakeHelloResult`
   (`crates/farol-protocol/src/messages.rs:136-150`, logo após `capabilities`, antes de `widgets`),
   per `research.md` D8 e `data-model.md` §1.6/§1.6.1 (mesmo arquivo de T008 — sequencial, depende de
   T004, T008)
-- [ ] T010 Adicionar `MonitorStatusItem` e o novo valor de `kind` de widget `"monitor-status-grid"` ao
+- [X] T010 Adicionar `MonitorStatusItem` e o novo valor de `kind` de widget `"monitor-status-grid"` ao
   vocabulário de `crates/farol-protocol/src/messages.rs`, per `research.md` D4 e `data-model.md`
   §1.3–§1.5. **Correção C3**: `WidgetGetResult.items` (hoje `Vec<WidgetItem>` fixo,
   `messages.rs:240-246`) MUST mudar para uma união discriminada que aceite `WidgetItem` (git) **ou**
@@ -173,7 +173,7 @@ plugin `uptime-kuma` pode começar antes de 2a estar completa.
   código; ver `data-model.md` §1.4 para o desenho esperado (decisão exata de forma — enum genérico,
   campos `Option<Vec<T>>` mutuamente exclusivos, ou outra — é decisão de implementação desta task)
   (mesmo arquivo de T008/T009 — sequencial, depende de T005, T009)
-- [ ] T011 **[Correção C1]** Extrair/checar `protocol_version` via `serde_json::Value` (probe só do
+- [X] T011 **[Correção C1]** Extrair/checar `protocol_version` via `serde_json::Value` (probe só do
   campo `protocol_version`) **antes** da desserialização tipada de `HandshakeHelloResponse` em
   `crates/farol-core/src/plugin_worker.rs` — hoje (`plugin_worker.rs:296-325`) a resposta inteira do
   handshake é desserializada como `HandshakeHelloResponse` tipado (`#[serde(untagged)]`,
@@ -185,14 +185,14 @@ plugin `uptime-kuma` pode começar antes de 2a estar completa.
   `quickstart.md`) não acontece. MUST landar junto de ou antes de T008 entrar em uso real (mesma
   condição de corrida que motivou esta correção) (depende de T004; T023 abaixo — validação do
   Cenário 8 — depende desta task)
-- [ ] T012 **[Correção H1]** Bump da versão de protocolo suportada pelo core para `"0.2"` —
+- [X] T012 **[Correção H1]** Bump da versão de protocolo suportada pelo core para `"0.2"` —
   **CORRIGIDO**: a constante que carrega essa versão é `CORE_PROTOCOL_VERSION` em
   `crates/farol-core/src/plugin_worker.rs:100` (`ProtocolVersion { major: 0, minor: 1 }` hoje), **não**
   em `crates/farol-protocol/src/version.rs` (versões anteriores deste documento e `plan.md:172`
   apontavam o arquivo errado — `version.rs` contém só a lógica de comparação por igualdade exata sob
   `MAJOR == 0`, que permanece inalterada); atualizar `plugin_worker.rs:100` para
   `ProtocolVersion { major: 0, minor: 2 }` (depende de T003)
-- [ ] T013 **[Correção H2]** Corrigir os 3 pontos que quebram de compilar com `Capability` estruturado
+- [X] T013 **[Correção H2]** Corrigir os 3 pontos que quebram de compilar com `Capability` estruturado
   (T008): `crates/farol-core/src/view.rs:60-63`
   (`identity.capabilities.capabilities.join(", ")`, só compila hoje com `Vec<String>`) e
   `crates/farol-core/src/update.rs:319-320,352-353,638-639`
@@ -200,31 +200,31 @@ plugin `uptime-kuma` pode começar antes de 2a estar completa.
   atualizar para o novo `Vec<Capability>` (ex.: `vec![Capability::Exec]` e uma forma de exibição em
   `view.rs` que itere `Capability` estruturado em vez de `String`) (depende de T008; dependência de
   qualquer task que exija build/teste passando, incluindo T023)
-- [ ] T014 **[Correção C2, parte 1]** Tornar comando/args do processo do plugin configuráveis em
+- [X] T014 **[Correção C2, parte 1]** Tornar comando/args do processo do plugin configuráveis em
   `crates/farol-core/src/plugin_worker.rs` — hoje `PLUGIN_COMMAND`/`PLUGIN_ARGS`
   (`plugin_worker.rs:74,80`) são constantes hardcoded para `python3 plugins/git-local/main.py`; sem
   esta correção, T024 em diante (US1) é inexecutável (nenhum código spawna `uptime-kuma`)
-- [ ] T015 **[Correção C2, parte 2]** Suportar múltiplas `PluginConnection` simultâneas em
+- [X] T015 **[Correção C2, parte 2]** Suportar múltiplas `PluginConnection` simultâneas em
   `crates/farol-core/src/main.rs` — hoje (`main.rs:29-31`) `Farol.plugin` é uma única
   `model::PluginConnection`; vira uma coleção (uma conexão por plugin conhecido nesta feature —
   lista fixa `git-local` + `uptime-kuma`, hardcoded no core; um registry federado de plugins é
   `Out of Scope` do `spec.md`, não introduzido aqui), cada uma com seu próprio comando/args (T014) e
   sua própria subscription de worker (depende de T014)
-- [ ] T016 **[D8]** Leitura/escrita de `config.toml` (valores não-secretos de `required_config`) por
+- [X] T016 **[D8]** Leitura/escrita de `config.toml` (valores não-secretos de `required_config`) por
   plugin no core — `$XDG_CONFIG_HOME/farol/plugins/<nome>/config.toml`, generalizando o mecanismo já
   usado para `scan_root` de `git-local` (feature 001) para aceitar qualquer conjunto de chaves
   declarado por `required_config`, não só um campo fixo, per `research.md` D8
-- [ ] T017 **[D8]** Escrita de `$XDG_CONFIG_HOME/farol/secrets.toml` (valores secretos de
+- [X] T017 **[D8]** Escrita de `$XDG_CONFIG_HOME/farol/secrets.toml` (valores secretos de
   `required_config`) exclusivamente pelo core, com permissão de arquivo forçada a `0600` (Unix) —
   seção por plugin (`[uptime-kuma]`), per `research.md` D8 (mesmo módulo de configuração de T016,
   arquivo separado por decisão de D8 — segredo nunca no mesmo arquivo que configuração não-secreta)
-- [ ] T018 **[D8]** Resolver cada item de `required_config` recebido no handshake contra
+- [X] T018 **[D8]** Resolver cada item de `required_config` recebido no handshake contra
   `config.toml`/`secrets.toml` (T016/T017) e injetar como variável de ambiente do processo filho
   (`Command::env(env_var_name, value)`) no spawn, em `crates/farol-core/src/plugin_worker.rs` — nome
   da variável de ambiente = `FAROL_PLUGIN_<PLUGIN_NAME_MAIÚSCULO>_<NAME_MAIÚSCULO>` (convenção fixa de
   `research.md` D8, aplicada identicamente pelo lado Python em T021/T022) (depende de T009, T014,
   T016, T017)
-- [ ] T019 **[D8]** Comparar `required_config` recebido no `HandshakeHelloResult` contra o que foi
+- [X] T019 **[D8]** Comparar `required_config` recebido no `HandshakeHelloResult` contra o que foi
   efetivamente injetado (T018); se algum item obrigatório não tiver valor, transicionar
   `PluginState` para `Unavailable { reason: NotConfigured, .. }` **em vez de** `Ready` — novo membro
   `NotConfigured` em `UnavailableReason` (`crates/farol-core/src/model.rs`, hoje só `FailedToStart`/
@@ -235,15 +235,15 @@ plugin `uptime-kuma` pode começar antes de 2a estar completa.
 
 ### Phase 2c — Esqueleto do plugin `uptime-kuma` (Python) — paralelo a 2b
 
-- [ ] T020 [P] Loop de leitura/escrita NDJSON sobre stdin/stdout em `plugins/uptime-kuma/main.py`
+- [X] T020 [P] Loop de leitura/escrita NDJSON sobre stdin/stdout em `plugins/uptime-kuma/main.py`
   (mesmo padrão de `plugins/git-local/main.py`, D7 reafirma D3 da feature 001) — sem lógica de negócio
   ainda (depende de T001)
-- [ ] T021 [P] **[Correção 2.4]** Leitor de variável de ambiente em `plugins/uptime-kuma/config.py` —
+- [X] T021 [P] **[Correção 2.4]** Leitor de variável de ambiente em `plugins/uptime-kuma/config.py` —
   substitui o leitor de TOML de versões anteriores deste documento: `os.environ.get()` para
   `FAROL_PLUGIN_UPTIME_KUMA_BASE_URL`, aplicando a mesma convenção de nome de T018, per `research.md`
   D8. **Sem** default seguro (diferente do `scan_root` de `git-local`) — ausência/vazio é estado a
   tratar (`not_configured`, FR-007/FR-008) (depende de T001)
-- [ ] T022 [P] **[Correção 2.4]** Leitor de variável de ambiente (secreta) em
+- [X] T022 [P] **[Correção 2.4]** Leitor de variável de ambiente (secreta) em
   `plugins/uptime-kuma/secrets.py` — substitui a chamada a `op read` via `subprocess` de versões
   anteriores deste documento: `os.environ.get()` para `FAROL_PLUGIN_UPTIME_KUMA_API_KEY`, mesmo
   mecanismo de leitura de T021 (a única diferença entre os dois módulos é qual `name`/variável cada um
@@ -431,7 +431,7 @@ story.
   feature 001 (`Unavailable{Crashed}`/`Unavailable{Unresponsive}`), janela do Farol permanece aberta e
   responsiva — **nenhuma implementação nova**, só confirmação de que o mecanismo genérico do core (D6
   da feature 001, inalterado) se aplica também a este plugin (FR-018)
-- [ ] T043 **[Correção H3]** Adaptar ou aposentar
+- [X] T043 **[Correção H3]** Adaptar ou aposentar
   `crates/farol-protocol/tests/contract_schema_validation.rs:41-44,155-156` — hoje valida os tipos
   Rust contra os 4 schemas `v0.1` usando `capabilities: vec!["exec".to_string()]`, que para de
   compilar/fazer sentido depois de T008–T010 (`Capability` deixa de ser `Vec<String>`). Como
