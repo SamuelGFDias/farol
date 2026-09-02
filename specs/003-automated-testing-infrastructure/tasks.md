@@ -215,18 +215,31 @@ Rust, sem exemplo manual isolado.
 exercita valores de borda automaticamente; introduzir uma implementação mais restritiva que o schema
 permite e confirmar que a verificação falha apontando o campo/valor exatos.
 
-- [ ] T011 [US2] Criar `crates/farol-protocol/tests/schema_boundaries.rs`: função geradora que, dado
+- [X] T011 [US2] Criar `crates/farol-protocol/tests/schema_boundaries.rs`: função geradora que, dado
   um schema já carregado (`serde_json::Value`, reaproveitando `load_schemas()` de
   `contract_schema_validation.rs`) e um `json_pointer`, deriva os casos `MinimumMinusOne`/
   `Minimum`/`MaximumPlusOne`/`Maximum`/`NoMinimumNegative`/`Null`/`MissingRequired` per
   `contracts/contract-boundary-testing.md` — a partir do conteúdo real do schema em runtime, nunca de
   uma constante Rust paralela
-- [ ] T012 [P] [US2] Em `schema_boundaries.rs`: aplicar o gerador de T011 às propriedades numéricas/
+  **Resultado real (2026-09-01)**: `load_schemas()` de `contract_schema_validation.rs` não é
+  importável entre arquivos de teste de integração distintos do Cargo (cada `tests/*.rs` é seu
+  próprio binário) — `load_schema_set()` reimplementa o mesmo carregamento localmente (nota no topo
+  do arquivo). Gerador implementado como `numeric_and_null_boundary_cases()` +
+  `missing_required_case()`, cobertos por 3 testes unitários próprios com schemas sintéticos
+  (`generator_derives_boundary_values_from_the_schemas_own_declared_minimum_and_maximum` etc.), que
+  provam a derivação em runtime (mudar o `minimum` do schema sintético muda o valor gerado, sem
+  tocar o gerador)
+- [X] T012 [P] [US2] Em `schema_boundaries.rs`: aplicar o gerador de T011 às propriedades numéricas/
   nuláveis de `handshake.schema.json` (`suggested_refresh_interval_ms`, `RequiredConfigItem.secret`
   como booleano — se aplicável ao vocabulário de `boundary_kind`) — cada caso gerado validado (1)
   contra o `Validator` do schema e (2) contra `serde_json::from_value::<T>` quando (1) é válido
   (FR-006)
-- [ ] T013 [P] [US2] Em `schema_boundaries.rs`: aplicar o gerador às propriedades de
+  **Resultado real**: `suggested_refresh_interval_ms` (`exclusiveMinimum`, não `minimum` —
+  extensão documentada no gerador, ver doc do módulo) e `Capability(network).port`
+  (`minimum`/`maximum`) cobertos com casos passando; `RequiredConfigItem.secret` confirmado
+  (executável, não só comentado) como não tendo caso numérico/nulo aplicável, mas coberto por
+  `MissingRequired`
+- [X] T013 [P] [US2] Em `schema_boundaries.rs`: aplicar o gerador às propriedades de
   `widget.schema.json`, incluindo obrigatoriamente `MonitorStatusItem.response_time_ms`
   (`NoMinimumNegative`, valor `-1`) — **caso já confirmado nesta sessão de planejamento como
   atualmente falho** (`research.md` D3: o schema permite, `Option<u32>` não representa). Este caso
@@ -236,19 +249,36 @@ permite e confirmar que a verificação falha apontando o campo/valor exatos.
   PR futura (SC-004), preservando ao mesmo tempo o registro explícito, executável e não-silencioso do
   gap (rodar manualmente com `cargo test -- --ignored` continua provando o mecanismo, per Cenário 2
   de `quickstart.md`)
-- [ ] T014 [P] [US2] Em `schema_boundaries.rs`: aplicar o gerador às propriedades de
+  **Resultado real**: `#[ignore]`d aplicado a
+  `widget_monitor_status_item_response_time_ms_negative_value_is_a_known_protocol_gap`, mensagem
+  apontando T029; `Null` e `MissingRequired` (também obrigatórios pelo schema) cobertos passando.
+  Cobertura adicional (não exigida por T013, mas dentro do mesmo arquivo): `RemoteStatus.ahead`/
+  `.behind` (`minimum: 0`), demonstrando o gerador passando em casos que não são o gap conhecido
+- [X] T014 [P] [US2] Em `schema_boundaries.rs`: aplicar o gerador às propriedades de
   `action.schema.json` (`timeout_hint_ms`)
-- [ ] T015 [P] [US2] Em `schema_boundaries.rs`: aplicar o gerador às propriedades de
+  **Resultado real**: `timeout_hint_ms` é fisicamente declarado em `$defs/ActionDeclaration` de
+  `handshake.schema.json` (não em `action.schema.json` — este só define os envelopes de
+  `action/invoke`), documentado no arquivo; testado como `exclusiveMinimum` (mesma extensão de
+  T012). `ActionInvokeParams.target` (este sim fisicamente em `action.schema.json`) coberto como
+  `MissingRequired`, demonstrando o gerador aplicado a um campo não-numérico
+- [X] T015 [P] [US2] Em `schema_boundaries.rs`: aplicar o gerador às propriedades de
   `error.schema.json` (`code`, `data.reason` como string livre — confirmar que nenhum campo tem
   `minimum`/`maximum` relevante além do já coberto; se nenhum existir, documentar essa constatação em
   comentário em vez de forçar um caso artificial)
+  **Resultado real**: `code` (`NoMinimumNegative` + `MissingRequired`) e `message`
+  (`MissingRequired`) cobertos passando; `data.reason` confirmado por asserção executável (não só
+  comentário) como sem caso numérico/nulo aplicável e sem `required`
 
 ### Validação da User Story 2 (Cenário 2 de `quickstart.md`)
 
-- [ ] T016 [US2] Executar Cenário 2 de `quickstart.md`: confirmar que T013 (`response_time_ms: -1`)
+- [X] T016 [US2] Executar Cenário 2 de `quickstart.md`: confirmar que T013 (`response_time_ms: -1`)
   falha antes de ser marcado `#[ignore]` (prova o mecanismo, SC-002) e que, com `#[ignore]` aplicado,
   `cargo test -p farol-protocol` fica verde; simular uma regressão adicional (apertar outro tipo Rust
   além do schema) e confirmar detecção
+  **Resultado real**: confirmado nos dois sentidos — ver "Resultado real (T016, 2026-09-01)" em
+  `quickstart.md` § Cenário 2 para a saída exata da falha (mensagem FR-006) e da regressão adicional
+  simulada e revertida (suprimir `NoMinimumNegative` do gerador, capturada pelos testes unitários do
+  próprio gerador)
 
 **Checkpoint**: US1 + US2 entregáveis juntos aqui — os dois pilares de maior valor comprovado do
 `spec.md` (§ Why this priority de US1/US2).

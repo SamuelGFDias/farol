@@ -67,6 +67,25 @@ nullable por `T` não-nullable, contrariando `"type": [..., "null"]` do schema) 
 `cargo test -p farol-protocol` falha, apontando `schema_file`/`json_pointer`/`boundary_kind`/`value`
 exatos (`contracts/contract-boundary-testing.md`). Reverter antes de continuar.
 
+**Resultado real (T016, 2026-09-01)**: confirmado antes de aplicar `#[ignore]` — o teste
+`widget_monitor_status_item_response_time_ms_negative_value_is_a_known_protocol_gap`
+(`crates/farol-protocol/tests/schema_boundaries.rs`) falhou na primeira execução com exatamente a
+mensagem FR-006 esperada (`schema_file=widget.schema.json`,
+`json_pointer=/$defs/MonitorStatusItem/properties/response_time_ms`,
+`boundary_kind=NoMinimumNegative`, `value=-1`, erro serde `invalid value: integer -1, expected
+u32`) — prova do mecanismo (SC-002). Per a decisão já registrada em `tasks.md` T013, esse teste
+específico MUST ficar `#[ignore]`d até a issue de débito T029 ser resolvida, para não deixar CI
+permanentemente vermelho por um gap pré-existente não relacionado a cada PR futura. Com o
+`#[ignore]` aplicado, `cargo test -p farol-protocol` fica verde (12 passed, 1 ignored no arquivo
+`schema_boundaries.rs`, além dos 21 de `contract_schema_validation.rs` e 18 unitários); rodar
+`cargo test -p farol-protocol --test schema_boundaries -- --ignored` continua reproduzindo a falha
+acima sob demanda, sem depender de reverter o `#[ignore]`. Regressão adicional simulada (T016):
+suprimir manualmente o caso `NoMinimumNegative` da lista retornada por
+`numeric_and_null_boundary_cases` para uma propriedade sem `minimum` fez os testes do gerador
+(`generator_no_minimum_negative_only_when_schema_truly_has_no_lower_bound`) falharem
+imediatamente, confirmando que o próprio gerador é exercitado por teste, não só as aplicações
+por schema; alteração revertida antes de prosseguir.
+
 ## Cenário 3 — CI dispara automaticamente e sinaliza quebra (User Story 3, P3)
 
 ```bash
