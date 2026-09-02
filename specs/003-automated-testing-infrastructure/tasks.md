@@ -500,17 +500,19 @@ Fase 1 —, mas **MUST** estar concluídas (issue criada, ainda que não corrigi
 feature (003) ser considerada encerrada, per a regra "Dívida técnica rastreável" da constitution
 v1.0.0.
 
-- [ ] T029 **[Débito]** Criar issue no tracker do projeto: `MonitorStatusItem.response_time_ms`
+- [X] T029 **[Débito]** Criar issue no tracker do projeto: `MonitorStatusItem.response_time_ms`
   (`protocol/schema/v0.2/widget.schema.json`) permite qualquer inteiro (sem `minimum`, logo inclui
   negativo) mas `Option<u32>` (`crates/farol-protocol/src/messages.rs`) não representa valor
   negativo algum — gap revelado por T013 (`#[ignore]`d até esta issue ser resolvida). A issue MUST
   cobrir: (a) decidir se o tipo Rust é alargado (`i32`/`i64`) ou se o schema ganha `minimum: 0`; (b)
   referenciar `research.md` D3 e o teste `#[ignore]`d de T013 como o que primeiro tornou o gap
   visível de forma automatizada
-- [ ] T030 **[Débito]** Criar issue no tracker do projeto: `plugins/git-local/` não tem
+  → **Issue criada: https://github.com/SamuelGFDias/farol/issues/5**
+- [X] T030 **[Débito]** Criar issue no tracker do projeto: `plugins/git-local/` não tem
   `pyproject.toml`/configuração `ruff` própria, diferente de `plugins/uptime-kuma/` — inconsistência
   entre os dois plugins de referência, descoberta em `research.md` D6. A issue MUST cobrir a criação
   de `plugins/git-local/pyproject.toml` no mesmo padrão de `plugins/uptime-kuma/pyproject.toml`
+  → **Issue criada: https://github.com/SamuelGFDias/farol/issues/6**
 
 ---
 

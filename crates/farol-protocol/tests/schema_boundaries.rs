@@ -560,10 +560,10 @@ fn widget_monitor_status_item_response_time_ms_null_and_missing_required() {
 /// (2) a asserção de desserialização Rust FALHA (o binding rejeita), no formato de mensagem FR-006
 /// exigido por `contracts/contract-boundary-testing.md`.
 #[test]
-#[ignore = "débito rastreado (T029, plan.md § Complexity Tracking / tasks.md § Débito técnico): \
+#[ignore = "débito rastreado (issue #5, github.com/SamuelGFDias/farol/issues/5): \
             MonitorStatusItem.response_time_ms é Option<u32> (crates/farol-protocol/src/messages.rs) \
             mas widget.schema.json permite qualquer inteiro, incluindo negativo (sem `minimum`) - \
-            ver research.md D3. Remover este #[ignore] só depois que a issue T029 for resolvida."]
+            ver research.md D3. Remover este #[ignore] só depois que a issue #5 for resolvida."]
 fn widget_monitor_status_item_response_time_ms_negative_value_is_a_known_protocol_gap() {
     let schemas = load_schema_set();
     let validator = schemas.def_validator(WIDGET_ID, "MonitorStatusItem");
