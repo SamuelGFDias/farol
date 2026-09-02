@@ -17,16 +17,54 @@
 //! - `view`: renderização condicionada a `PluginState`.
 
 mod config_store;
+#[cfg(test)]
+mod e2e_tests;
 mod model;
 mod plugin_worker;
 mod secrets_store;
 mod update;
 mod view;
 
+/// Título da janela do app — extraído para constante junto com [`program`]
+/// (T002 da feature 003) para que o binário real e o `iced_test::Emulator`
+/// construam exatamente o mesmo `Program`.
+const WINDOW_TITLE: &str = "Farol";
+
 fn main() -> iced::Result {
-    iced::application("Farol", Farol::update, Farol::view)
+    program(Farol::default).run()
+}
+
+/// Construção do `iced::Program` do Farol — **ponto único** de montagem da
+/// aplicação (T002 da feature 003, `research.md` D5 Camada 1): chamada tanto
+/// por [`main`] quanto pelos testes `iced_test` (`e2e_tests.rs`), para nunca
+/// existirem dois caminhos de construção divergentes.
+///
+/// **Parâmetro `boot`**: o `Program` real da feature 002 sempre bootava
+/// `Farol::default()`, que deriva os plugins de
+/// `plugin_worker::known_plugins()` — caminhos **relativos** à raiz do repo
+/// (`plugins/git-local/main.py`, ver docstring de `known_plugins`) e ambos os
+/// plugins conhecidos ao mesmo tempo. Sob `cargo test` isso seria
+/// não-determinístico duas vezes: o `cwd` do binário de teste é o diretório
+/// do crate (não a raiz do repo), e o slot `uptime-kuma` leria o
+/// `~/.config/farol` real da máquina. Parametrizar apenas o `boot` mantém
+/// `update`/`view`/`subscription`/título idênticos entre binário e teste
+/// (que é o ponto de T002) e deixa o teste apontar para uma fixture
+/// hermética. `main()` passa `Farol::default` — **nenhuma mudança de
+/// comportamento observável de `cargo run --bin farol`**.
+///
+/// **Migração `iced` 0.14 (achado N2 de `research.md`)**: `iced::application`
+/// deixou de aceitar `(title, update, view)` e passou a ser
+/// `(boot: impl BootFn, update, view)`, com o título virando o método
+/// builder `.title(...)` — daí o `boot` ser hoje o primeiro argumento e não
+/// mais um `&str`.
+pub(crate) fn program(
+    boot: impl Fn() -> Farol + 'static,
+) -> iced::Application<
+    impl iced::Program<State = Farol, Message = Message, Theme = iced::Theme>,
+> {
+    iced::application(boot, Farol::update, Farol::view)
+        .title(WINDOW_TITLE)
         .subscription(Farol::subscription)
-        .run()
 }
 
 /// Estado raiz da aplicação iced (o `Model` do padrão Model-Update-View).
@@ -48,8 +86,26 @@ impl Default for Farol {
     /// canal de worker ainda (`None` — só existe depois que a `Subscription`
     /// daquele plugin emitir `WorkerEvent::Ready`).
     fn default() -> Self {
+        Self::with_plugins(plugin_worker::known_plugins())
+    }
+}
+
+impl Farol {
+    /// Estado inicial com um slot por `PluginSpawnConfig` informado, cada um
+    /// em `PluginState::Starting` e sem canal de worker.
+    ///
+    /// Extraído de [`Farol::default`] (que passou a ser
+    /// `Self::with_plugins(plugin_worker::known_plugins())`) em T002 da
+    /// feature 003: os testes `iced_test` (`e2e_tests.rs`) precisam de um
+    /// `Farol` com um único plugin, apontado para uma fixture hermética e por
+    /// caminho absoluto, sem depender do registro fixo nem do `cwd` do
+    /// processo de teste. O binário real continua passando exatamente
+    /// `known_plugins()`.
+    pub(crate) fn with_plugins(
+        spawn_configs: Vec<plugin_worker::PluginSpawnConfig>,
+    ) -> Self {
         Self {
-            plugins: plugin_worker::known_plugins()
+            plugins: spawn_configs
                 .into_iter()
                 .map(|spawn_config| PluginSlot {
                     spawn_config,

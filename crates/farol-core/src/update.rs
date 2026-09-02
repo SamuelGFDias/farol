@@ -16,6 +16,7 @@
 use std::collections::BTreeMap;
 use std::time::Duration;
 
+use iced::futures::channel::mpsc;
 use iced::futures::Stream;
 use iced::stream;
 use iced::Subscription;
@@ -76,13 +77,12 @@ impl Farol {
         let mut subscriptions = Vec::with_capacity(self.plugins.len() * 2);
 
         for slot in &self.plugins {
-            let plugin_name = slot.spawn_config.plugin_name.clone();
             // Closure não-capturante (só usa o próprio parâmetro) — requisito de
             // `iced::Subscription::map` (ver docstring de `plugin_worker::subscription`
             // sobre a correção que moveu o `plugin_name` para dentro do stream).
             // T032 (D8): `slot.connection.setup_attempt` é passado como argumento
             // comum de função (não capturado por nenhum closure de
-            // `Subscription::map`) — é ele que muda o `id` da `Subscription`
+            // `Subscription::map`) — é ele que muda a identidade da `Subscription`
             // dentro de `plugin_worker::subscription` sempre que a tela de setup
             // deste plugin é submetida, forçando a reconexão do worker.
             let worker_subscription = plugin_worker::subscription(
@@ -93,10 +93,17 @@ impl Farol {
             subscriptions.push(worker_subscription);
 
             if slot.connection.state == PluginState::Ready {
-                let interval = refresh_interval(&slot.connection);
-                let refresh_subscription = Subscription::run_with_id(
-                    format!("{plugin_name}-refresh"),
-                    refresh_tick_stream(plugin_name.clone(), interval),
+                // Migração `iced` 0.14 (achado N2 de `research.md` da feature
+                // 003): `Subscription::run_with_id(id, stream)` não existe
+                // mais; a identidade vem do `Hash` do dado passado a
+                // `Subscription::run_with`, e o stream é construído por um
+                // `fn(&D) -> S` não-capturante (ver `refresh_tick_stream`).
+                let refresh_subscription = Subscription::run_with(
+                    RefreshSubscriptionKey {
+                        plugin_name: slot.spawn_config.plugin_name.clone(),
+                        interval: refresh_interval(&slot.connection),
+                    },
+                    refresh_tick_stream,
                 );
                 subscriptions.push(refresh_subscription);
             }
@@ -546,19 +553,51 @@ fn refresh_interval(connection: &model::PluginConnection) -> Duration {
         .unwrap_or(DEFAULT_REFRESH_INTERVAL)
 }
 
+/// Identidade (`D: Hash` de `Subscription::run_with`) da `Subscription` do
+/// timer de refresh de um plugin `Ready` — ver [`refresh_tick_stream`].
+///
+/// **Nota de migração (`iced` 0.14, achado N2 de `research.md` da feature
+/// 003)**: sob `Subscription::run_with_id` (0.13) o `id` era só
+/// `"{plugin_name}-refresh"`, e `interval` **não** participava da
+/// identidade — se um plugin passasse a sugerir outro
+/// `suggested_refresh_interval_ms`, o timer antigo continuaria rodando com o
+/// intervalo antigo. Aqui `interval` entra no `Hash`, então uma mudança de
+/// intervalo encerra o timer antigo e inicia um novo com o intervalo certo.
+/// Na prática isso não muda nada hoje (`PluginConnection::widgets` é
+/// congelado no handshake, `model.rs`, e `refresh_interval` deriva dele),
+/// mas é a semântica correta e a única alternativa seria um `impl Hash`
+/// manual inconsistente com `Eq`.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct RefreshSubscriptionKey {
+    plugin_name: String,
+    interval: Duration,
+}
+
 /// Stream do timer de refresh periódico de um plugin `Ready` (T026).
 ///
 /// Segunda ocorrência real da armadilha documentada no `AGENTS.md`
 /// ("`iced::Subscription::map` exige closure não-capturante"):
 /// `iced::time::every(interval).map(move |_| ...)` captura `plugin_name`
 /// dentro do closure passado a `Subscription::map`, que exige
-/// `size_of::<F>() == 0` e panica em runtime. Mesma correção de
-/// `plugin_worker::worker`: embutir `plugin_name` dentro do *stream* via
-/// `iced::stream::channel` (permitido — a restrição de zero-size é só de
-/// `Subscription::map`), e dar identidade estável via
-/// `Subscription::run_with_id` no chamador (`Farol::subscription`).
-fn refresh_tick_stream(plugin_name: String, interval: Duration) -> impl Stream<Item = Message> {
-    stream::channel(1, move |mut output| async move {
+/// `size_of::<F>() == 0`. Mesma correção de `plugin_worker::worker`:
+/// embutir `plugin_name` dentro do *stream* via `iced::stream::channel`
+/// (permitido — a restrição de zero-size é só de `Subscription::map`), e dar
+/// identidade estável via `Subscription::run_with` no chamador
+/// (`Farol::subscription`).
+///
+/// **Migração `iced` 0.14 (feature 003)**: em 0.13 essa armadilha era um
+/// `debug_assert!` de runtime; em 0.14 virou `const { check_zero_sized::<F>() }`,
+/// ou seja, **erro de compilação** (`E0080`) — a classe de bug deixou de ser
+/// possível de existir num binário compilado. Esta função passou de
+/// `fn(String, Duration) -> impl Stream` para `fn(&RefreshSubscriptionKey) ->
+/// impl Stream`, a forma de `builder` exigida por `Subscription::run_with`
+/// (ponteiro de função não-capturante que recebe a identidade por
+/// referência).
+fn refresh_tick_stream(key: &RefreshSubscriptionKey) -> impl Stream<Item = Message> {
+    let plugin_name = key.plugin_name.clone();
+    let interval = key.interval;
+
+    stream::channel(1, move |mut output: mpsc::Sender<Message>| async move {
         use iced::futures::SinkExt;
 
         let mut ticker = tokio::time::interval(interval);

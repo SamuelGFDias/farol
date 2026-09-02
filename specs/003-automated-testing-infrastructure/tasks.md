@@ -12,15 +12,19 @@ data-model.md, contracts/ (4 documentos), quickstart.md
 
 **Tests**: Esta feature **é**, por natureza, construção de infraestrutura de teste — praticamente
 toda task abaixo é uma task de escrever teste/harness/CI. Não há um código de produto separado a
-"testar depois"; a única linha de código de produção tocada (`crates/farol-core/src/main.rs`,
-extração de função, T003) é pré-requisito estrutural para os testes `iced_test`, não uma
-funcionalidade nova a validar.
+"testar depois". O código de produção tocado é pré-requisito estrutural, não funcionalidade nova a
+validar: a extração de `program(boot)` em `crates/farol-core/src/main.rs` (T002) e — **revisado em
+2026-09-01, achado N2** — a migração das APIs de `iced` 0.14 em `main.rs`/`update.rs`/
+`plugin_worker.rs` (T001b), sem a qual o crate simplesmente não compila.
 
 **Organization**: Tasks agrupadas por user story priorizada (`spec.md`: US1 P1 → US2 P2 → US3 P3 →
 US4 P4). Uma decisão técnica central é pré-requisito bloqueante explícito da Fase Foundational: o
 upgrade `iced` 0.13 → 0.14 + adoção de `iced_test` (`research.md` D1), **gated por um spike de
 verificação** (T004) — nenhuma task de US1/US4 (que dependem de `iced_test`) começa antes do spike
-confirmar que o mecanismo pega o padrão dos dois bugs históricos de `Subscription::map`. A ordem de
+confirmar que o `Emulator` roda o mecanismo real (`Subscription` → spawn → handshake → transição de
+estado) de ponta a ponta. *O critério original do gate — reproduzir em runtime o padrão dos dois bugs
+históricos de `Subscription::map` — foi refutado por N1 e substituído; ver a entrada de 2026-09-01 em
+`research.md` D1.* A ordem de
 fase (US1 → US2 → US3 → US4) segue a prioridade do `spec.md` e também a dependência real: o job
 `rust-smoke` do workflow de CI (US3) invoca `tests/integration/harness.sh`, que só existe depois de
 US1; o job `rust-test` (US3) só cobre os testes de contrato/visuais depois que US2/US4 os
@@ -40,14 +44,22 @@ Estrutura definida em `plan.md` § Project Structure — inteiramente dentro do 
 existente (`crates/farol-core`, `crates/farol-protocol`), mais `tests/integration/` (raiz do
 workspace) e `.github/workflows/` (novo). Nenhum crate novo, nenhum diretório de plugin novo:
 
+> **Corrigido na execução de 2026-09-01** (achados N2/N3 da "Nota de execução" e a entrada revisada
+> de D1 em `research.md`): `crates/farol-core` é um crate **só-bin** (sem `src/lib.rs`/target `lib`),
+> então testes de integração em `crates/farol-core/tests/` não conseguem importar nada dele — a
+> estrutura originalmente planejada ali é estruturalmente impossível. Os testes `iced_test` seguem o
+> padrão que o crate já usava (`#[cfg(test)] mod` dentro do bin target). A migração `iced` 0.14
+> também obrigou a tocar `update.rs`/`plugin_worker.rs` (não só `main.rs`) — ver § Notes.
+
 ```text
 crates/farol-core/Cargo.toml         # iced "0.14"; + dev-dependencies iced_test, insta
-crates/farol-core/src/main.rs        # extração de função Program (T003) — único arquivo de produção tocado
-crates/farol-core/tests/
-├── support/fixtures.rs              # NOVO — fixtures sintéticas (D2): git-local, uptime-kuma
-├── e2e_harness.rs                   # NOVO — Camada 1 do harness (D1/D5)
-├── visual_snapshot.rs               # NOVO — verificação visual declarativa (D4)
-└── snapshots/*.snap                 # NOVO — referências insta (D4)
+crates/farol-core/src/main.rs        # program(boot) + Farol::with_plugins (T002); iced::application 0.14
+crates/farol-core/src/plugin_worker.rs  # Subscription::run_with (N2); PluginSpawnConfig: +Hash
+crates/farol-core/src/update.rs      # Subscription::run_with no timer de refresh (N2)
+crates/farol-core/src/e2e_tests.rs   # NOVO — fixtures (T003) + Camada 1 do harness (D1/D5), como
+                                     # `#[cfg(test)] mod e2e_tests;` declarado em main.rs
+crates/farol-core/src/visual_snapshot_tests.rs  # NOVO (US4) — mesma forma: módulo `#[cfg(test)]`
+crates/farol-core/src/snapshots/*.snap          # NOVO — referências insta (D4)
 crates/farol-protocol/tests/
 ├── contract_schema_validation.rs    # inalterado em forma — load_schemas() reaproveitado
 └── schema_boundaries.rs             # NOVO — gerador determinístico de casos de borda (D3)
@@ -66,13 +78,24 @@ AGENTS.md                            # atualizado ao final (Polish) — nova se�
 **Purpose**: Preparar a dependência central desta feature antes de qualquer código de teste que a
 use.
 
-- [ ] T001 Em `crates/farol-core/Cargo.toml`: subir `iced` de `{ version = "~0.13", features =
+- [X] T001 Em `crates/farol-core/Cargo.toml`: subir `iced` de `{ version = "~0.13", features =
   ["tokio"] }` para `{ version = "0.14", features = ["tokio"] }`; adicionar `iced_test` e `insta`
   como `dev-dependencies` (versões exatas a fixar conforme disponíveis em `crates.io` no momento da
   implementação — `research.md` D1 confirma `iced` `0.14.0` publicado). Rodar `cargo build
   --workspace` e `cargo test --workspace` uma vez, só para confirmar que o bump sozinho não quebra
   compilação (nenhum `impl Widget` próprio existe em `farol-core`, per `research.md` D1 — risco já
-  avaliado como baixo, mas confirmado aqui antes de investir no restante da feature)
+  avaliado como baixo, mas confirmado aqui antes de investir no restante da feature).
+  **Resultado real (2026-09-01)**: `iced = "0.14"` (0.14.0), `iced_test = "0.14"` (0.14.0), `insta =
+  "1"`. O bump **quebrou** a compilação em 5 pontos — a avaliação de risco de `research.md` D1 estava
+  errada; ver achado N2 da "Nota de execução" e T001b abaixo
+- [X] T001b **[corretiva, decorrente de N2]** Migrar o código de produção para as APIs de `iced`
+  0.14: `Subscription::run_with_id` → `Subscription::run_with` em
+  `crates/farol-core/src/plugin_worker.rs` (novo `WorkerSubscriptionKey`, `PluginSpawnConfig` ganha
+  `PartialEq, Eq, Hash`) e em `crates/farol-core/src/update.rs` (novo `RefreshSubscriptionKey`);
+  anotação de tipo do `Sender` em `iced::stream::channel` nos dois arquivos; `iced::application`
+  no formato `(boot, update, view)` + `.title(...)` em `crates/farol-core/src/main.rs`. **MUST**
+  preservar o mecanismo de reconexão de D8 da feature 002 (a identidade da `Subscription` do worker
+  muda quando `setup_attempt` muda) — agora garantido por `#[derive(Hash)]`
 
 ---
 
@@ -82,31 +105,49 @@ use.
 spike que a comprova contra o padrão exato dos bugs históricos — nenhuma task de US1 ou US4 (as duas
 que dependem de `iced_test`) começa antes de T004 passar.
 
-**⚠️ CRITICAL**: T004 é um gate, não uma formalidade — se o spike falhar (`iced_test::Emulator` não
-conseguir reproduzir o padrão do bug, ou a migração 0.13→0.14 revelar quebra de compilação não
-prevista por `research.md`), a decisão de adotar `iced_test` MUST ser revisitada antes de continuar
-US1/US4 (voltar a `research.md` D1 § Alternativas consideradas).
+**⚠️ CRITICAL**: T004 é um gate, não uma formalidade — se o spike falhar (o `Emulator` não conseguir
+rodar o mecanismo real, ou a migração 0.13→0.14 revelar quebra não contornável), a decisão de adotar
+`iced_test` MUST ser revisitada antes de continuar US1/US4 (voltar a `research.md` D1 § Alternativas
+consideradas).
 
-- [ ] T002 Em `crates/farol-core/src/main.rs`: extrair a construção do `Program` (hoje só dentro de
-  `fn main()`, linha `iced::application("Farol", Farol::update, Farol::view)
-  .subscription(Farol::subscription)`) para uma função reutilizável (ex. `pub(crate) fn program() ->
-  impl ...`), chamada tanto por `main()` quanto pelos testes `iced_test` (T004 em diante) — **sem
-  mudança de comportamento observável** de `cargo run --bin farol` (`research.md` D5, `plan.md` §
-  Project Structure)
-- [ ] T003 [P] Criar `crates/farol-core/tests/support/fixtures.rs`: helper para fixture `git-local`
-  (cria um repositório git real em `TempDir` — `git init` + um commit — via `std::process::Command`
-  ou crate `git2`, decisão de implementação) e helper para fixture `uptime-kuma` (servidor HTTP local
-  efêmero, `tokio::net::TcpListener`, servindo `/metrics` sintético sob HTTP Basic Auth com API key
-  fixa `farol-e2e-fixture-key`, nunca usada contra nenhuma instância real — `research.md` D2,
-  `data-model.md` §1). Nenhuma credencial real, nenhuma rede além de `127.0.0.1`
-- [ ] T004 **[GATE — spike de migração, `research.md` D1]** Em `crates/farol-core/tests/
-  e2e_harness.rs`: escrever exatamente um teste `iced_test`-based que (a) usa `program()` (T002) e um
-  estado que reintroduz deliberadamente o padrão do primeiro bug histórico (`Subscription::map`
-  capturante em `Farol::subscription()`, `AGENTS.md` § Armadilha, ponto 1) e confirma que o teste
-  **falha** com o `debug_assert!` de `iced::Subscription::map`; (b) reverte a reintrodução e confirma
-  que o mesmo teste **passa**. Só depois de (a) e (b) confirmados, prosseguir para T005 em diante —
-  se (a) não falhar como esperado (o `Emulator` não exercitou o branch), revisitar `research.md` D1
-  antes de continuar
+- [X] T002 Em `crates/farol-core/src/main.rs`: extrair a construção do `Program` (hoje só dentro de
+  `fn main()`) para uma função reutilizável, chamada tanto por `main()` quanto pelos testes
+  `iced_test` (T004 em diante) — **sem mudança de comportamento observável** de `cargo run --bin
+  farol` (`research.md` D5, `plan.md` § Project Structure).
+  **Forma entregue**: `pub(crate) fn program(boot: impl Fn() -> Farol + 'static) -> iced::Application<impl
+  iced::Program<...>>`, mais `Farol::with_plugins(Vec<PluginSpawnConfig>)` (de onde `Farol::default`
+  passou a derivar). O `boot` é parâmetro porque `Farol::default()` deriva os plugins de
+  `known_plugins()`, que usa caminhos **relativos** ao `cwd` da raiz do repo e traz os dois plugins
+  conhecidos — sob `cargo test` isso seria não-determinístico duas vezes (ver a entrada revisada de
+  D1 em `research.md`). `main()` passa `Farol::default`
+- [X] T003 [P] Fixture determinística dos plugins de referência, em
+  `crates/farol-core/src/e2e_tests.rs` (**não** `tests/support/fixtures.rs` — ver N3 e § Path
+  Conventions): `HarnessFixture` cria um repositório git real (`git init` + um commit via
+  `std::process::Command`, identidade/datas fixas, `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM`
+  neutralizados) e escreve `config.toml`/`secrets.toml` sintéticos dos dois plugins sob um diretório
+  temporário que vira o `$XDG_CONFIG_HOME` do processo de teste — hermético para o core **e** para o
+  processo Python do plugin, sem tocar o `~/.config/farol` real. API key sintética
+  `farol-e2e-fixture-key`; `base_url` em `http://127.0.0.1:1`. Nenhuma credencial real, nenhuma rede
+  além de `127.0.0.1`.
+  **Pendente**: o duplo HTTP determinístico de `/metrics` (`tokio::net::TcpListener` + Basic Auth,
+  `research.md` D2) — não é necessário para o gate (`Ready` depende só do handshake +
+  `required_config`), é pré-requisito de T006 (assertivas sobre os *dados* do widget)
+- [X] T004 **[GATE — critério revisado, ver entrada de 2026-09-01 em `research.md` D1]** Em
+  `crates/farol-core/src/e2e_tests.rs`: teste(s) `iced_test` que provam que o `Emulator` roda
+  `Farol::subscription()` **de verdade** e leva uma conexão de plugin **real** a um estado terminal
+  — `Subscription` real → spawn de processo filho real (`tokio::process`) → handshake JSON-RPC/NDJSON
+  real → transição real em `update.rs`.
+  **Mudança de critério**: o desenho original (reintroduzir o 1º bug histórico e confirmar que o
+  `Emulator` o pega em runtime) é **inexecutável** — em `iced` 0.14 aquele `debug_assert!` virou
+  `const { check_zero_sized::<F>() }`, ou seja, erro de compilação (achado N1). Não há runtime a
+  observar; a classe de bug deixou de poder existir num binário compilado. O gate passa a provar o
+  *mecanismo*, que é o que sustenta US1 daqui em diante.
+  **Entregue, dois cenários, ambos verdes**: (a)
+  `emulator_runs_the_real_subscription_until_a_plugin_reaches_ready` — `uptime-kuma` alcança
+  `PluginState::Ready` pelo `Emulator`, com `required_config` resolvido pela fixture pelo mecanismo
+  de produção; (b) `emulator_takes_git_local_through_a_real_handshake_to_a_terminal_state` —
+  `git-local` contra a fixture de T003, terminando em `Unavailable{VersionIncompatible}`. Ambos
+  verificados como não-vacuosos (sabotar a fixture muda o estado observado)
 
 ---
 
@@ -119,20 +160,27 @@ quando não alcançam.
 **Independent Test** (`spec.md`): rodar o harness contra o estado atual do repositório e verificar
 sucesso; introduzir uma regressão equivalente a um dos dois bugs históricos e verificar falha clara.
 
-- [ ] T005 [US1] Em `crates/farol-core/tests/e2e_harness.rs`: cenário "git-local alcança Ready" —
-  `iced_test::Emulator` dirigindo `program()` (T002) contra a fixture de T003, aguardando
-  `PluginState::Ready` do plugin `git-local` dentro de 30s (`## Clarifications` de `spec.md`); nenhum
-  processo filho remanescente ao final (confirma FR-001, Acceptance Scenario 1 de US1)
-- [ ] T006 [US1] Em `crates/farol-core/tests/e2e_harness.rs`: cenário "uptime-kuma alcança Ready" —
-  mesmo mecanismo de T005, contra a fixture HTTP de T003; este cenário, por exigir handshake +
-  `required_config` resolvido + primeiro `widget/get` completo antes de `Ready`, é o que documenta
-  explicitamente a cobertura do segundo bug histórico (o timer de refresh só é montado quando um
-  plugin de fato chega a `Ready` — `AGENTS.md` § Armadilha, ponto 2; Acceptance Scenario 2 de US1)
-- [ ] T007 [US1] Em `crates/farol-core/tests/e2e_harness.rs`: envolver cada cenário (T005/T006) em
-  `tokio::time::timeout` — 30s por verificação de estado, 120s por cenário inteiro (`##
-  Clarifications`); mensagem de falha MUST identificar `plugin_name` e o estado observado (ou
-  "timeout excedido") sem exigir leitura de log bruto (FR-003/FR-004, `contracts/
-  e2e-harness-contract.md` Camada 1)
+- [ ] T005 [US1] **🚧 BLOQUEADA por N4 (achado de 2026-09-01, ver `research.md` D1 revisado)** —
+  cenário "git-local alcança Ready" é **impossível** enquanto `plugins/git-local/main.py` declarar
+  `PROTOCOL_VERSION = "0.1"` contra um core que fala `"0.2"`: a comparação `MAJOR == 0` de
+  `ProtocolVersion::is_compatible_with` torna `Unavailable{VersionIncompatible}` o único desfecho
+  possível. Migrar `git-local` para v0.2 é o débito técnico #4, deliberadamente Fora de Escopo desta
+  feature. **Decisão pendente do arquiteto** — três saídas: (a) puxar o débito #4 para dentro desta
+  feature como pré-requisito de US1; (b) manter `uptime-kuma` como o único plugin que exercita
+  `Ready` (T006) e reescrever T005 como "git-local alcança um estado terminal", que é o que o
+  cenário (b) de T004 já entrega — nesse caso T005 vira redundante e sai; (c) escrever o plugin de
+  teste dedicado registrado em `research.md` D2 § Alternativas
+- [ ] T006 [US1] Em `crates/farol-core/src/e2e_tests.rs`: cenário "uptime-kuma alcança Ready **com
+  dados de widget**" — o gate de T004 já cobre o `Ready` em si; o que falta aqui é a fixture HTTP
+  determinística de `/metrics` (`research.md` D2, ainda não escrita) e as assertivas sobre os itens
+  do widget depois do primeiro `widget/get` bem-sucedido. É este cenário que exercita o segundo bug
+  histórico (o timer de refresh só é montado quando um plugin de fato chega a `Ready` — `AGENTS.md`
+  § Armadilha, ponto 2; Acceptance Scenario 2 de US1)
+- [ ] T007 [US1] Em `crates/farol-core/src/e2e_tests.rs`: estender o orçamento de tempo já
+  implementado em T004 (`STATE_TIMEOUT` de 30s por verificação de estado, com mensagem de falha
+  nomeando `plugin_name` e o `PluginState` observado — FR-003/FR-004 já satisfeitos) com o teto de
+  120s por cenário inteiro (`## Clarifications`), e confirmar que nenhum processo filho remanesce ao
+  final de cada cenário (`contracts/e2e-harness-contract.md` Camada 1)
 - [ ] T008 [US1] Escrever `tests/integration/harness.sh` (Camada 2, smoke de processo real,
   `research.md` D5, `contracts/e2e-harness-contract.md` Camada 2): compila `target/debug/farol`,
   sobe sob `xvfb-run -a`, confirma que sobrevive a uma janela curta de observação, encerra limpo via
@@ -144,9 +192,14 @@ sucesso; introduzir uma regressão equivalente a um dos dois bugs históricos e 
 ### Validação da User Story 1 (Cenário 1 de `quickstart.md`)
 
 - [ ] T010 [US1] Executar Cenário 1 de `quickstart.md`: caminho feliz (T005–T009 verdes) e a
-  regressão deliberada (reintroduzir um dos dois padrões de `Subscription::map` capturante fora do
-  spike de T004, ex. no ponto 2 da armadilha — timer de refresh — não coberto literalmente pelo
-  spike) — confirmar que o harness falha de forma clara (SC-001); reverter antes de prosseguir
+  regressão deliberada — confirmar que o harness falha de forma clara (SC-001); reverter antes de
+  prosseguir. **Revisado (N1, 2026-09-01)**: a regressão originalmente proposta (reintroduzir
+  `Subscription::map` com closure capturante) **não compila mais** sob `iced` 0.14
+  (`const { check_zero_sized::<F>() }` ⟹ `E0080`), então não há execução de harness a observar.
+  Escolher uma regressão que seja de fato observável em runtime — ex.: apontar o `command` de um
+  `PluginSpawnConfig` para um binário inexistente (deve virar `Unavailable{FailedToStart}`), ou
+  remover um valor da fixture de `required_config` (deve virar `Unavailable{NotConfigured}`) — os
+  dois já verificados como detectáveis durante T004
 
 **Checkpoint**: US1 é entregável e testável de forma independente aqui — MVP da feature.
 
@@ -212,7 +265,7 @@ introduzir uma quebra deliberada e confirmar que a PR é sinalizada como não pr
 manual.
 
 - [ ] T017 [US3] Criar `.github/workflows/ci.yml` com gatilhos `push`/`pull_request` (FR-007) e o job
-  `rust-test` (`cargo test --workspace` — cobre os 71 testes existentes + T005–T007 + T011–T015,
+  `rust-test` (`cargo test --workspace` — cobre os 73 testes já existentes após T004 + T005–T007 + T011–T015,
   todos sob o mesmo comando, `contracts/ci-workflow-contract.md`)
 - [ ] T018 [P] [US3] Adicionar job `rust-lint` a `ci.yml` (`cargo clippy --workspace --all-targets --
   -D warnings`)
@@ -243,14 +296,15 @@ sem captura de tela nem inspeção manual.
 **Independent Test** (`spec.md`): gerar uma captura de uma tela conhecida; introduzir uma mudança
 visível; verificar que a comparação aponta a diferença.
 
-- [ ] T023 [US4] Criar `crates/farol-core/tests/visual_snapshot.rs`: helper que extrai uma
+- [ ] T023 [US4] Criar `crates/farol-core/src/visual_snapshot_tests.rs` (módulo `#[cfg(test)]`
+  declarado em `main.rs`, mesma forma de `e2e_tests.rs` — ver § Path Conventions e N3): helper que extrai uma
   representação textual determinística de um `Element<Message>` via a `Selector` API de `iced_test`
   (todo texto visível, em ordem de composição estável — `contracts/visual-snapshot-contract.md`)
-- [ ] T024 [US4] Em `visual_snapshot.rs`: três construtores de estado `Farol` (reaproveitando os
+- [ ] T024 [US4] Em `visual_snapshot_tests.rs`: três construtores de estado `Farol` (reaproveitando os
   construtores de fixture de estado já existentes em `update.rs`, tornando-os `pub(crate)` onde
   necessário) para `DashboardReady`, `SetupForm` e `VersionIncompatible` (`data-model.md` §3); um
   `insta::assert_snapshot!` por `screen_id`, commitando os `.snap` de referência em
-  `crates/farol-core/tests/snapshots/`
+  `crates/farol-core/src/snapshots/`
 
 ### Validação da User Story 4 (Cenário 4 de `quickstart.md`)
 
@@ -274,7 +328,9 @@ visível; verificar que a comparação aponta a diferença.
   manual via `eprintln!`
 - [ ] T027 [P] Confirmar `cargo clippy --workspace --all-targets` limpo (sem warning) depois de todo
   o código de teste novo desta feature (T001–T025) — mesmo padrão já exigido pelo `AGENTS.md`
-- [ ] T028 Executar Cenário 5 de `quickstart.md` (`time cargo test --workspace --test e2e_harness`) —
+- [ ] T028 Executar Cenário 5 de `quickstart.md` (`time cargo test --package farol-core e2e_tests` —
+  **não** `--test e2e_harness`: não existe um target de teste de integração, ver N3/§ Path
+  Conventions) —
   confirmar que nada trava indefinidamente e que nenhum processo Python remanesce (Edge Case do
   `spec.md`)
 
@@ -311,11 +367,10 @@ v1.0.0.
 ### Dependências entre fases
 
 - **Setup (T001)**: sem dependências — pode começar imediatamente.
-- **Foundational (T002–T004)**: depende de T001 (dependências já no `Cargo.toml`). T002 e T003 são
-  paralelizáveis entre si (arquivos diferentes: `main.rs` vs. `tests/support/fixtures.rs`); T004
-  depende de T002 (usa `program()`) mas não de T003 (o spike usa um estado construído manualmente,
-  não a fixture de git/HTTP). **T004 bloqueia toda a Fase 3 (US1) e a Fase 6 (US4)** — as duas únicas
-  fases que usam `iced_test` de fato.
+- **Foundational (T001b–T004)**: dependem de T001. T001b (migração 0.14) bloqueia **tudo** — sem ela
+  o crate não compila. T004 depende de T002 (usa `program()`) e de T003 (usa a fixture hermética
+  para o `required_config` de `uptime-kuma` e para o repositório git de `git-local`). **T004 bloqueia
+  toda a Fase 3 (US1) e a Fase 6 (US4)** — as duas únicas fases que usam `iced_test` de fato.
 - **User Story 1 (Fase 3)**: depende de T004 (gate) e T003 (fixtures). T005/T006 podem rodar em
   paralelo entre si (cenários independentes dentro do mesmo arquivo, mas sem dependência de dado
   compartilhado); T007 depende de T005/T006 existirem (envolve os cenários já escritos); T008/T009
@@ -361,16 +416,16 @@ v1.0.0.
 ## Parallel Example: Foundational (após T001)
 
 ```text
-T002 - Extrair program() em crates/farol-core/src/main.rs
-T003 - Criar crates/farol-core/tests/support/fixtures.rs
+T002 - Extrair program(boot) em crates/farol-core/src/main.rs
+T003 - Fixture determinística em crates/farol-core/src/e2e_tests.rs
 (T004 só começa depois de T002 estar pronto)
 ```
 
 ## Parallel Example: User Story 1 (após T004)
 
 ```text
-T005 - Cenário git-local em crates/farol-core/tests/e2e_harness.rs
-T006 - Cenário uptime-kuma em crates/farol-core/tests/e2e_harness.rs
+T005 - Cenário git-local em crates/farol-core/src/e2e_tests.rs (BLOQUEADA por N4)
+T006 - Cenário uptime-kuma em crates/farol-core/src/e2e_tests.rs
 T008 - tests/integration/harness.sh
 ```
 
@@ -408,8 +463,10 @@ passar (só depende de Foundational).
 - `[P]` tasks = arquivos diferentes, sem dependência entre si.
 - Cada user story é independentemente completável e testável, per `spec.md` § Independent Test de
   cada uma.
-- Nenhuma task desta feature edita `crates/farol-core/src/{update,view,model,plugin_worker}.rs`,
-  `crates/farol-protocol/src/*.rs`, nem qualquer arquivo de `plugins/*/` — o "raio de mudança" em
-  código de produção é deliberadamente T002 apenas (`plan.md` § Structure Decision).
+- ~~Nenhuma task desta feature edita `crates/farol-core/src/{update,view,model,plugin_worker}.rs`~~
+  — **revisado em 2026-09-01 (N2)**: a migração `iced` 0.13→0.14 quebra `update.rs`,
+  `plugin_worker.rs` e `main.rs`; corrigi-los é pré-requisito de compilação, não opcional (T001b).
+  `view.rs`, `model.rs`, `config_store.rs`, `secrets_store.rs`, `crates/farol-protocol/src/*.rs` e
+  `plugins/*/` seguem **intocados** — o raio de mudança em código de produção é T001b + T002.
 - Commitar depois de cada task ou grupo pequeno de tasks relacionadas, seguindo a convenção já usada
   no histórico do repositório.

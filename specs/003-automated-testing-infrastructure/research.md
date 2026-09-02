@@ -378,3 +378,189 @@ como *check* da mudança (FR-008) — mecanismo nativo do GitHub Actions, sem co
   (2025-12-07) e de que é a versão mais recente disponível nesta sessão (2026-09-01).
 - `https://www.phoronix.com/news/Iced-0.14-Rust-GUI-LIbrary` — cobertura de terceiros sobre a
   release, usada só como triangulação, não como fonte normativa.
+
+---
+
+## Nota de execução (2026-09-01) — resultado do gate T004: hipótese de D1 **refutada no mecanismo**, T001–T004 bloqueadas
+
+Nota **acrescentada** durante a execução de T001–T004 (nada acima foi reescrito). Registra só o que
+foi verificado com código de verdade contra `iced` 0.14.0 / `iced_test` 0.14.0 já publicados e
+baixados nesta máquina (ambos confirmados existentes via `cargo search`).
+
+### N1 — O padrão do 1º bug histórico virou **erro de compilação** em 0.14, não panic de runtime
+
+`iced_futures` 0.13.2 (`src/subscription.rs:249`) checa a closure de `Subscription::map` com
+`debug_assert!(size_of::<F>() == 0, "the closure {} provided in `Subscription::map` is capturing")`
+— falha **em runtime**, que é a premissa de T004(a) ("confirmar que o teste falha com o
+`debug_assert!`"). Em `iced_futures` 0.14.0 (`src/subscription.rs:288-290`) a mesma checagem virou
+um bloco `const { check_zero_sized::<F>(); }`, avaliado **em tempo de compilação**.
+
+Verificado empiricamente (crate isolado, `iced = "0.14"`, reproduzindo o padrão exato do ponto 1 da
+armadilha de `AGENTS.md`): a compilação falha com `error[E0080]: evaluation panicked: The
+Subscription closure provided is not non-capturing. Closures given to Subscription::map or
+filter_map cannot capture external variables. If you need to capture state, consider using
+Subscription::with.`
+
+Consequência para D1: **T004 é inexecutável como especificado** — não existe execução de teste a
+observar, porque o crate não compila. A classe de bug que motivou a feature inteira deixa de ser
+detectável por qualquer harness de runtime sob 0.14, porque o `rustc` a rejeita antes. Isso é uma
+boa notícia para o produto e uma refutação do *mecanismo* proposto em D1: o `Emulator` continua
+podendo ter valor para US1 em geral (confirmado: `iced_test-0.14.0/src/emulator.rs:422-423` chama
+`program.subscription(&state)` e roda as recipes de verdade), mas a evidência que o gate existia
+para produzir não pode ser produzida. A justificativa de adotar `iced_test` precisa ser reancorada
+em outra coisa que não "reproduzir os dois panics históricos".
+
+### N2 — A migração 0.13→0.14 quebra código de produção **fora** do raio de mudança declarado
+
+D1 afirma que as breaking changes "não atingem `farol-core`". `cargo build --package farol-core`
+com o bump aplicado produz **5 erros**, 4 deles em arquivos que `tasks.md` § Notes declara
+explicitamente intocáveis nesta feature (`update.rs`, `plugin_worker.rs`):
+
+| # | Arquivo | Erro |
+|---|---|---|
+| 1 | `src/plugin_worker.rs:517` | `E0282` type annotations needed — `iced::stream::channel` mudou para `f: impl AsyncFnOnce(mpsc::Sender<T>)`, o closure perde a inferência do tipo de `output` |
+| 2 | `src/update.rs:561` | `E0282` idem (`refresh_tick_stream`) |
+| 3 | `src/plugin_worker.rs:344` | `E0599` `Subscription::run_with_id` **não existe mais** |
+| 4 | `src/update.rs:97` | `E0599` idem |
+| 5 | `src/main.rs:27` | `E0277` `iced::application` mudou de `(title, update, view)` para `(boot: impl BootFn, update, view)` — o título passa a ser builder `.title(...)` |
+
+O item 3/4 **não é rename mecânico**: a substituta é `Subscription::run_with<D, S>(data: D, builder:
+fn(&D) -> S) where D: Hash` — o builder é um **ponteiro de função não-capturante**, não um `Stream`
+já construído. Hoje `plugin_worker::subscription` faz
+`Subscription::run_with_id(format!("{plugin_name}-{setup_attempt}"), worker(config).map(...))`, ou
+seja, constrói o stream capturando `config`. Sob 0.14 é preciso redesenhar isso: `PluginSpawnConfig
++ setup_attempt` teriam de virar um `D: Hash` e `worker` teria de ser reconstruído dentro de um
+`fn(&D) -> S`. Esse é exatamente o mecanismo de reconexão pós-setup documentado em `AGENTS.md`
+(o `setup_attempt` no `id` é o que mata o processo filho antigo) — redesenhá-lo é decisão de
+arquitetura, não coberta por nenhuma task escrita.
+
+### N3 — `crates/farol-core` não tem target `lib`: `tests/e2e_harness.rs` não alcança `program()`
+
+`cargo metadata --no-deps` devolve para `farol-core` exatamente um target: `('farol', ['bin'])`.
+Não há `src/lib.rs` nem `[lib]` no `Cargo.toml`. Um teste de integração em `crates/farol-core/tests/`
+compila como crate separado e só pode importar de um target `lib` — que não existe. Verificado
+empiricamente com um crate bin-only mínimo: `error[E0432]: unresolved import` / `use of unresolved
+module or unlinked crate`.
+
+Consequência: T002 (`pub(crate) fn program()` em `main.rs`) + T004 (`crates/farol-core/tests/
+e2e_harness.rs` usando `program()`) são **estruturalmente impossíveis como especificados**, e o
+comando de verificação `cargo test --package farol-core --test e2e_harness` não pode existir. Toda a
+§ Path Conventions de `tasks.md` (`tests/e2e_harness.rs`, `tests/visual_snapshot.rs`,
+`tests/support/fixtures.rs`) depende disso. Sair do impasse exige uma de duas decisões de
+arquitetura, nenhuma coberta pelas tasks atuais: (a) criar `src/lib.rs` expondo os módulos e reduzir
+`main.rs` a um binário fino — obriga a alargar visibilidades (`pub(crate)` → `pub`) em `model.rs`/
+`update.rs`/`plugin_worker.rs`/`view.rs`, fora do raio declarado; ou (b) mover os testes `iced_test`
+para `#[cfg(test)] mod tests` **dentro** do bin target, contrariando a estrutura de arquivos de
+`plan.md`/`tasks.md`.
+
+### Recomendação (não executada — decisão do arquiteto)
+
+Revisitar D1 antes de qualquer task de US1/US4. Os três achados são independentes: N1 invalida a
+evidência que o gate deveria produzir; N2 e N3 invalidam o raio de mudança e a estrutura de arquivos
+planejados. Nenhum deles foi contornado nesta sessão, deliberadamente — inventar uma forma
+alternativa de fazer T004 "passar" mascararia a mesma classe de diagnóstico enganoso que motivou
+esta feature.
+
+Estado deixado na worktree para inspeção: `crates/farol-core/Cargo.toml` com o bump aplicado (`iced
+= "0.14"`, `dev-dependencies` `iced_test`/`insta`) e `Cargo.lock` resolvido — basta rodar `cargo
+build --package farol-core` para reproduzir os 5 erros da tabela de N2. Nenhum commit foi feito.
+
+---
+
+## D1 — decisão revisada (2026-09-01, 2ª execução): critério do gate T004 reancorado; N1/N2/N3 resolvidos
+
+Entrada **acrescentada** ao D1 (nada acima foi reescrito), registrando a decisão do arquiteto tomada
+em resposta à "Nota de execução (2026-09-01) — resultado do gate T004" e o que a execução dessa
+decisão de fato produziu.
+
+### Critério do gate T004: de "reproduzir o bug histórico" para "rodar o mecanismo real"
+
+**Por quê**: N1 mostrou que, em `iced` 0.14, o padrão do 1º bug histórico (`Subscription::map` com
+closure capturante) virou `const { check_zero_sized::<F>() }` — **erro de compilação**, não mais
+`debug_assert!` de runtime. Não existe execução a observar: o `rustc` rejeita antes. O critério
+original de T004 ("confirmar que o teste falha com o `debug_assert!`, reverter, confirmar que
+passa") é, portanto, inexecutável — e isso é uma **boa** notícia para o produto: aquela classe de
+bug deixou de poder existir num binário compilado.
+
+**Critério revisado (o que T004 passa a provar)**: que o `iced_test::Emulator` roda
+`Farol::subscription()` de verdade e leva uma conexão de plugin **real** até um estado terminal,
+atravessando `Subscription` real → spawn de processo filho real (`tokio::process`) → handshake
+JSON-RPC/NDJSON real por stdin/stdout → transição real em `update.rs`. É esse mecanismo — não o bug
+específico de `Subscription::map` — que sustenta US1 daqui em diante.
+
+**Achado N4 desta execução — `git-local` não pode alcançar `Ready`**: `plugins/git-local/main.py`
+declara `PROTOCOL_VERSION = "0.1"` e o core fala `"0.2"`
+(`plugin_worker::CORE_PROTOCOL_VERSION`). Sob o regime `MAJOR == 0` de
+`ProtocolVersion::is_compatible_with` (D7 da feature 001), MINOR diferente é incompatível — logo
+`git-local` termina **deterministicamente** em `Unavailable{VersionIncompatible}`. Isso é o débito
+técnico #4 já registrado em `AGENTS.md` ("v0.2 ... quebra `git-local` de propósito"), fora do escopo
+desta feature corrigir. Consequência para o plano: **T005 ("git-local alcança Ready") é impossível
+como escrito** enquanto o débito #4 não for resolvido.
+
+**Como o gate foi fechado mesmo assim**: dois cenários no mesmo gate, ambos passando —
+
+1. `emulator_runs_the_real_subscription_until_a_plugin_reaches_ready` — **`uptime-kuma`** (que fala
+   `"0.2"`) alcança `PluginState::Ready` pelo `Emulator`, com `required_config` resolvido pela
+   fixture hermética através do mecanismo de produção (`config_store`/`secrets_store` →
+   `FAROL_PLUGIN_*` injetada no spawn). É este cenário que prova o gate no sentido forte: chegar a
+   `Ready` exige que todo o caminho real tenha rodado.
+2. `emulator_takes_git_local_through_a_real_handshake_to_a_terminal_state` — **`git-local`** contra a
+   fixture determinística de T003, terminando em `Unavailable{VersionIncompatible}` com o detalhe
+   nomeando as duas versões. Percorre o mesmo caminho real e **congela o débito #4 como
+   comportamento automatizado**: no dia da migração do plugin para v0.2 este teste falha e obriga a
+   atualizá-lo, em vez de o débito seguir invisível.
+
+Não-vacuidade verificada nesta sessão, sabotando cada fixture e observando a falha:
+remover `api_key` do `secrets.toml` da fixture ⟹ `uptime-kuma` observado como
+`Unavailable{NotConfigured}` (não `Ready`); esperar `Crashed` em vez de `VersionIncompatible` ⟹
+falha reportando `Unavailable { reason: VersionIncompatible, detail: "plugin fala protocolo 0.1,
+este core só suporta 0.2" }`, string montada a partir da resposta que o processo Python *de fato*
+enviou.
+
+### N2 — `Subscription::run_with_id` → `Subscription::run_with` (resolvido)
+
+`PluginSpawnConfig` ganhou `PartialEq, Eq, Hash`; o `id` explícito
+(`"{plugin_name}-{setup_attempt}"`) deu lugar a `WorkerSubscriptionKey { config, setup_attempt }`
+como o `D: Hash` de `Subscription::run_with`, com `fn worker_stream(&WorkerSubscriptionKey) -> impl
+Stream` como `builder`. A propriedade load-bearing de D8 da feature 002 — a identidade da
+`Subscription` MUST mudar sempre que `setup_attempt` muda, para o `iced` matar o processo filho
+antigo via `kill_on_drop` — passa a ser garantida pelo `#[derive(Hash)]` em vez de por interpolação
+de string. Mesmo tratamento para o timer de refresh (`RefreshSubscriptionKey { plugin_name,
+interval }`, `update.rs`), com uma diferença deliberada de semântica documentada no código:
+`interval` agora participa da identidade (sob 0.13 não participava).
+Também ajustados: `iced::stream::channel` (o closure passou a exigir anotação de tipo do `Sender`,
+`E0282`) e `iced::application` (agora `(boot, update, view)` + `.title(...)` builder).
+
+### N3 — testes `iced_test` dentro do bin target (resolvido)
+
+`crates/farol-core` continua **sem** `src/lib.rs` (criar um obrigaria a alargar visibilidades em
+`model.rs`/`update.rs`/`plugin_worker.rs`/`view.rs`, fora do raio da feature). Os testes `iced_test`
+vivem em `crates/farol-core/src/e2e_tests.rs`, declarado como `#[cfg(test)] mod e2e_tests;` em
+`main.rs` — exatamente o padrão dos 32 testes que o crate já tinha (`update.rs`, `config_store.rs`,
+`secrets_store.rs`). A § Path Conventions de `tasks.md` foi corrigida em conformidade
+(`tests/e2e_harness.rs`/`tests/visual_snapshot.rs`/`tests/support/fixtures.rs` deixam de existir
+como planejados).
+
+### T002 — `program()` parametrizado pelo `boot`
+
+`crate::program(boot)` (em `main.rs`) é o ponto único de montagem do `Program`; `main()` passa
+`Farol::default`, sem nenhuma mudança de comportamento observável de `cargo run --bin farol`. O
+parâmetro existe porque `Farol::default()` deriva os plugins de `known_plugins()`, que usa caminhos
+**relativos** à raiz do repo e traz os dois plugins conhecidos: sob `cargo test` o `cwd` é o
+diretório do crate, e o slot `uptime-kuma` leria o `~/.config/farol` real da máquina. `update`,
+`view`, `subscription` e título permanecem idênticos entre binário e teste — que é o ponto de T002.
+
+### T003 — fixture hermética via `$XDG_CONFIG_HOME`
+
+A fixture (`HarnessFixture`, `e2e_tests.rs`) cria um repositório git real (`git init` + um commit,
+identidade/datas fixas, `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` neutralizados) e escreve
+`config.toml`/`secrets.toml` sintéticos para os dois plugins sob um diretório temporário, que passa
+a ser o `$XDG_CONFIG_HOME` do processo de teste — **os dois lados** (core em Rust e processo Python
+do plugin, que herda o ambiente no spawn) leem dali, e nenhum teste toca o `~/.config/farol` real.
+Os testes E2E são serializados por um `Mutex` porque uma variável de ambiente é global ao processo;
+nenhum outro teste do crate lê `XDG_CONFIG_HOME`/`HOME`.
+
+`base_url` da fixture aponta para `http://127.0.0.1:1` (nunca há serviço escutando: "connection
+refused" imediato, sem tráfego para fora da máquina). O duplo HTTP determinístico de `/metrics`
+previsto em D2 **continua pendente** — ele é necessário para assertivas sobre os *dados* do widget
+(T006), não para o gate de `Ready`, que depende só do handshake + `required_config` resolvido.

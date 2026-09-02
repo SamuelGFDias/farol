@@ -4,11 +4,12 @@
 //! plugins, injeção de `required_config`).
 //!
 //! Modelado como uma `iced::Subscription` de longa duração (padrão D5 de
-//! `research.md`): a função [`worker`] é passada para
-//! `Subscription::run_with_id` (T015 — antes `Subscription::run`, um
-//! ponteiro de função sem captura; passou a ser `run_with_id` porque agora
-//! cada conexão precisa de uma configuração própria — comando, args, nome do
-//! plugin — capturada por `worker`, não mais constantes globais), que a
+//! `research.md`): a função [`worker`] é alcançada por
+//! `Subscription::run_with` (T015 — antes `Subscription::run`, um ponteiro
+//! de função sem captura; passou a precisar de configuração própria por
+//! conexão — comando, args, nome do plugin — em vez de constantes globais;
+//! feature 003 migrou de `Subscription::run_with_id`, removida em `iced`
+//! 0.14, para `Subscription::run_with` — ver [`subscription`]), que a
 //! executa como um `Stream` dentro do próprio executor tokio que o `iced` já
 //! embarca (feature `tokio` do crate `iced`, D4) — nunca um segundo runtime
 //! tokio criado manualmente.
@@ -101,7 +102,14 @@ use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 /// isso automaticamente; é uma convenção do registro fixo em
 /// [`known_plugins`], responsabilidade de quem adicionar uma entrada nova
 /// manter os dois lados consistentes).
-#[derive(Debug, Clone)]
+/// **Migração `iced` 0.13 → 0.14 (feature 003, achado N2 de `research.md`)**:
+/// ganhou `PartialEq, Eq, Hash` além de `Debug, Clone`. `Subscription::run_with`
+/// (a substituta de `Subscription::run_with_id`, que deixou de existir em
+/// 0.14) identifica a `Subscription` pelo `Hash` do dado que ela carrega, em
+/// vez de por uma `String` de `id` montada à mão — ver [`WorkerSubscriptionKey`]
+/// e [`subscription`]. Os três campos (`String`/`Vec<String>`) já implementam
+/// os três traits, então a deriva é direta.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PluginSpawnConfig {
     pub plugin_name: String,
     pub command: String,
@@ -291,15 +299,15 @@ pub enum WorkerEvent {
 /// rode o worker (D5: uma `Subscription` só produz efeitos enquanto for
 /// devolvida ao runtime a cada ciclo).
 ///
-/// **T015 (correção C2 parte 2)**: usa `Subscription::run_with_id` em vez de
+/// **T015 (correção C2 parte 2)**: usa `Subscription::run_with` em vez de
 /// `Subscription::run` — antes desta feature, `worker` era um ponteiro de
 /// função sem captura (`fn() -> S`, único plugin conhecido, comando/args
-/// hardcoded em constantes globais); agora `worker` precisa capturar
-/// `config` (comando/args/nome variam por plugin conhecido, T014), o que
-/// `Subscription::run` não permite. `run_with_id` identifica a `Subscription`
-/// pelo `plugin_name` — é isso que permite ao `iced` manter uma conexão por
-/// plugin conhecido rodando simultaneamente, sem uma recriar/matar a outra
-/// entre re-renders.
+/// hardcoded em constantes globais); agora o worker precisa de `config`
+/// (comando/args/nome variam por plugin conhecido, T014), o que
+/// `Subscription::run` não permite. `run_with` identifica a `Subscription`
+/// pelo `Hash` de [`WorkerSubscriptionKey`] (que inclui o `plugin_name`) —
+/// é isso que permite ao `iced` manter uma conexão por plugin conhecido
+/// rodando simultaneamente, sem uma recriar/matar a outra entre re-renders.
 ///
 /// **Correção (T023, execução real com múltiplos plugins)**: devolve
 /// `Subscription<(String, WorkerEvent)>` em vez de `Subscription<WorkerEvent>`
@@ -321,27 +329,71 @@ pub enum WorkerEvent {
 /// é montada.
 ///
 /// **T032 (D8) — parâmetro `setup_attempt`**: novo, além de `config`. Compõe
-/// o `id` da `Subscription` junto com `plugin_name`
-/// (`format!("{plugin_name}-{setup_attempt}")`) — é o mecanismo de
+/// a identidade da `Subscription` junto com `config` — é o mecanismo de
 /// reconexão descrito em `research.md` D8 ("Decisão — tela de setup"): o
 /// chamador (`update.rs::subscription`) passa
 /// `slot.connection.setup_attempt` (`model::PluginConnection`, incrementado
 /// ao processar a submissão da tela de setup daquele plugin); quando esse
-/// valor muda, o `id` muda, e o `iced` — que identifica/deduplica
-/// `Subscription`s pelo `id` entre re-renders — encerra a `Subscription`
-/// antiga (matando o processo filho anterior, `kill_on_drop` já configurado
-/// em `worker`) e inicia esta função de novo do zero, com `worker(config)`
-/// spawnando um processo novo que já enxerga as variáveis de ambiente
-/// recém-persistidas em `config.toml`/`secrets.toml`. `setup_attempt` é
-/// passado por valor (um `u32`, `Copy`) como argumento desta função — nunca
-/// capturado por um closure de `Subscription::map` (ver a nota acima sobre
-/// a armadilha de `size_of::<F>() == 0`); o único `.map()` aqui embaixo
-/// continua zero-sized, usando só seu próprio parâmetro `event`.
-pub fn subscription(config: PluginSpawnConfig, setup_attempt: u32) -> Subscription<(String, WorkerEvent)> {
-    let id = format!("{}-{setup_attempt}", config.plugin_name);
-    let plugin_name = config.plugin_name.clone();
-    let stream = worker(config).map(move |event| (plugin_name.clone(), event));
-    Subscription::run_with_id(id, stream)
+/// valor muda, a identidade muda, e o `iced` — que identifica/deduplica
+/// `Subscription`s por essa identidade entre re-renders — encerra a
+/// `Subscription` antiga (matando o processo filho anterior, `kill_on_drop`
+/// já configurado em `worker`) e inicia esta função de novo do zero, com
+/// `worker(config)` spawnando um processo novo que já enxerga as variáveis
+/// de ambiente recém-persistidas em `config.toml`/`secrets.toml`.
+///
+/// **Migração `iced` 0.14 (feature 003, achado N2 de `research.md`)**:
+/// `Subscription::run_with_id(id, stream)` **não existe mais** em 0.14. A
+/// substituta é `Subscription::run_with<D: Hash, S>(data: D, builder: fn(&D)
+/// -> S)`: em vez de um `id: String` explícito mais um `Stream` já
+/// construído, passa-se um dado `D: Hash` (a identidade agora é derivada do
+/// `Hash` de `D` + o `TypeId` de `D`, ver `iced_futures::subscription::Runner::hash`)
+/// e um **ponteiro de função não-capturante** que constrói o `Stream` a
+/// partir de `&D`. Consequência para o mecanismo de reconexão acima: o `id`
+/// deixa de ser a `String` `"{plugin_name}-{setup_attempt}"` e passa a ser o
+/// `Hash` de [`WorkerSubscriptionKey`], que inclui `setup_attempt` como
+/// campo — a propriedade load-bearing ("a identidade MUST mudar sempre que
+/// `setup_attempt` muda") é preservada por construção, agora garantida pelo
+/// `#[derive(Hash)]` em vez de por uma interpolação de string.
+pub fn subscription(
+    config: PluginSpawnConfig,
+    setup_attempt: u32,
+) -> Subscription<(String, WorkerEvent)> {
+    Subscription::run_with(
+        WorkerSubscriptionKey {
+            config,
+            setup_attempt,
+        },
+        worker_stream,
+    )
+}
+
+/// Identidade (`D: Hash` de `Subscription::run_with`) da `Subscription` do
+/// worker de um plugin — ver [`subscription`] para o porquê de este tipo
+/// existir a partir de `iced` 0.14.
+///
+/// `setup_attempt` participa do `Hash` de propósito: é ele que faz a
+/// `Subscription` do worker ser considerada **outra** pelo runtime do `iced`
+/// depois de a tela de setup ser submetida, encerrando a anterior
+/// (`kill_on_drop` mata o processo filho antigo) e spawnando um processo
+/// novo. Remover este campo do `Hash` reintroduziria silenciosamente o bug
+/// que D8 da feature 002 corrigiu.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct WorkerSubscriptionKey {
+    pub config: PluginSpawnConfig,
+    pub setup_attempt: u32,
+}
+
+/// Construtor do `Stream` do worker a partir da identidade da `Subscription`
+/// — o `builder: fn(&D) -> S` exigido por `Subscription::run_with` (0.14).
+///
+/// MUST continuar sendo um `fn` livre (ponteiro de função não-capturante):
+/// `run_with` aceita literalmente `fn(&D) -> S`, não um closure. Clona de
+/// `key` o que o `async move` do worker precisa possuir — `setup_attempt`
+/// não é lido aqui porque seu único papel é participar da identidade
+/// (`Hash`), não do comportamento do worker.
+fn worker_stream(key: &WorkerSubscriptionKey) -> impl Stream<Item = (String, WorkerEvent)> {
+    let plugin_name = key.config.plugin_name.clone();
+    worker(key.config.clone()).map(move |event| (plugin_name.clone(), event))
 }
 
 /// Probe leve de `protocol_version`, usado pela correção C1 (T011) — ver
@@ -510,11 +562,19 @@ fn required_config_fully_present(plugin_name: &str, required_config: &[RequiredC
 /// Recebe `config` por valor (movido para dentro do `async move` do stream)
 /// — desde T015/correção C2 parte 2, `worker` deixou de ser um ponteiro de
 /// função sem captura (exigido por `Subscription::run`) porque agora precisa
-/// variar por plugin conhecido; `Subscription::run_with_id` (ver
-/// [`subscription`]) aceita qualquer `Stream`, não só um `fn() -> S`, o que
-/// libera esta função para capturar `config` livremente.
+/// variar por plugin conhecido; `Subscription::run_with` (ver
+/// [`subscription`]/[`worker_stream`]) constrói o `Stream` a partir de um
+/// `&D` dentro de um `fn` livre, o que libera esta função para receber e
+/// possuir `config` livremente.
+///
+/// **Migração `iced` 0.14 (achado N2 de `research.md` da feature 003)**: o
+/// tipo de `output` passou a precisar de anotação explícita.
+/// `iced::stream::channel` mudou de `f: impl FnOnce(mpsc::Sender<T>) -> Fut`
+/// para `f: impl AsyncFnOnce(mpsc::Sender<T>)`, e a inferência de `T` a
+/// partir do corpo do closure deixou de funcionar (`E0282: type annotations
+/// needed`) — daí `mut output: mpsc::Sender<WorkerEvent>`.
 fn worker(config: PluginSpawnConfig) -> impl Stream<Item = WorkerEvent> {
-    stream::channel(16, move |mut output| async move {
+    stream::channel(16, move |mut output: mpsc::Sender<WorkerEvent>| async move {
         let mut command = Command::new(&config.command);
         command
             .args(&config.args)
