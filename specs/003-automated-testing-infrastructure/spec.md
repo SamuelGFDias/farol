@@ -8,6 +8,55 @@
 
 **Input**: User description: "Infraestrutura de testes automatizada para o Farol (harness de execução real, cobertura de contrato mais rigorosa, testes de UI/visual, e CI). Contexto: na feature 002, três bugs reais (dois panics de `Subscription::map` com closure capturante, um erro de decode `#[serde(untagged)]` mascarado como timeout) só apareceram rodando o binário `farol` de verdade, nunca pegos por `cargo test --workspace` (71 testes, sempre verde). Diagnóstico exigiu spawn manual repetido do binário com instrumentação temporária. `tests/integration/README.md` já referencia um `harness.sh` nunca construído (débito da feature 001). Testar a UI visualmente é hoje inviável de forma automatizada (Xvfb sem GPU renderiza janela preta; sessão real é Wayland nativo sem ferramenta de screenshot instalada). Escopo: harness de execução real automatizado, cobertura de contrato mais rigorosa a partir dos JSON Schemas normativos, testes de UI/visual (endereçando o problema de tooling em aberto), e CI automatizado via GitHub Actions rodando tudo a cada push/PR."
 
+## Clarifications
+
+### Session 2026-09-01
+
+**Nota de processo**: sessão de clarificação executada como subtarefa isolada, sem acesso síncrono
+ao usuário (autorização prévia dada pelo arquiteto: "pode seguir... quero que me notifique só
+quando os testes rodarem"). As perguntas abaixo foram formuladas e respondidas com o melhor
+julgamento de engenharia a partir do que já está documentado no repositório (`AGENTS.md`,
+`specs/002-uptime-kuma-plugin/`, constitution v1.0.0), no mesmo espírito da seção `## Assumptions`
+já presente neste `spec.md` — nenhuma delas exigiu leitura de arquivo fora do já necessário para
+esta tarefa.
+
+- Q: FR-001, FR-003 e a segunda nota de Edge Cases exigem um "tempo limite definido" para o harness
+  de execução real (US1) sem declarar um valor concreto — qual é esse valor, e ele é por-verificação
+  ou para o harness inteiro? → A: Dois limites distintos, ambos concretos: (a) por verificação —
+  até 30s de espera para um plugin alcançar o estado esperado (`Ready` ou um `Unavailable` terminal)
+  a partir do spawn, folga generosa acima do `RPC_TIMEOUT_CONTROL` de 5s que o core já aplica a
+  `handshake/hello`/`widget/get` (`specs/002-uptime-kuma-plugin/plan.md` § Constraints), cobrindo
+  também o tempo de start do processo antes do primeiro RPC; (b) para o harness inteiro — até 120s
+  cobrindo todos os plugins/fixtures de um cenário, encerrando à força qualquer processo
+  remanescente e reportando falha se excedido (FR-003). Ambos os valores são folga deliberada dentro
+  do orçamento de 10 minutos do SC-004 para o conjunto completo de verificações de CI (harness é uma
+  fração desse total, não o total). Valores exatos são um parâmetro de configuração do harness, não
+  normativo do protocolo — ajustável em `research.md`/implementação sem exigir nova especificação.
+- Q: Este `spec.md`, diferente de `specs/001-*` e `specs/002-*`, não tem uma seção `## Out of Scope`
+  explícita — o que fica deliberadamente fora do escopo desta feature? → A: Adicionada seção
+  `## Out of Scope` própria (ver abaixo), no mesmo padrão das features anteriores — cobre
+  principalmente: corrigir os defeitos de produto que as verificações desta feature venham a
+  revelar (já antecipado pela última suposição de `## Assumptions`, agora também explícito aqui);
+  migrar o plugin `git-local` para `protocol_version "0.2"` (débito técnico #4, já rastreado como
+  issue própria, fora do escopo desta feature de infraestrutura de teste); testes de carga/
+  performance e testes de segurança/penetração; suporte da infraestrutura de CI/teste a outra
+  plataforma além de Linux (Princípio I da constitution); e perseguir captura de pixels real via
+  GPU/Wayland automatizada como objetivo desta feature além do que já é viável hoje (a decisão de
+  FR-009 já permite uma abordagem declarativa como alternativa válida, não é obrigação buscar pixel
+  real a qualquer custo).
+- Q: As fixtures do harness de execução real (US1) — em particular qualquer cenário que reutilize o
+  plugin `uptime-kuma`, que declara `required_config` (URL base + API key) no handshake — podem usar
+  uma credencial real de alguma instância Uptime Kuma existente, ou precisam ser inteiramente
+  sintéticas? → A: Inteiramente sintéticas — nenhuma credencial real, nenhum segredo real é
+  commitado ou usado em nenhum cenário do harness que roda em CI (FR-007). Consistente com o
+  Princípio IV da constitution (segredos geridos pelo core, nunca expostos em texto plano fora do
+  armazenamento dedicado) e com a primeira suposição de `## Assumptions` (fixture controlada no lugar
+  de serviço externo real): um cenário que dependa de uma instância Uptime Kuma real de verdade — se
+  algum dia existir — é opcional, documentado como tal, e nunca roda como parte obrigatória do
+  gatilho de CI (US3); a fixture-padrão do harness usa valores sintéticos (URL/API key falsos,
+  servidos por um duplo determinístico do endpoint `/metrics`, ou um plugin de teste dedicado — a
+  escolha exata do mecanismo é decisão de `/speckit-plan`).
+
 ## User Scenarios & Testing *(mandatory)*
 
 ### User Story 1 - Harness detecta automaticamente que o app real não sobe corretamente (Priority: P1)
@@ -176,7 +225,10 @@ sem precisar abrir o aplicativo manualmente.
   uma falha do Farol) de "o Farol falhou" — nunca reportar as duas coisas da mesma forma.
 - O que acontece quando o harness de execução real trava indefinidamente (nem sucesso, nem falha
   clara) em vez de terminar? Precisa existir um tempo limite explícito após o qual a execução é
-  considerada falha, encerrando qualquer processo remanescente.
+  considerada falha, encerrando qualquer processo remanescente — concretamente (ver
+  `## Clarifications`): até 30s por verificação individual (plugin alcançar o estado esperado) e até
+  120s para o harness inteiro de um cenário, ambos dentro do orçamento de 10 minutos do SC-004 para
+  o conjunto completo de verificações de CI.
 - O que acontece quando um schema normativo do protocolo (US2) tem uma versão histórica retida (como
   já ocorre hoje com `protocol/schema/v0.1/`, mantida como registro sem implementação ativa)? A
   verificação de contrato precisa deixar claro se está ou não validando essa versão histórica, sem
@@ -289,13 +341,37 @@ sem precisar abrir o aplicativo manualmente.
   o processo manual de spawn repetido com instrumentação temporária que foi necessário durante a
   feature 002 — a mesma classe de defeito é pega automaticamente antes da revisão manual.
 
+## Out of Scope
+
+- Corrigir defeitos de produto adicionais que as verificações desta feature venham a revelar depois
+  de existirem — cada defeito revelado é tratado como item separado (correção direta ou débito
+  técnico rastreado), conforme já antecipado em `## Assumptions`.
+- Migrar o plugin `git-local` (feature 001) para `protocol_version "0.2"` — débito técnico #4, já
+  rastreado como issue própria no tracker do projeto (`specs/002-uptime-kuma-plugin/tasks.md` §
+  Débito técnico); esta feature usa `git-local` e/ou `uptime-kuma` como estão hoje (fixtures ou
+  configuração real controlada, conforme `## Assumptions`), sem alterar nenhum dos dois plugins.
+- Testes de carga/performance (throughput, concorrência de múltiplas instâncias do core) e testes de
+  segurança/penetração — fora do escopo desta feature, que endereça correção funcional e de
+  contrato, não hardening.
+- Suporte da infraestrutura de CI/teste a qualquer plataforma além de Linux — o Farol é nativo Linux
+  (Princípio I da constitution); a infraestrutura de teste não introduz suporte multiplataforma que o
+  produto em si não tem.
+- Perseguir captura de pixels real via GPU/Wayland automatizada como objetivo obrigatório da
+  verificação visual (US4) — FR-009 já permite explicitamente uma abordagem declarativa como
+  alternativa válida; buscar renderização real em CI a qualquer custo não é meta desta feature.
+- Qualquer verificação automatizada não já citada nesta especificação (ex.: fuzzing genérico fora do
+  espaço de valores de borda dos schemas, testes de mutação, cobertura de código como métrica
+  obrigatória) — pode ser considerada em feature futura, não é requisito desta.
+
 ## Assumptions
 
 - O harness de execução real (US1) pode depender de fixtures controladas (plugin(s) de teste
   determinístico(s)) além de, ou no lugar de, plugins de referência reais — não é obrigatório que
   todo cenário do harness dependa de um serviço externo de verdade (por exemplo, uma instância real
   de um serviço monitorado); quando um cenário depender de serviço externo real, isso é uma decisão
-  explícita, documentada como tal.
+  explícita, documentada como tal. **Nenhuma fixture do harness que roda em CI (US3) usa credencial
+  ou segredo real** (ver `## Clarifications`) — valores sintéticos apenas; um cenário contra serviço
+  externo real de verdade, se algum dia existir, é opcional e nunca obrigatório no gatilho de CI.
 - "Casos de borda dos contratos" (US2) refere-se aos schemas JSON normativos correntes do protocolo
   (a versão em uso pela implementação ativa); schemas de versões históricas retidas como registro
   (sem implementação ativa) não são obrigados a ganhar a mesma cobertura de borda, exceto onde já

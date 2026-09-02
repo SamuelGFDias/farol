@@ -46,3 +46,14 @@ runner de CI) para `/speckit-plan`, que é o local correto dessa decisão segund
 
 Zero marcador `[NEEDS CLARIFICATION]` no `spec.md`. Próximo passo recomendado: `/speckit-plan` (não
 executado nesta subtarefa, por instrução explícita de parar após `spec.md`).
+
+**Atualização (2026-09-01, sessão `/speckit-clarify`)**: rodado mesmo sem `[NEEDS CLARIFICATION]`
+marcado, para conferir se a varredura de ambiguidade encontrava algo que passou despercebido —
+também sem sessão interativa disponível, respondido pelo próprio executor com o melhor julgamento
+de engenharia (autorização prévia do arquiteto). Três perguntas de alto impacto identificadas e
+resolvidas, registradas em `## Clarifications` do `spec.md`: (1) valor numérico concreto do tempo
+limite do harness (antes só "definido", sem número — 30s por verificação, 120s por cenário); (2)
+seção `## Out of Scope` ausente (diferente de `specs/001-*`/`specs/002-*`) — adicionada; (3)
+credenciais de fixture do harness devem ser sintéticas, nunca reais — explicitado em
+`## Assumptions`. Todos os itens do checklist permanecem `[x]` (já passavam antes desta sessão;
+nenhuma regressão, nenhum item novo destravado por já estarem todos marcados).
