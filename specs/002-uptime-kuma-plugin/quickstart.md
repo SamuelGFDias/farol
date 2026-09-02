@@ -8,6 +8,16 @@ contém código de implementação — apenas comandos e resultados esperados, r
 e `data-model.md`. Segue o mesmo padrão de
 `specs/001-walking-skeleton-git-plugin/quickstart.md`.
 
+**Nota (sessão de automação, 2026-09-01)**: os Cenários 1–5, 7 (T036–T038, T040–T042 de `tasks.md`)
+foram convertidos em testes permanentes em `crates/farol-core/src/e2e_tests.rs` — rodam de verdade
+(`iced_test::Emulator`, processo de plugin real, HTTP real via fixture local determinística), sem
+precisar de execução manual (ver `AGENTS.md` § Testes e as notas de execução de cada task em
+`tasks.md`). Não é mais necessário reproduzir estes cenários à mão para validar a feature; este
+documento continua sendo a especificação de referência de cada cenário. O Cenário 6 (T039) tem um
+teste equivalente escrito, mas `#[ignore]`d de propósito — expõe um gap real de
+`plugins/uptime-kuma/metrics_parser.py` (zero monitores é indistinguível de resposta inválida), ver
+a nota de execução de T039.
+
 ## Pré-requisitos
 
 **Revisão desta sessão (auditoria pós-plan, 2026-09-01)**: os pré-requisitos abaixo substituem

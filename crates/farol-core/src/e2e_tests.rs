@@ -59,9 +59,12 @@ use iced::futures::executor;
 use iced::futures::StreamExt;
 use iced::Size;
 use iced_test::emulator::{self, Emulator, Mode};
-use iced_test::instruction::Expectation;
+use iced_test::instruction::{
+    Expectation, Interaction, Keyboard, Mouse, Target as InstructionTarget,
+};
 use iced_test::program::Program;
-use iced_test::Instruction;
+use iced_test::selector::{Candidate, Target as SelectorTarget};
+use iced_test::{Instruction, Selector};
 
 use crate::model::{PluginState, UnavailableReason};
 use crate::plugin_worker::PluginSpawnConfig;
@@ -284,6 +287,31 @@ impl HarnessFixture {
         Self { base, scan_root }
     }
 
+    /// Fixture **sem** `config.toml`/`secrets.toml` de `uptime-kuma` (T036/T037, Cenários 1/2 de
+    /// `quickstart.md` — "primeira execução", `rm -f .../config.toml .../secrets.toml` do
+    /// quickstart). Ao contrário de `new`/`with_uptime_kuma_base_url`, este construtor
+    /// propositalmente não grava nenhum valor de `required_config` para `uptime-kuma`: é essa
+    /// ausência que faz o handshake resultar em `all_required_config_present == false` (T019/D8) e
+    /// a conexão cair em `PluginState::Unavailable{NotConfigured}` — a tela de setup, não o widget.
+    ///
+    /// `git-local` não é spawnado por nenhum cenário que usa este construtor, mas `scan_root`
+    /// continua sendo criado (vazio, sem repositório) só para manter o mesmo formato de
+    /// `HarnessFixture` que `Drop` e `spawn_config` esperam.
+    fn uptime_kuma_unconfigured(label: &str) -> Self {
+        let base = std::env::temp_dir().join(format!("farol-e2e-{label}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+
+        let scan_root = base.join("repos");
+        fs::create_dir_all(&scan_root)
+            .expect("criar scan_root da fixture (não usado por uptime-kuma)");
+
+        // Mesma observação de hermetismo de `with_uptime_kuma_base_url`: `set_var` é seguro aqui
+        // porque `E2E_LOCK` serializa os testes deste módulo.
+        std::env::set_var("XDG_CONFIG_HOME", base.join("xdg"));
+
+        Self { base, scan_root }
+    }
+
     /// `PluginSpawnConfig` de um plugin de referência apontando para o
     /// `main.py` real do repositório, por caminho **absoluto** — mesmo
     /// comando/args de `plugin_worker::known_plugins()`, só sem a dependência
@@ -419,6 +447,29 @@ fn expected_monitors() -> Vec<farol_protocol::messages::MonitorStatusItem> {
     ]
 }
 
+/// Corpo de `/metrics` de uma instância Uptime Kuma real, recém-instalada, sem nenhum monitor
+/// cadastrado ainda (T039, Cenário 6 de `quickstart.md`) — só os comentários `# HELP`/`# TYPE` que o
+/// exportador sempre emite, nenhuma amostra `monitor_status{...}`/`monitor_response_time{...}`
+/// (o Uptime Kuma só gera uma amostra por monitor configurado; zero monitores ⟹ zero amostras).
+/// Confirmado por inspeção direta de `plugins/uptime-kuma/metrics_parser.py::parse_metrics` — ver
+/// a docstring do teste que usa esta constante para o porquê disso ser um corpo válido "sem
+/// monitores" e não um corpo malformado.
+const EMPTY_METRICS_FIXTURE_BODY: &str = concat!(
+    "# HELP monitor_cert_days_remaining Monitor Certificate Days Remaining\n",
+    "# TYPE monitor_cert_days_remaining gauge\n",
+    "# HELP monitor_response_time Monitor Response Time (ms)\n",
+    "# TYPE monitor_response_time gauge\n",
+    "# HELP monitor_status Monitor Status\n",
+    "# TYPE monitor_status gauge\n",
+);
+
+/// Corpo de resposta de um servidor HTTP qualquer que **não** é um Uptime Kuma (T041, Cenário 5 de
+/// `quickstart.md`) — nenhuma linha `monitor_status{...}` reconhecível, então
+/// `metrics_parser.py::parse_metrics` MUST levantar `MetricsParseError` (`-32007
+/// metrics_parse_error`) para este corpo, ao contrário de [`EMPTY_METRICS_FIXTURE_BODY`] acima
+/// (que documenta um gap real do parser, não uma resposta genuinamente inválida).
+const NON_METRICS_FIXTURE_BODY: &str = "<html><body><h1>404 Not Found</h1></body></html>\n";
+
 /// Duplo determinístico do endpoint `/metrics` de uma instância Uptime Kuma
 /// (T006, `research.md` D2), servido em `127.0.0.1` numa **porta efêmera**
 /// (`:0`) por uma thread própria.
@@ -444,12 +495,27 @@ struct MetricsFixtureServer {
     base_url: String,
     authorized: Arc<AtomicUsize>,
     unauthorized: Arc<AtomicUsize>,
+    /// T040 (Cenário 4 de `quickstart.md`): `false` faz a fixture aceitar a conexão TCP e derrubá-la
+    /// imediatamente sem responder nada — do ponto de vista do cliente HTTP do plugin
+    /// (`urllib.request` em `metrics_client.py`), isso é `http.client.RemoteDisconnected`
+    /// (subclasse de `ConnectionResetError`/`OSError`), mapeado para `MetricsUnreachableError` —
+    /// equivalente a "a instância Uptime Kuma ficou inacessível/o serviço parou", sem precisar
+    /// reiniciar o Farol nem reatribuir a porta efêmera desta fixture. `true` (default) serve
+    /// [`MetricsFixtureServer::body`] normalmente.
+    available: Arc<AtomicBool>,
     shutdown: Arc<AtomicBool>,
     thread: Option<JoinHandle<()>>,
 }
 
 impl MetricsFixtureServer {
+    /// Serve [`METRICS_FIXTURE_BODY`] (três monitores conhecidos, T006).
     fn start() -> Self {
+        Self::start_with_body(METRICS_FIXTURE_BODY)
+    }
+
+    /// Serve `body` para toda requisição autenticada — usado por T039/T041 para simular,
+    /// respectivamente, uma instância sem monitores e uma resposta que não é um Uptime Kuma.
+    fn start_with_body(body: &'static str) -> Self {
         let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
             .expect("bind da fixture de /metrics em 127.0.0.1:0");
         let port = listener
@@ -462,15 +528,24 @@ impl MetricsFixtureServer {
 
         let authorized = Arc::new(AtomicUsize::new(0));
         let unauthorized = Arc::new(AtomicUsize::new(0));
+        let available = Arc::new(AtomicBool::new(true));
         let shutdown = Arc::new(AtomicBool::new(false));
 
         let thread = {
             let authorized = Arc::clone(&authorized);
             let unauthorized = Arc::clone(&unauthorized);
+            let available = Arc::clone(&available);
             let shutdown = Arc::clone(&shutdown);
 
             std::thread::spawn(move || {
-                accept_until_shutdown(&listener, &authorized, &unauthorized, &shutdown);
+                accept_until_shutdown(
+                    &listener,
+                    body,
+                    &authorized,
+                    &unauthorized,
+                    &available,
+                    &shutdown,
+                );
             })
         };
 
@@ -478,6 +553,7 @@ impl MetricsFixtureServer {
             base_url: format!("http://127.0.0.1:{port}"),
             authorized,
             unauthorized,
+            available,
             shutdown,
             thread: Some(thread),
         }
@@ -489,6 +565,12 @@ impl MetricsFixtureServer {
 
     fn unauthorized_requests(&self) -> usize {
         self.unauthorized.load(Ordering::Relaxed)
+    }
+
+    /// Alterna a fixture entre "disponível" (serve `body` normalmente) e "indisponível" (T040 —
+    /// ver a docstring do campo `available`).
+    fn set_available(&self, available: bool) {
+        self.available.store(available, Ordering::Relaxed);
     }
 }
 
@@ -508,13 +590,28 @@ impl Drop for MetricsFixtureServer {
 /// caso normal, não um erro.
 fn accept_until_shutdown(
     listener: &TcpListener,
+    body: &str,
     authorized: &AtomicUsize,
     unauthorized: &AtomicUsize,
+    available: &AtomicBool,
     shutdown: &AtomicBool,
 ) {
     while !shutdown.load(Ordering::Relaxed) {
         match listener.accept() {
-            Ok((stream, _)) => serve_metrics_connection(stream, authorized, unauthorized),
+            Ok((stream, _)) => {
+                if available.load(Ordering::Relaxed) {
+                    serve_metrics_connection(stream, body, authorized, unauthorized);
+                } else {
+                    // T040: "instância inacessível" — o SO já completou o handshake TCP antes de
+                    // chegarmos aqui (é por isso que não basta parar de `accept()`), então
+                    // derrubamos a conexão sem responder nada, em vez de servir `body`. Do lado do
+                    // plugin (`urllib.request`), isso vira `http.client.RemoteDisconnected`
+                    // (`ConnectionResetError`/`OSError`) — `metrics_client.py` mapeia para
+                    // `MetricsUnreachableError`, o mesmo caminho de "porta fechada"/"serviço
+                    // parado" que `quickstart.md` Cenário 4 descreve.
+                    drop(stream);
+                }
+            }
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                 std::thread::sleep(Duration::from_millis(5));
             }
@@ -530,6 +627,7 @@ fn accept_until_shutdown(
 /// caminho se os dados não chegarem.
 fn serve_metrics_connection(
     mut stream: TcpStream,
+    body: &str,
     authorized: &AtomicUsize,
     unauthorized: &AtomicUsize,
 ) {
@@ -570,11 +668,7 @@ fn serve_metrics_connection(
         http_response(401, "text/plain; charset=utf-8", "unauthorized\n")
     } else {
         authorized.fetch_add(1, Ordering::Relaxed);
-        http_response(
-            200,
-            "text/plain; version=0.0.4; charset=utf-8",
-            METRICS_FIXTURE_BODY,
-        )
+        http_response(200, "text/plain; version=0.0.4; charset=utf-8", body)
     };
 
     let _ = stream.write_all(response.as_bytes());
@@ -657,6 +751,33 @@ type Receiver<P> = mpsc::Receiver<emulator::Event<P>>;
 /// (o caminho de falha por timeout) ainda consiga extrair o `Farol` real para
 /// nomear o `PluginState` observado, em vez de reportar um "timeout" opaco
 /// (FR-003/FR-004).
+/// `Selector` (`iced_test`) que casa só um `text_input` — nunca um `text()`
+/// estático vizinho — cujo conteúdo atual (valor digitado, ou o placeholder
+/// enquanto vazio, mesma regra de `operation::TextInput::text`) é exatamente
+/// `self.0`. Ver a docstring de `Scenario::setup_field_point` (T036) para o
+/// porquê deste tipo existir: `view_setup_form` (view.rs) renderiza um
+/// rótulo estático com o MESMO texto do placeholder logo acima de cada
+/// campo, e o `Selector` embutido de `iced_test` para `&str` não distingue
+/// os dois — sempre acha o rótulo primeiro.
+struct TextInputByText<'a>(&'a str);
+
+impl Selector for TextInputByText<'_> {
+    type Output = SelectorTarget;
+
+    fn select(&mut self, candidate: Candidate<'_>) -> Option<Self::Output> {
+        match candidate {
+            Candidate::TextInput { state, .. } if state.text() == self.0 => {
+                Some(SelectorTarget::from(candidate))
+            }
+            _ => None,
+        }
+    }
+
+    fn description(&self) -> String {
+        format!("text_input com texto == {:?}", self.0)
+    }
+}
+
 struct Scenario<P>
 where
     P: Program<State = Farol, Message = Message> + 'static,
@@ -672,17 +793,18 @@ impl<P> Scenario<P>
 where
     P: Program<State = Farol, Message = Message> + 'static,
 {
-    /// `true` ⟺ a tela atual do `Emulator` contém um widget de texto cujo
-    /// conteúdo é exatamente `text`.
+    /// Executa uma `Instruction` (interação OU expectativa) e devolve `true`
+    /// ⟺ ela reportou sucesso (`Event::Ready`).
     ///
-    /// `Emulator::run` responde a um `Instruction::Expect` com exatamente um
-    /// `Event::Ready` (encontrou) ou `Event::Failed` (não encontrou), então
-    /// este laço sempre termina. Qualquer `Event::Action` que chegue antes
-    /// disso (ex.: uma mensagem recém-produzida pela `Subscription` do worker)
-    /// é aplicado no caminho — é aqui que o app de fato progride entre duas
-    /// consultas.
-    fn screen_shows(&mut self, text: &str) -> bool {
-        let instruction = Instruction::Expect(Expectation::Text(text.to_string()));
+    /// `Emulator::run` responde a QUALQUER `Instruction` com exatamente um
+    /// `Event::Ready` (sucesso) ou `Event::Failed` (falha), então este laço
+    /// sempre termina. Qualquer `Event::Action` que chegue antes disso (ex.:
+    /// uma mensagem recém-produzida pela `Subscription` do worker) é
+    /// aplicado no caminho — é aqui que o app de fato progride entre duas
+    /// instruções. Extraído de `screen_shows` (T007) para também servir
+    /// `click_text`/`click_point`/`type_text` (T036) — mesmo mecanismo de
+    /// bombeamento de eventos, só a `Instruction` concreta muda.
+    fn run_instruction(&mut self, instruction: Instruction) -> bool {
         let program = &self.program;
         self.emulator
             .as_mut()
@@ -702,6 +824,98 @@ where
                 emulator::Event::Failed(_) => return false,
             }
         }
+    }
+
+    /// `true` ⟺ a tela atual do `Emulator` contém um widget de texto cujo
+    /// conteúdo é exatamente `text`.
+    fn screen_shows(&mut self, text: &str) -> bool {
+        self.run_instruction(Instruction::Expect(Expectation::Text(text.to_string())))
+    }
+
+    /// Clica no primeiro widget cujo texto seja exatamente `text` — mesma
+    /// resolução de alvo que `Emulator::run` usa para `Target::Text` (T036).
+    /// Suficiente para o botão "Confirmar" da tela de setup, único widget da
+    /// tela com esse texto. **Não use para os campos de texto** — ver a
+    /// docstring de `setup_field_point` para o porquê.
+    fn click_text(&mut self, text: &str) -> bool {
+        self.run_instruction(Instruction::Interact(Interaction::Mouse(Mouse::Click {
+            button: iced::mouse::Button::Left,
+            target: Some(InstructionTarget::Text(text.to_string())),
+        })))
+    }
+
+    /// Clica num ponto absoluto da viewport — usado por `click_setup_field`
+    /// (T036) para alcançar um `text_input` cujo texto colide com o rótulo
+    /// estático vizinho (ver `setup_field_point`).
+    fn click_point(&mut self, point: iced::Point) -> bool {
+        self.run_instruction(Instruction::Interact(Interaction::Mouse(Mouse::Click {
+            button: iced::mouse::Button::Left,
+            target: Some(InstructionTarget::Point(point)),
+        })))
+    }
+
+    /// Digita `text`, tecla a tecla, no widget atualmente focado. Um
+    /// `Interaction::Keyboard` não resolve nenhum alvo — só tem efeito
+    /// depois de um `click_setup_field`/`click_text` bem-sucedido ter focado
+    /// o campo certo (T036).
+    fn type_text(&mut self, text: &str) -> bool {
+        self.run_instruction(Instruction::Interact(Interaction::Keyboard(
+            Keyboard::Typewrite(text.to_string()),
+        )))
+    }
+
+    /// Centro visível, em coordenadas de tela, do `text_input` cujo texto
+    /// atual (valor digitado, ou o placeholder — `item.description` —
+    /// enquanto vazio) é exatamente `description` (T036).
+    ///
+    /// # Por que não basta `click_text(description)`
+    ///
+    /// `view_setup_form` (view.rs) renderiza, para cada item de
+    /// `required_config`, um `text(item.description.clone())` **estático**
+    /// imediatamente acima do `text_input` cujo placeholder é esse MESMO
+    /// texto. O `Selector` embutido de `iced_test` para `&str`
+    /// (`Target::Text`) para na primeira travessia cujo conteúdo bate — e a
+    /// travessia visita o rótulo estático antes do campo
+    /// (`column![text(...), field]`, filhos na ordem declarada) — então
+    /// `click_text(description)` sempre acerta o rótulo (não focável), nunca
+    /// o campo. `TextInputByText` (abaixo) restringe a busca só a
+    /// `Candidate::TextInput`, ignorando o rótulo; como `Emulator` não expõe
+    /// um `find`/`click` genérico por `Selector` arbitrário (só o mecanismo
+    /// fixo de `Target::Text`/`Target::Point` via `Instruction`), a busca é
+    /// feita contra uma `iced_test::Simulator` descartável, construída a
+    /// partir da MESMA árvore de widgets que o `Emulator` renderiza
+    /// (`Emulator::view`) — o layout resultante é determinístico e idêntico
+    /// ao que o `Emulator` real usaria no mesmo instante — e só o `Point`
+    /// (dado já "achatado", sem nenhum estado emprestado do `Simulator`) é
+    /// reaproveitado contra o `Emulator` de verdade via `click_point`.
+    fn setup_field_point(&self, description: &str) -> iced::Point {
+        let element = self
+            .emulator
+            .as_ref()
+            .expect("o Emulator do cenário só é consumido no encerramento")
+            .view(&self.program);
+
+        let mut simulator = iced_test::Simulator::new(element);
+        let target = simulator
+            .find(TextInputByText(description))
+            .unwrap_or_else(|err| {
+                panic!("campo de setup {description:?} não encontrado na tela: {err:?}")
+            });
+
+        target
+            .visible_bounds()
+            .unwrap_or_else(|| panic!("campo de setup {description:?} não está visível na tela"))
+            .center()
+    }
+
+    /// Clica no `text_input` de um campo de setup pela sua descrição (T036)
+    /// — ver `setup_field_point` para o porquê de não usar `click_text`.
+    fn click_setup_field(&mut self, description: &str) {
+        let point = self.setup_field_point(description);
+        assert!(
+            self.click_point(point),
+            "clique no campo de setup {description:?} deveria ter sucesso"
+        );
     }
 
     /// Bombeia o loop do `Emulator` até a tela do Farol deixar de mostrar
@@ -947,6 +1161,130 @@ fn live_child_processes() -> Vec<(i32, String)> {
 }
 
 // ---------------------------------------------------------------------------
+// T038/T040/T041/T042 — esperas de estado além do handshake inicial
+// ---------------------------------------------------------------------------
+
+/// Bombeia o cenário — disparando um `Message::RefreshTick` a cada iteração,
+/// já que os erros pontuais/recuperação de T038/T040/T041 só se manifestam
+/// no PRÓXIMO ciclo de `widget/get` — até `condition` ser verdadeira, ou
+/// falha nomeando o `PluginState` real observado (mesmo padrão de
+/// `Scenario::settle`, generalizado para uma condição arbitrária em vez de
+/// só "saiu de Starting/Handshaking").
+///
+/// `timeout` é um parâmetro (em vez de sempre [`STATE_TIMEOUT`]) porque
+/// T040 precisa esperar o ciclo de polling **do próprio plugin** — fixo em
+/// 30s (`plugins/uptime-kuma/poller.py::DEFAULT_POLL_INTERVAL_MS`,
+/// hardcoded, fora do escopo desta subtarefa alterar `plugins/`) — que corre
+/// independente de quantas vezes o core pede um `widget/get`: um
+/// `RefreshTick` só lê o cache do poller, nunca força uma nova leitura de
+/// rede. Um teto de 30s ficaria justo demais contra esse relógio fixo do
+/// plugin; os cenários que não dependem dele (T038/T041, cujo erro já está
+/// pronto desde a primeira leitura do poller) continuam usando
+/// [`STATE_TIMEOUT`] normalmente.
+fn wait_until<P>(
+    harness: &mut Scenario<P>,
+    stage: &str,
+    mut condition: impl FnMut(&mut Scenario<P>) -> bool,
+    timeout: Duration,
+) where
+    P: Program<State = Farol, Message = Message> + 'static,
+{
+    let deadline = Instant::now() + timeout;
+    loop {
+        harness.budget.check(stage);
+        if condition(harness) {
+            return;
+        }
+        if Instant::now() >= deadline {
+            harness.fail_with_observed_state(format!("{stage} não aconteceu em {timeout:?}"));
+        }
+        harness.dispatch(Message::RefreshTick {
+            plugin_name: harness.plugin_name.clone(),
+        });
+        std::thread::sleep(Duration::from_millis(100));
+    }
+}
+
+/// Como [`wait_until`], mas **sem** disparar `Message::RefreshTick` a cada
+/// iteração — só bombeia os `Event::Action` já pendentes na fila do
+/// `Emulator` (via `Scenario::screen_shows`, chamada dentro de `condition`).
+///
+/// Usado por T042 (kill -9): o worker observa `child.wait()`
+/// concorrentemente (`plugin_worker.rs`), então a transição para
+/// `Unavailable{Crashed}` chega sozinha, de forma assíncrona — injetar
+/// `RefreshTick`s aqui só correria contra essa detecção (uma requisição de
+/// `widget/get` mandada para um processo que acabou de morrer poderia, em
+/// tese, terminar decodificada como uma falha de leitura comum antes do
+/// `child.wait()` resolver, mascarando o caminho que este cenário
+/// especificamente quer provar).
+fn wait_until_passive<P>(
+    harness: &mut Scenario<P>,
+    stage: &str,
+    mut condition: impl FnMut(&mut Scenario<P>) -> bool,
+    timeout: Duration,
+) where
+    P: Program<State = Farol, Message = Message> + 'static,
+{
+    let deadline = Instant::now() + timeout;
+    loop {
+        harness.budget.check(stage);
+        if condition(harness) {
+            return;
+        }
+        if Instant::now() >= deadline {
+            harness.fail_with_observed_state(format!("{stage} não aconteceu em {timeout:?}"));
+        }
+        std::thread::sleep(Duration::from_millis(20));
+    }
+}
+
+// ---------------------------------------------------------------------------
+// T042 — sinalização Unix contra o processo real do plugin
+// ---------------------------------------------------------------------------
+
+/// Localiza o PID do processo `uptime-kuma` real spawnado pelo cenário em
+/// andamento (T042), filtrando [`live_child_processes`] (já usado por
+/// [`assert_no_lingering_children`]) pela `cmdline`. Como [`E2E_LOCK`]
+/// serializa os cenários deste módulo e cada um spawna no máximo um plugin,
+/// encontrar mais ou menos de um candidato aqui indicaria um bug de
+/// isolamento entre testes, não uma condição normal deste cenário — falha
+/// alto e claro em vez de escolher um dos candidatos arbitrariamente.
+fn find_uptime_kuma_pid() -> i32 {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let matches: Vec<i32> = live_child_processes()
+            .into_iter()
+            .filter(|(_, cmdline)| cmdline.contains("uptime-kuma/main.py"))
+            .map(|(pid, _)| pid)
+            .collect();
+        match matches.as_slice() {
+            [pid] => return *pid,
+            [] if Instant::now() < deadline => {
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            other => panic!(
+                "esperava exatamente 1 processo uptime-kuma vivo (filho direto deste processo de \
+                 teste), encontrou {other:?}"
+            ),
+        }
+    }
+}
+
+/// Envia um sinal Unix a um PID via o utilitário `kill` do sistema — sem
+/// dependência nova no `Cargo.toml` só para isto (mesmo espírito de
+/// `base64_encode` acima). Usado por T042 para reproduzir literalmente
+/// `kill -9`/`kill -STOP` (`quickstart.md` Cenário 7) contra o processo real
+/// de um plugin já `Ready`.
+fn send_signal(pid: i32, signal: &str) {
+    let status = Command::new("kill")
+        .arg(signal)
+        .arg(pid.to_string())
+        .status()
+        .unwrap_or_else(|err| panic!("falha ao executar `kill {signal} {pid}`: {err}"));
+    assert!(status.success(), "`kill {signal} {pid}` falhou: {status}");
+}
+
+// ---------------------------------------------------------------------------
 // Cenários
 // ---------------------------------------------------------------------------
 
@@ -972,11 +1310,16 @@ fn live_child_processes() -> Vec<(i32, String)> {
 ///    `Unavailable{NotConfigured}` (T019/D8 da feature 002);
 /// 5. a transição real aplicada por `update.rs::handle_handshake_outcome`.
 ///
-/// **Por que `uptime-kuma` e não `git-local`**: ver
-/// [`emulator_takes_git_local_through_a_real_handshake_to_a_terminal_state`]
-/// — `git-local` ainda fala protocolo `"0.1"` e **não consegue** alcançar
-/// `Ready` contra este core (débito técnico #4), o que é uma limitação do
-/// plugin, não do harness.
+/// **Por que `uptime-kuma` e não `git-local`**: histórico — até o commit
+/// `9d2fe77` ("fix: migra git-local para protocolo 0.2..."), `git-local`
+/// falava protocolo `"0.1"` e não conseguia alcançar `Ready` contra este
+/// core (débito técnico #4, issue #4, resolvida naquele commit). `git-local`
+/// hoje também alcança `Ready` (ver
+/// [`emulator_takes_git_local_through_a_real_handshake_to_ready`]) — este
+/// teste continua usando `uptime-kuma` porque
+/// [`uptime_kuma_reaches_ready_and_populates_the_monitor_grid`] (T006) já
+/// aprofunda o mesmo caminho até um ciclo de dados real de `widget/get`, o
+/// que `git-local` (sem fixture de `/metrics`) não exercitaria aqui.
 #[test]
 fn emulator_runs_the_real_subscription_until_a_plugin_reaches_ready() {
     let _guard = e2e_guard();
@@ -999,36 +1342,37 @@ fn emulator_runs_the_real_subscription_until_a_plugin_reaches_ready() {
 /// mecanismo do teste acima, agora contra a fixture determinística de
 /// `git-local` (T003): repositório git real, `scan_root` apontado para ele.
 ///
-/// # Por que o estado esperado aqui não é `PluginState::Ready`
+/// # Nota histórica (débito técnico #4/T050, resolvido em `9d2fe77`)
 ///
-/// `plugins/git-local/main.py` responde `protocol_version: "0.1"`
-/// (`PROTOCOL_VERSION = "0.1"`) e este core fala `"0.2"`
-/// (`plugin_worker::CORE_PROTOCOL_VERSION`). Sob o regime `MAJOR == 0` de
-/// `ProtocolVersion::is_compatible_with` (D7 da feature 001), MINOR diferente
-/// é **incompatível** — logo `git-local` termina, deterministicamente, em
-/// `Unavailable{VersionIncompatible}`, nunca em `Ready`. Isso é o débito
-/// técnico #4 já registrado em `AGENTS.md` ("protocolo v0.2 ... quebra
-/// `git-local` de propósito"): a migração do plugin para v0.2 é
-/// deliberadamente Fora de Escopo desta feature.
+/// Até o commit `9d2fe77` ("fix: migra git-local para protocolo 0.2 e
+/// distingue remote sem tracking"), `plugins/git-local/main.py` respondia
+/// `protocol_version: "0.1"` contra um core que fala `"0.2"`
+/// (`plugin_worker::CORE_PROTOCOL_VERSION`) — sob o regime `MAJOR == 0` de
+/// `ProtocolVersion::is_compatible_with` (D7 da feature 001), isso é
+/// **incompatível**, e este teste (então chamado
+/// `emulator_takes_git_local_through_a_real_handshake_to_a_terminal_state`)
+/// afirmava `Unavailable{VersionIncompatible}` como o "estado terminal" do
+/// handshake — deliberadamente, para **congelar** o débito técnico #4 como
+/// comportamento observado e automatizado (issue #4 do tracker do projeto).
 ///
-/// O teste continua valendo a pena porque o caminho percorrido até o veredito
-/// é o mesmo do cenário `Ready` — `Subscription` real, processo Python real,
-/// `handshake/hello` real, resposta real decodificada — e porque **congela**
-/// o débito #4 como comportamento observado e automatizado: no dia em que
-/// `git-local` migrar para v0.2, este teste falha e obriga a atualizá-lo, em
-/// vez de o débito seguir invisível.
+/// `9d2fe77` fechou a issue #4: `git-local` agora declara `protocol_version:
+/// "0.2"`, `capabilities.capabilities: [{"kind": "exec"}]` e
+/// `required_config: []` — alcançando `Ready` contra este core, exatamente
+/// como esta função passou a afirmar (renomeada de acordo). O caminho
+/// percorrido até o veredito continua sendo o mesmo do cenário `Ready` de
+/// `uptime-kuma` acima — `Subscription` real, processo Python real,
+/// `handshake/hello` real, resposta real decodificada — só que agora contra
+/// o segundo plugin de referência do projeto, provando que o mecanismo do
+/// harness não é específico de `uptime-kuma`.
 ///
-/// **T005 (dropada como redundante, decisão do arquiteto de 2026-09-01)**: o
-/// cenário "git-local alcança `Ready`" que T005 previa é estruturalmente
-/// impossível enquanto o débito #4 existir (achado N4 de `research.md` D1), e
-/// o mecanismo que ele provaria — o `Emulator` levando um plugin real a
-/// `Ready` — já está provado por
-/// [`emulator_runs_the_real_subscription_until_a_plugin_reaches_ready`] e por
-/// [`uptime_kuma_reaches_ready_and_populates_the_monitor_grid`]. Este teste é
-/// o que resta de T005: `git-local` percorrendo o mecanismo real até seu
-/// estado terminal de verdade.
+/// **T005 (dropada como redundante, decisão do arquiteto de 2026-09-01;
+/// nota mantida por precisão histórica)**: quando este teste ainda afirmava
+/// `VersionIncompatible`, o cenário "`git-local` alcança `Ready`" que T005
+/// prevé era estruturalmente impossível (achado N4 de `research.md` D1) — a
+/// migração de `9d2fe77` tornou T005 alcançável depois de tudo, e este
+/// mesmo teste (atualizado) passou a cobri-lo.
 #[test]
-fn emulator_takes_git_local_through_a_real_handshake_to_a_terminal_state() {
+fn emulator_takes_git_local_through_a_real_handshake_to_ready() {
     let _guard = e2e_guard();
     let fixture = HarnessFixture::new("git-local-terminal");
 
@@ -1037,27 +1381,17 @@ fn emulator_takes_git_local_through_a_real_handshake_to_a_terminal_state() {
         "a fixture deveria conter um repositório git real"
     );
 
-    match observe_plugin_state(
-        "git-local alcança estado terminal",
+    let observed = observe_plugin_state(
+        "git-local alcança Ready (protocolo 0.2, débito técnico #4 resolvido em 9d2fe77)",
         fixture.spawn_config("git-local"),
-    ) {
-        PluginState::Unavailable {
-            reason: UnavailableReason::VersionIncompatible,
-            detail,
-        } => {
-            // O detalhe é montado por `update.rs` a partir da versão que o
-            // processo do plugin *de fato* respondeu — se o handshake não
-            // tivesse acontecido de verdade, não haveria "0.1" aqui.
-            assert!(
-                detail.contains("0.1") && detail.contains("0.2"),
-                "o detalhe deveria nomear as duas versões do handshake real, obteve: {detail:?}"
-            );
-        }
-        other => panic!(
-            "esperava Unavailable{{VersionIncompatible}} (git-local fala 0.1, core fala 0.2 — \
-             débito técnico #4), obteve {other:?}"
-        ),
-    }
+    );
+
+    assert_eq!(
+        observed,
+        PluginState::Ready,
+        "esperava que git-local alcançasse Ready pelo Emulator (protocolo 0.2 desde 9d2fe77), \
+         obteve {observed:?}"
+    );
 }
 
 /// **T006 (US1) — `uptime-kuma` alcança `Ready` *com dados de verdade***.
@@ -1215,5 +1549,591 @@ fn uptime_kuma_reaches_ready_and_populates_the_monitor_grid() {
     );
 
     drop(app);
+    assert_no_lingering_children();
+}
+
+/// **T036 [US1]** — Cenário 1 de `quickstart.md`: primeira execução, sem
+/// `config.toml`/`secrets.toml` para `uptime-kuma`. A tela de setup aparece
+/// (`Unavailable{NotConfigured}`); os dois campos são preenchidos e
+/// confirmados **pela UI de verdade** — clique/digitação via
+/// `Instruction`/`Selector` do `iced_test`, a mesma DSL de interação que o
+/// `Emulator` já usa nos demais cenários deste módulo, não uma escrita
+/// direta em `config.toml`/`secrets.toml` — e o widget populado aparece em
+/// seguida, sem editar nenhum arquivo manualmente. Por fim, reabre o Farol
+/// (mesmo `XDG_CONFIG_HOME`, um `Scenario` novo) e confirma que a
+/// configuração persiste: a tela de setup não aparece de novo.
+///
+/// Prova, no mesmo cenário, o mecanismo inteiro de D8 ponta a ponta: o
+/// widget/formulário (T035), a persistência em `config.toml`/`secrets.toml`
+/// (T016/T017/T032) e a reconexão do worker via `setup_attempt`
+/// (`plugin_worker::subscription`) — um NOVO processo spawnado que lê as
+/// variáveis de ambiente recém-persistidas, provado pela capacidade
+/// `network` exibida citar o `base_url` digitado, não um valor antigo.
+#[test]
+fn setup_form_filled_via_ui_reaches_ready_with_real_data_and_persists_across_restart() {
+    let _guard = e2e_guard();
+
+    let metrics = MetricsFixtureServer::start();
+    let fixture = HarnessFixture::uptime_kuma_unconfigured("uptime-kuma-setup-ui");
+
+    // --- primeira execução: tela de setup, preenchida via Selector/DSL de interação do iced_test ---
+    let mut harness = start_scenario(
+        "T036: tela de setup preenchida via UI leva a Ready com dados reais",
+        fixture.spawn_config("uptime-kuma"),
+    );
+    harness.settle();
+
+    for text in [
+        "URL base da instância Uptime Kuma",
+        "API Key de métricas do Uptime Kuma",
+        "Confirmar",
+    ] {
+        assert!(
+            harness.screen_shows(text),
+            "tela de setup deveria mostrar {text:?}"
+        );
+    }
+    assert!(
+        !harness.screen_shows("Monitor"),
+        "sem configuração ainda, o cabeçalho do widget monitor-status-grid não deveria aparecer"
+    );
+
+    harness.click_setup_field("URL base da instância Uptime Kuma");
+    assert!(
+        harness.type_text(&metrics.base_url),
+        "digitar a URL base deveria ter efeito (campo deveria estar focado)"
+    );
+
+    harness.click_setup_field("API Key de métricas do Uptime Kuma");
+    assert!(
+        harness.type_text(UPTIME_KUMA_FIXTURE_API_KEY),
+        "digitar a API Key deveria ter efeito (campo deveria estar focado)"
+    );
+
+    assert!(
+        harness.click_text("Confirmar"),
+        "confirmar a tela de setup deveria ter efeito"
+    );
+
+    // Depois de confirmar, o core persiste config/secrets e reconecta o worker
+    // (`setup_attempt` incrementado, T032) — a mesma `settle()` que já sabe esperar
+    // Starting/Handshaking até um estado terminal funciona igual aqui, só que desta vez o
+    // handshake real do NOVO processo (que já enxerga as variáveis recém-persistidas) leva a
+    // Ready, não a Unavailable de novo.
+    harness.settle();
+
+    assert!(
+        harness.screen_shows("Plugin: uptime-kuma (protocolo 0.2)"),
+        "depois de confirmar a tela de setup, uptime-kuma deveria estar Ready"
+    );
+
+    // Widget populado com dados reais — mesmo mecanismo/corpo de T006 (cutucando o refresh em vez
+    // de esperar os 30s reais do plugin).
+    let expected = expected_monitors();
+    wait_until(
+        &mut harness,
+        "primeiro ciclo de widget/get pós-setup",
+        |h| expected.iter().all(|monitor| h.screen_shows(&monitor.name)),
+        STATE_TIMEOUT,
+    );
+
+    // Capacidade `network` exibida citando host/porta derivados do `base_url` recém-digitado
+    // (T034) — prova que o NOVO processo leu a variável de ambiente recém-persistida, não um
+    // valor antigo/vazio.
+    let expected_capability_line = format!(
+        "Capacidades declaradas: network({})",
+        metrics.base_url.trim_start_matches("http://")
+    );
+    assert!(
+        harness.screen_shows(&expected_capability_line),
+        "capacidades declaradas deveriam citar a capacidade `network` recém-configurada, esperava \
+         {expected_capability_line:?}"
+    );
+
+    let app = harness.finish();
+    let connection = &app
+        .plugins
+        .iter()
+        .find(|slot| slot.spawn_config.plugin_name == "uptime-kuma")
+        .expect("slot de uptime-kuma")
+        .connection;
+    assert_eq!(connection.state, PluginState::Ready);
+    assert_eq!(connection.monitor_widget.monitors, expected);
+    drop(app);
+    assert_no_lingering_children();
+
+    // Persistência: `config.toml`/`secrets.toml` foram gravados pela própria UI, nunca editados à
+    // mão (lidos aqui pelo mesmo `config_store`/`secrets_store` que o core usa em produção, contra
+    // o mesmo `XDG_CONFIG_HOME` hermético desta fixture).
+    let persisted_config = crate::config_store::load_plugin_config("uptime-kuma");
+    assert_eq!(
+        persisted_config.get("base_url").map(String::as_str),
+        Some(metrics.base_url.as_str())
+    );
+    let persisted_secrets = crate::secrets_store::load_plugin_secrets("uptime-kuma");
+    assert_eq!(
+        persisted_secrets.get("api_key").map(String::as_str),
+        Some(UPTIME_KUMA_FIXTURE_API_KEY)
+    );
+
+    // --- reabrir o Farol (mesmo XDG_CONFIG_HOME) não deve mostrar a tela de setup de novo ---
+    let mut restarted = start_scenario(
+        "T036: reabertura reaproveita a configuração persistida",
+        fixture.spawn_config("uptime-kuma"),
+    );
+    restarted.settle();
+    assert!(
+        restarted.screen_shows("Plugin: uptime-kuma (protocolo 0.2)"),
+        "reabrir o Farol com config/secrets já persistidos deveria ir direto a Ready, sem a tela \
+         de setup"
+    );
+    assert!(
+        !restarted.screen_shows("Confirmar"),
+        "a tela de setup não deveria reaparecer numa reabertura com configuração já persistida"
+    );
+    let restarted_app = restarted.finish();
+    assert_eq!(
+        plugin_state(&restarted_app, "uptime-kuma"),
+        PluginState::Ready
+    );
+    drop(restarted_app);
+    assert_no_lingering_children();
+}
+
+/// **T037 [US1]** — Cenário 2 de `quickstart.md`: primeira execução, a tela
+/// de setup aparece mas **não** é preenchida. Confirma
+/// `PluginState::Unavailable{NotConfigured}` como caminho **primário**
+/// (T019) — estável (um `RefreshTick` não tem efeito nenhum, já que o core
+/// nunca chama `widget/get` neste estado) e visivelmente distinto da tela de
+/// "0 monitores" (Ready com `items: []`, T039): a tela mostrada é sempre o
+/// formulário de setup, nunca o grid nem sua mensagem de lista vazia.
+///
+/// A salvaguarda descrita em `error-model-delta.md` (uma chamada direta de
+/// `widget/get` devolveria `error(-32005, not_configured)`, T028 do lado do
+/// plugin) não é exercitada aqui: o próprio mecanismo que este teste prova
+/// garante que o core nunca chega a enviar `widget/get` enquanto
+/// `NotConfigured` — não há como provocar essa chamada pela API pública do
+/// `Program`/`Message` sem contornar o core, que é exatamente o que a
+/// salvaguarda protege contra (um plugin/cliente de protocolo diferente
+/// deste core, não este cenário). Coberta do lado do plugin pela suíte
+/// `pytest` de `plugins/uptime-kuma` (T046, fora do escopo desta subtarefa).
+#[test]
+fn setup_form_left_unfilled_stays_not_configured() {
+    let _guard = e2e_guard();
+    let fixture = HarnessFixture::uptime_kuma_unconfigured("uptime-kuma-not-configured");
+
+    let mut harness = start_scenario(
+        "T037: tela de setup não preenchida permanece NotConfigured",
+        fixture.spawn_config("uptime-kuma"),
+    );
+    harness.settle();
+
+    for text in [
+        "URL base da instância Uptime Kuma",
+        "API Key de métricas do Uptime Kuma",
+        "Confirmar",
+    ] {
+        assert!(
+            harness.screen_shows(text),
+            "tela de setup deveria mostrar {text:?}"
+        );
+    }
+    assert!(
+        !harness.screen_shows("Nenhum monitor cadastrado nesta instância."),
+        "NotConfigured não deveria nunca se parecer com \"0 monitores\" (Ready sem itens)"
+    );
+    assert!(
+        !harness.screen_shows("Monitor"),
+        "o cabeçalho do grid de monitores não deveria aparecer sem configuração"
+    );
+
+    // Um tick de refresh não deveria ter efeito nenhum enquanto NotConfigured (T019: o core nunca
+    // chama widget/get neste estado) — a tela de setup continua exatamente igual depois.
+    harness.dispatch(Message::RefreshTick {
+        plugin_name: "uptime-kuma".to_string(),
+    });
+    assert!(
+        harness.screen_shows("Confirmar"),
+        "NotConfigured deveria ser estável — sem transição espontânea causada por um RefreshTick"
+    );
+
+    let app = harness.finish();
+    match plugin_state(&app, "uptime-kuma") {
+        PluginState::Unavailable {
+            reason: UnavailableReason::NotConfigured,
+            ..
+        } => {}
+        other => panic!("esperava Unavailable{{NotConfigured}}, obteve {other:?}"),
+    }
+    drop(app);
+    assert_no_lingering_children();
+}
+
+/// **T038 [US1]** — Cenário 3 de `quickstart.md`: `required_config` presente
+/// (config/secrets já persistidos), mas `base_url` aponta para um host/porta
+/// inacessível — confirma `metrics_unreachable`, **distinto de
+/// `not_configured`**: a distinção observável, do lado do core, é a
+/// própria `PluginState` — `not_configured` nunca chega a `Ready` (T037),
+/// enquanto um `base_url` inválido continua `Ready` o tempo todo, só
+/// sinalizando o erro pontual daquele widget (FR-019, mesmo mecanismo
+/// genérico de US2 herdado da feature 001).
+///
+/// Usa a fixture default (`HarnessFixture::new`,
+/// [`UPTIME_KUMA_UNREACHABLE_BASE_URL`] = porta fechada em `127.0.0.1`) —
+/// dispensa `MetricsFixtureServer`, já que nenhuma conexão chega a
+/// completar.
+#[test]
+fn uptime_kuma_reports_metrics_unreachable_for_an_invalid_base_url_but_stays_ready() {
+    let _guard = e2e_guard();
+    let fixture = HarnessFixture::new("uptime-kuma-metrics-unreachable");
+
+    let mut harness = start_scenario(
+        "T038: base_url inválido gera metrics_unreachable, não not_configured",
+        fixture.spawn_config("uptime-kuma"),
+    );
+    harness.settle();
+    assert!(
+        harness.screen_shows("Plugin: uptime-kuma (protocolo 0.2)"),
+        "required_config presente (mesmo com base_url inacessível) deveria levar a Ready, nunca a \
+         NotConfigured"
+    );
+
+    let error_text =
+        "Falha ao consultar monitores: falha ao consultar /metrics da instância Uptime Kuma configurada";
+    wait_until(
+        &mut harness,
+        "erro pontual de metrics_unreachable",
+        |h| h.screen_shows(error_text),
+        STATE_TIMEOUT,
+    );
+
+    let app = harness.finish();
+    assert_eq!(
+        plugin_state(&app, "uptime-kuma"),
+        PluginState::Ready,
+        "um erro pontual de leitura NÃO muda PluginState — continua Ready, distinto de qualquer \
+         Unavailable (incluindo NotConfigured)"
+    );
+    let connection = &app
+        .plugins
+        .iter()
+        .find(|slot| slot.spawn_config.plugin_name == "uptime-kuma")
+        .expect("slot de uptime-kuma")
+        .connection;
+    assert!(connection.monitor_widget.last_error.is_some());
+    assert!(
+        connection.monitor_widget.monitors.is_empty(),
+        "nunca houve nenhuma leitura bem-sucedida nesta conexão"
+    );
+    drop(app);
+    assert_no_lingering_children();
+}
+
+/// **T039 [US1] (achado nesta sessão — gap real do plugin, não corrigido:
+/// `plugins/` está fora do escopo autorizado desta subtarefa)** — Cenário 6
+/// de `quickstart.md`: instância Uptime Kuma real, acessível, mas recém
+/// instalada e sem nenhum monitor cadastrado. O critério de aceite
+/// documentado (`spec.md` Edge Case, `quickstart.md` Cenário 6, `tasks.md`
+/// T039) é `widget/get` responder com sucesso e `items: []` — estado válido,
+/// análogo ao diretório sem repositórios git da feature 001.
+///
+/// A implementação atual de `plugins/uptime-kuma/metrics_parser.py::parse_metrics`
+/// (linhas 94-95) não distingue "zero monitores" de "resposta não
+/// reconhecível": as duas condições produzem exatamente a mesma falha,
+/// `MetricsParseError` (`found_monitor_status_line == False` sempre que não
+/// há NENHUMA linha `monitor_status{...}` no corpo — que é justamente o que
+/// uma instância sem monitores emite, já que o Uptime Kuma só gera uma
+/// amostra Prometheus por monitor configurado). Confirmado interativamente
+/// antes de escrever este teste:
+///
+/// ```text
+/// $ python3 -c "from metrics_parser import parse_metrics, MetricsParseError; \
+///     parse_metrics('# HELP monitor_status ...\n# TYPE monitor_status gauge\n')"
+/// MetricsParseError: nenhuma linha monitor_status{...} encontrada no corpo de /metrics
+/// ```
+///
+/// Ou seja: hoje, uma instância real sem monitores devolve `error(-32007,
+/// metrics_parse_error)` pelo `widget/get`, não `items: []`. Fora do escopo
+/// autorizado desta subtarefa corrigir (`plugins/` está off-limits) —
+/// reportado como bloqueio, não corrigido por conta própria. Precisa virar
+/// issue própria (constitution v1.0.0, Governance: débito técnico é issue
+/// obrigatória) antes deste teste poder deixar de ser `#[ignore]`d — mesmo
+/// padrão já usado por
+/// `crates/farol-protocol/tests/schema_boundaries.rs::widget_monitor_status_item_response_time_ms_negative_value_is_a_known_protocol_gap`
+/// (ver `AGENTS.md` § Testes).
+///
+/// Este teste fica `#[ignore]`d de propósito: exercita o critério de aceite
+/// DOCUMENTADO (sucesso, `items: []`), então falha contra o código real como
+/// está hoje — rodar com `cargo test --package farol-core e2e_tests --
+/// --ignored` reproduz o gap sob demanda; deixá-lo habilitado por padrão
+/// quebraria `cargo test` para todo mundo por um comportamento pré-existente
+/// do plugin, não uma regressão desta subtarefa.
+#[test]
+#[ignore = "gap real em plugins/uptime-kuma/metrics_parser.py (zero monitores vira \
+            metrics_parse_error, não items: []) — plugins/ está fora do escopo autorizado desta \
+            subtarefa; precisa virar issue antes de habilitar"]
+fn uptime_kuma_widget_reports_empty_items_when_instance_has_no_monitors() {
+    let _guard = e2e_guard();
+    let metrics = MetricsFixtureServer::start_with_body(EMPTY_METRICS_FIXTURE_BODY);
+    let fixture =
+        HarnessFixture::with_uptime_kuma_base_url("uptime-kuma-no-monitors", &metrics.base_url);
+
+    let mut harness = start_scenario(
+        "T039: instância acessível sem nenhum monitor cadastrado",
+        fixture.spawn_config("uptime-kuma"),
+    );
+    harness.settle();
+    assert!(harness.screen_shows("Plugin: uptime-kuma (protocolo 0.2)"));
+
+    wait_until(
+        &mut harness,
+        "primeiro ciclo de widget/get após a instância subir",
+        |h| h.screen_shows("Nenhum monitor cadastrado nesta instância."),
+        STATE_TIMEOUT,
+    );
+
+    let app = harness.finish();
+    let connection = &app
+        .plugins
+        .iter()
+        .find(|slot| slot.spawn_config.plugin_name == "uptime-kuma")
+        .expect("slot de uptime-kuma")
+        .connection;
+    assert_eq!(connection.state, PluginState::Ready);
+    assert_eq!(connection.monitor_widget.monitors, Vec::new());
+    assert_eq!(connection.monitor_widget.last_error, None);
+    drop(app);
+    assert_no_lingering_children();
+}
+
+/// **T040 [US2]** — Cenário 4 de `quickstart.md`: com o widget já populado
+/// (dados reais, mesmo mecanismo de T006), a instância Uptime Kuma fica
+/// inacessível **sem reiniciar o Farol** (aqui: `MetricsFixtureServer`
+/// passa a derrubar toda conexão nova, `set_available(false)` — equivalente
+/// a "parar o serviço"/"porta fechada" do ponto de vista do cliente HTTP do
+/// plugin). Confirma: (a) a janela permanece respondendo (o cenário inteiro
+/// continua rodando dentro do `Emulator`), (b) o próximo ciclo sinaliza o
+/// erro pontual **mantendo os últimos monitores conhecidos** na tela, sem
+/// mudar `PluginState`, e (c) restaurar o acesso — sem reiniciar o Farol —
+/// faz os dados reais voltarem no ciclo seguinte.
+///
+/// **Sobre a duração real deste teste**: `plugins/uptime-kuma/poller.py`
+/// tem cadência de polling fixa em 30s
+/// (`DEFAULT_POLL_INTERVAL_MS`, hardcoded, fora do escopo desta subtarefa
+/// tocar `plugins/`) — nem o core nem este teste conseguem acelerá-la
+/// (`Message::RefreshTick` só lê o cache do poller, nunca força uma
+/// requisição HTTP nova). As duas esperas abaixo (queda e recuperação)
+/// dependem cada uma de UM ciclo real do poller — por isso usam
+/// `wait_until` com um teto próprio (45s, folga sobre os 30s do plugin) em
+/// vez do [`STATE_TIMEOUT`] padrão de 30s, ainda dentro do
+/// [`SCENARIO_TIMEOUT`] de 120s do cenário inteiro.
+#[test]
+fn uptime_kuma_recovers_after_instance_becomes_unreachable_without_restarting_farol() {
+    const POLL_CYCLE_TIMEOUT: Duration = Duration::from_secs(45);
+
+    let _guard = e2e_guard();
+    let metrics = MetricsFixtureServer::start();
+    let fixture =
+        HarnessFixture::with_uptime_kuma_base_url("uptime-kuma-recovers", &metrics.base_url);
+
+    let mut harness = start_scenario(
+        "T040: Uptime Kuma fica inacessível e depois volta, sem reiniciar o Farol",
+        fixture.spawn_config("uptime-kuma"),
+    );
+    harness.settle();
+    assert!(harness.screen_shows("Plugin: uptime-kuma (protocolo 0.2)"));
+
+    // (a) widget populado antes de derrubar a instância — mesmo padrão de T006.
+    let expected = expected_monitors();
+    wait_until(
+        &mut harness,
+        "primeiro ciclo de widget/get bem-sucedido",
+        |h| expected.iter().all(|monitor| h.screen_shows(&monitor.name)),
+        STATE_TIMEOUT,
+    );
+
+    // (b) "parar o serviço Uptime Kuma" sem reiniciar o Farol.
+    metrics.set_available(false);
+
+    let error_text =
+        "Falha ao consultar monitores: falha ao consultar /metrics da instância Uptime Kuma configurada";
+    wait_until(
+        &mut harness,
+        "erro pontual após a instância ficar inacessível",
+        |h| h.screen_shows(error_text),
+        POLL_CYCLE_TIMEOUT,
+    );
+    for monitor in &expected {
+        assert!(
+            harness.screen_shows(&monitor.name),
+            "os últimos monitores conhecidos deveriam continuar visíveis ao lado do erro pontual"
+        );
+    }
+    assert!(
+        harness.screen_shows("Plugin: uptime-kuma (protocolo 0.2)"),
+        "a janela/conexão continua Ready — um erro pontual de leitura nunca vira Unavailable"
+    );
+
+    // (c) restaura o acesso — sem reiniciar o Farol nem o processo do plugin.
+    metrics.set_available(true);
+    wait_until(
+        &mut harness,
+        "dados reais voltam após restaurar o acesso",
+        |h| !h.screen_shows(error_text),
+        POLL_CYCLE_TIMEOUT,
+    );
+
+    let app = harness.finish();
+    let connection = &app
+        .plugins
+        .iter()
+        .find(|slot| slot.spawn_config.plugin_name == "uptime-kuma")
+        .expect("slot de uptime-kuma")
+        .connection;
+    assert_eq!(connection.state, PluginState::Ready);
+    assert_eq!(connection.monitor_widget.monitors, expected);
+    assert_eq!(
+        connection.monitor_widget.last_error, None,
+        "um ciclo de widget/get bem-sucedido MUST limpar o erro pontual anterior"
+    );
+    drop(app);
+    assert_no_lingering_children();
+}
+
+/// **T041 [US2]** — Cenário 5 de `quickstart.md`: `base_url` aponta para um
+/// servidor HTTP que responde, mas não é um Uptime Kuma (`/metrics` não
+/// reconhecível — [`NON_METRICS_FIXTURE_BODY`]). Confirma o mesmo
+/// tratamento de erro pontual do Cenário 4/T040 (FR-016) — a conexão
+/// continua `Ready`, sem crash do plugin.
+#[test]
+fn uptime_kuma_reports_metrics_parse_error_for_a_non_metrics_response_without_crashing() {
+    let _guard = e2e_guard();
+    let metrics = MetricsFixtureServer::start_with_body(NON_METRICS_FIXTURE_BODY);
+    let fixture =
+        HarnessFixture::with_uptime_kuma_base_url("uptime-kuma-parse-error", &metrics.base_url);
+
+    let mut harness = start_scenario(
+        "T041: resposta de /metrics não reconhecível como Uptime Kuma",
+        fixture.spawn_config("uptime-kuma"),
+    );
+    harness.settle();
+    assert!(harness.screen_shows("Plugin: uptime-kuma (protocolo 0.2)"));
+
+    let error_text =
+        "Falha ao consultar monitores: falha ao consultar /metrics da instância Uptime Kuma configurada";
+    wait_until(
+        &mut harness,
+        "erro pontual de metrics_parse_error",
+        |h| h.screen_shows(error_text),
+        STATE_TIMEOUT,
+    );
+
+    let app = harness.finish();
+    assert_eq!(
+        plugin_state(&app, "uptime-kuma"),
+        PluginState::Ready,
+        "resposta não reconhecível é erro pontual (mesmo tratamento de metrics_unreachable) — não \
+         derruba o plugin nem muda PluginState"
+    );
+    drop(app);
+    assert_no_lingering_children();
+}
+
+/// **T042 [P] (parte 1/2 — `kill -9`)** — Cenário 7 de `quickstart.md`,
+/// herdado sem modificação da feature 001 (FR-018), agora provado contra o
+/// processo real de `uptime-kuma`: mata o processo já `Ready` com `SIGKILL`
+/// e confirma `Unavailable{Crashed}` — `plugin_worker.rs` observa
+/// `child.wait()` concorrentemente e emite o evento sozinho, sem precisar
+/// de nenhuma requisição em voo (`wait_until_passive` — ver sua docstring
+/// para o porquê de não injetar `RefreshTick` aqui).
+#[test]
+fn uptime_kuma_process_killed_becomes_crashed_without_taking_down_the_core() {
+    let _guard = e2e_guard();
+    let fixture = HarnessFixture::new("uptime-kuma-crash");
+
+    let mut harness = start_scenario(
+        "T042a: kill -9 no processo já Ready vira Unavailable{Crashed}",
+        fixture.spawn_config("uptime-kuma"),
+    );
+    harness.settle();
+    assert!(harness.screen_shows("Plugin: uptime-kuma (protocolo 0.2)"));
+
+    let pid = find_uptime_kuma_pid();
+    send_signal(pid, "-9");
+
+    wait_until_passive(
+        &mut harness,
+        "saída de Ready após kill -9",
+        |h| !h.screen_shows("Plugin: uptime-kuma (protocolo 0.2)"),
+        STATE_TIMEOUT,
+    );
+
+    let app = harness.finish();
+    match plugin_state(&app, "uptime-kuma") {
+        PluginState::Unavailable {
+            reason: UnavailableReason::Crashed,
+            ..
+        } => {}
+        other => panic!("esperava Unavailable{{Crashed}} após kill -9, obteve {other:?}"),
+    }
+    drop(app);
+    // A janela do Farol (o Emulator/Program real) continuou aberta e respondendo a instruções
+    // durante todo o cenário acima — é isso que prova "o core não trava"/"nenhum crash do core",
+    // não apenas o `PluginState` final.
+    assert_no_lingering_children();
+}
+
+/// **T042 [P] (parte 2/2 — `kill -STOP`)** — mesmo Cenário 7, agora travando
+/// o processo (`SIGSTOP`) em vez de matá-lo: um ciclo de refresh contra um
+/// processo travado estoura `RPC_TIMEOUT_CONTROL` (5s,
+/// `plugin_worker.rs`), convergindo para `Unavailable{Unresponsive}` — bem
+/// dentro do [`STATE_TIMEOUT`] de 30s. Ao contrário de T042a, aqui
+/// PRECISAMOS de um `Message::RefreshTick` explícito: o processo continua
+/// vivo (só parado), então não há nenhum `child.wait()` para disparar a
+/// transição sozinho — é a RPC que precisa estourar o timeout.
+#[test]
+fn uptime_kuma_process_frozen_becomes_unresponsive_without_taking_down_the_core() {
+    let _guard = e2e_guard();
+    let fixture = HarnessFixture::new("uptime-kuma-unresponsive");
+
+    let mut harness = start_scenario(
+        "T042b: kill -STOP no processo já Ready vira Unavailable{Unresponsive}",
+        fixture.spawn_config("uptime-kuma"),
+    );
+    harness.settle();
+    assert!(harness.screen_shows("Plugin: uptime-kuma (protocolo 0.2)"));
+
+    let pid = find_uptime_kuma_pid();
+    send_signal(pid, "-STOP");
+
+    harness.dispatch(Message::RefreshTick {
+        plugin_name: "uptime-kuma".to_string(),
+    });
+    wait_until_passive(
+        &mut harness,
+        "saída de Ready após kill -STOP",
+        |h| !h.screen_shows("Plugin: uptime-kuma (protocolo 0.2)"),
+        STATE_TIMEOUT,
+    );
+
+    let app = harness.finish();
+    match plugin_state(&app, "uptime-kuma") {
+        PluginState::Unavailable {
+            reason: UnavailableReason::Unresponsive,
+            ..
+        } => {}
+        other => panic!("esperava Unavailable{{Unresponsive}} após kill -STOP, obteve {other:?}"),
+    }
+    drop(app);
+
+    // Limpeza extra: `kill_on_drop` já deveria ter encerrado o processo travado ao consumir o
+    // Emulator acima (SIGKILL termina até um processo parado, no Linux) — confirmado por
+    // `assert_no_lingering_children()` logo abaixo; um `-CONT`+`-9` de defesa (caso o processo,
+    // por algum motivo, ainda esteja vivo e parado) não tem custo nenhum.
+    let _ = Command::new("kill")
+        .arg("-CONT")
+        .arg(pid.to_string())
+        .status();
+    let _ = Command::new("kill").arg("-9").arg(pid.to_string()).status();
     assert_no_lingering_children();
 }

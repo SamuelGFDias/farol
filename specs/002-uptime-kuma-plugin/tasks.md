@@ -447,26 +447,71 @@ de monitores aparece corretamente na janela do Farol logo em seguida, sem qualqu
 
 ### Validação da User Story 1 (cenários de `quickstart.md`, renumerados nesta sessão)
 
-- [ ] T036 [US1] Executar Cenário 1 de `quickstart.md` — primeira execução sem `config.toml`/
+- [X] T036 [US1] Executar Cenário 1 de `quickstart.md` — primeira execução sem `config.toml`/
   `secrets.toml`: confirmar que a tela de setup aparece (`Unavailable{NotConfigured}`); preencher e
   confirmar; confirmar que o widget é populado (nome/status/tempo de resposta) logo em seguida, sem
   editar nenhum arquivo manualmente; confirmar atualização automática após ~30s sem reiniciar o
   Farol; confirmar que o manifesto de capacidades exibe `network` (**não** `secret`, removida nesta
   revisão); reiniciar o Farol e confirmar que a configuração persiste (widget populado direto, sem
   tela de setup de novo) (FR-003–FR-009, SC-001, SC-002, SC-005)
-- [ ] T037 [US1] Executar Cenário 2 de `quickstart.md` — primeira execução, tela de setup aparece mas
+
+  **Execução (sessão de automação, 2026-09-01)**: convertido em teste permanente —
+  `crates/farol-core/src/e2e_tests.rs::setup_form_filled_via_ui_reaches_ready_with_real_data_and_persists_across_restart`.
+  Preenche e confirma a tela de setup **pela UI de verdade** (clique/digitação via
+  `Instruction`/`Selector` do `iced_test` — a mesma DSL de interação que os cenários `Ready`
+  existentes já usam para levar plugins a `Ready`, não uma escrita direta em
+  `config.toml`/`secrets.toml`); confirma o widget populado (dados reais servidos por um
+  `MetricsFixtureServer`, cutucando o `Message::RefreshTick` em vez de esperar 30s reais); confirma
+  a capacidade `network` exibida citando o `base_url` recém-digitado (prova que o processo
+  reconectado leu a variável de ambiente recém-persistida); confirma persistência reabrindo um
+  `Scenario` novo contra o mesmo `XDG_CONFIG_HOME` (widget populado direto, sem tela de setup de
+  novo). `cargo test --package farol-core e2e_tests::setup_form_filled_via_ui_reaches_ready_with_real_data_and_persists_across_restart`.
+- [X] T037 [US1] Executar Cenário 2 de `quickstart.md` — primeira execução, tela de setup aparece mas
   **não** é preenchida; confirmar `PluginState = Unavailable{NotConfigured}` como caminho primário
   (T019), e — via chamada direta de `widget/get`, se exercitável no diagnóstico — `error(-32005,
   not_configured)` como salvaguarda (T028), distinguível de "0 monitores", sem crash do plugin
   (FR-008, SC-005)
-- [ ] T038 [US1] Executar Cenário 3 de `quickstart.md` — com o Cenário 1 já concluído, editar
+
+  **Execução (sessão de automação, 2026-09-01)**:
+  `crates/farol-core/src/e2e_tests.rs::setup_form_left_unfilled_stays_not_configured` confirma
+  `Unavailable{NotConfigured}` estável (um `RefreshTick` não tem efeito nenhum) e visivelmente
+  distinto de "0 monitores"/do grid. A salvaguarda de chamada direta de `widget/get`
+  (`error(-32005, not_configured)`) **não** é exercitada por este teste — o próprio mecanismo que
+  ele prova garante que o core nunca chega a mandar `widget/get` neste estado, então não há como
+  provocar essa chamada pela API pública do `Program`/`Message` sem contornar o core (ver docstring
+  do teste); a salvaguarda em si é responsabilidade do lado do plugin, coberta por T046 (`pytest`,
+  fora do escopo desta subtarefa).
+- [X] T038 [US1] Executar Cenário 3 de `quickstart.md` — com o Cenário 1 já concluído, editar
   `config.toml` para um `base_url` inválido/inacessível e reiniciar; confirmar `metrics_unreachable`
   (`-32006`), **não** `not_configured` — distingue "configurado com valor que não funciona" de "sem
   valor" (FR-019)
+
+  **Execução (sessão de automação, 2026-09-01)**:
+  `crates/farol-core/src/e2e_tests.rs::uptime_kuma_reports_metrics_unreachable_for_an_invalid_base_url_but_stays_ready`
+  — `required_config` presente (fixture padrão, `base_url` = porta fechada) leva a `Ready`, nunca a
+  `NotConfigured`; a distinção observável do lado do core entre os dois erros é a própria
+  `PluginState` (T037 nunca chega a `Ready`; aqui a conexão fica `Ready` o tempo todo, só
+  sinalizando o erro pontual do widget).
 - [ ] T039 [US1] Executar Cenário 6 de `quickstart.md` (renumerado — era Cenário 7) — apontar
   `base_url` para uma instância Uptime Kuma real, acessível, sem nenhum monitor cadastrado; confirmar
   `widget/get` com sucesso e `items: []` como estado válido, distinto de qualquer um dos erros acima
   (Edge Case do spec, análogo a diretório sem repositórios git da feature 001)
+
+  **Bloqueio encontrado nesta sessão (automação, 2026-09-01) — não corrigido, fora do escopo
+  autorizado**: `plugins/uptime-kuma/metrics_parser.py::parse_metrics` (linhas 94-95) não distingue
+  "zero monitores" de "resposta não reconhecível" — as duas condições produzem exatamente a mesma
+  falha, `MetricsParseError` (nenhuma linha `monitor_status{...}` no corpo, que é justamente o que
+  uma instância sem monitores emite). Confirmado interativamente
+  (`python3 -c "from metrics_parser import parse_metrics; parse_metrics('# HELP ...\n')"` →
+  `MetricsParseError: nenhuma linha monitor_status{...} encontrada no corpo de /metrics`). Convertido
+  em teste automatizado que exercita o critério de aceite **documentado** (sucesso, `items: []`) —
+  `crates/farol-core/src/e2e_tests.rs::uptime_kuma_widget_reports_empty_items_when_instance_has_no_monitors`,
+  `#[ignore]`d de propósito (mesmo padrão de
+  `crates/farol-protocol/tests/schema_boundaries.rs::widget_monitor_status_item_response_time_ms_negative_value_is_a_known_protocol_gap`)
+  porque falha contra o código real como está hoje; rodar com `cargo test --package farol-core
+  e2e_tests -- --ignored` reproduz o gap sob demanda. `plugins/` está fora dos arquivos autorizados
+  desta subtarefa — não corrigido; precisa virar issue própria (constitution v1.0.0, Governance)
+  antes de esta task poder ser marcada `[X]` e o `#[ignore]` removido.
 
 **Checkpoint**: User Story 1 completa e testável de forma independente — MVP.
 
@@ -495,18 +540,36 @@ funcionando no caminho feliz).
 
 ### Validação da User Story 2 (cenários de `quickstart.md`, renumerados nesta sessão)
 
-- [ ] T040 [US2] Executar Cenário 4 de `quickstart.md` (renumerado — era Cenário 5) — com o Farol já
+- [X] T040 [US2] Executar Cenário 4 de `quickstart.md` (renumerado — era Cenário 5) — com o Farol já
   rodando e o widget populado (Cenário 1/T036), tornar a instância Uptime Kuma inacessível
   (desconectar rede, apontar para host/porta fechada, ou parar o serviço) sem reiniciar o Farol;
   confirmar que (a) a janela permanece aberta e responsiva, (b) no próximo ciclo de refresh o widget
   sinaliza `metrics_unreachable` (`-32006`) mantendo os últimos monitores conhecidos, (c) restaurar o
   acesso faz os dados reais voltarem no próximo ciclo, sem intervenção manual (FR-015, FR-017,
   SC-003, SC-004)
-- [ ] T041 [US2] Executar Cenário 5 de `quickstart.md` (renumerado — era Cenário 6) — apontar
+
+  **Execução (sessão de automação, 2026-09-01)**:
+  `crates/farol-core/src/e2e_tests.rs::uptime_kuma_recovers_after_instance_becomes_unreachable_without_restarting_farol`
+  — o `MetricsFixtureServer` de T006 ganhou um interruptor `set_available(false)` que aceita e
+  derruba toda conexão nova sem responder (equivalente, do ponto de vista do cliente HTTP do plugin,
+  a "parar o serviço"/"porta fechada"), provando (a)-(c) dentro do mesmo `Emulator` real, sem
+  reiniciar o Farol. Nota de duração: a cadência de polling do plugin é fixa em 30s
+  (`plugins/uptime-kuma/poller.py`, fora do escopo desta subtarefa alterar), então este teste tem
+  ~60-70s de duração real (duas travessias de um ciclo de poll) — dentro do orçamento de 120s por
+  cenário (`## Clarifications` do `spec.md` da feature 003).
+- [X] T041 [US2] Executar Cenário 5 de `quickstart.md` (renumerado — era Cenário 6) — apontar
   temporariamente `base_url` para um servidor HTTP que não seja Uptime Kuma (resposta não
   reconhecível como `/metrics` Prometheus válido); confirmar `error(-32007, metrics_parse_error)` no
   próximo ciclo de refresh, mesmo tratamento de erro pontual do Cenário 4, sem crash do plugin
   (FR-016)
+
+  **Execução (sessão de automação, 2026-09-01)**:
+  `crates/farol-core/src/e2e_tests.rs::uptime_kuma_reports_metrics_parse_error_for_a_non_metrics_response_without_crashing`
+  — `MetricsFixtureServer::start_with_body` serve um corpo HTML qualquer (não Prometheus); confirma
+  o mesmo tratamento de erro pontual de T040 (a mensagem exposta ao core é textualmente idêntica em
+  ambos os casos — `error.code`/`error.data.reason` do JSON-RPC não chegam a
+  `WidgetOutcome::PluginError(String)`, só `error.message`, o que já é o comportamento documentado
+  como "mesmo tratamento" pelo próprio `quickstart.md`), sem crash do plugin.
 
 **Checkpoint**: as duas user stories funcionam, cada uma de forma independente.
 
@@ -519,11 +582,22 @@ processo, FR-018), correção de teste de contrato quebrado por T008–T010 (H3)
 automatizados descrita em `plan.md` § Testing. Nenhuma task desta fase é específica de uma user
 story.
 
-- [ ] T042 [P] Executar Cenário 7 de `quickstart.md` (renumerado — era Cenário 8) — `kill -9`/
+- [X] T042 [P] Executar Cenário 7 de `quickstart.md` (renumerado — era Cenário 8) — `kill -9`/
   `kill -STOP` no processo `plugins/uptime-kuma`; confirmar comportamento idêntico ao já provado pela
   feature 001 (`Unavailable{Crashed}`/`Unavailable{Unresponsive}`), janela do Farol permanece aberta e
   responsiva — **nenhuma implementação nova**, só confirmação de que o mecanismo genérico do core (D6
   da feature 001, inalterado) se aplica também a este plugin (FR-018)
+
+  **Execução (sessão de automação, 2026-09-01)**: dois testes, um por sinal, contra o PID real do
+  processo `uptime-kuma` (localizado via `/proc`, mesmo mecanismo de
+  `assert_no_lingering_children`) —
+  `crates/farol-core/src/e2e_tests.rs::uptime_kuma_process_killed_becomes_crashed_without_taking_down_the_core`
+  (`kill -9` → `Unavailable{Crashed}`, detectado pelo `child.wait()` concorrente do worker sem
+  nenhuma requisição em voo) e
+  `crates/farol-core/src/e2e_tests.rs::uptime_kuma_process_frozen_becomes_unresponsive_without_taking_down_the_core`
+  (`kill -STOP` + um `RefreshTick` que estoura `RPC_TIMEOUT_CONTROL` → `Unavailable{Unresponsive}`).
+  Em ambos, o `Emulator`/`Program` real continua respondendo a instruções durante todo o cenário —
+  é isso que prova "o core não trava", não apenas o `PluginState` final.
 - [X] T043 **[Correção H3]** Adaptar ou aposentar
   `crates/farol-protocol/tests/contract_schema_validation.rs:41-44,155-156` — hoje valida os tipos
   Rust contra os 4 schemas `v0.1` usando `capabilities: vec!["exec".to_string()]`, que para de
