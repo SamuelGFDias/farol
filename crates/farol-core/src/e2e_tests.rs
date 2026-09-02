@@ -1870,8 +1870,7 @@ fn uptime_kuma_reports_metrics_unreachable_for_an_invalid_base_url_but_stays_rea
 /// do plugin, não uma regressão desta subtarefa.
 #[test]
 #[ignore = "gap real em plugins/uptime-kuma/metrics_parser.py (zero monitores vira \
-            metrics_parse_error, não items: []) — plugins/ está fora do escopo autorizado desta \
-            subtarefa; precisa virar issue antes de habilitar"]
+            metrics_parse_error, não items: []) — issue #7"]
 fn uptime_kuma_widget_reports_empty_items_when_instance_has_no_monitors() {
     let _guard = e2e_guard();
     let metrics = MetricsFixtureServer::start_with_body(EMPTY_METRICS_FIXTURE_BODY);

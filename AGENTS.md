@@ -138,8 +138,8 @@ injetados como variável de ambiente no spawn — não há dependência de keyri
 
 ## Testes
 
-- `cargo test --workspace` — 89 testes passando (+ 1 `#[ignore]`d deliberadamente, ver abaixo):
-  unit/e2e/snapshot de `farol-core` (38) + contrato/unit de `farol-protocol` (21 +
+- `cargo test --workspace` — 96 testes passando (+ 2 `#[ignore]`d deliberadamente, ver abaixo):
+  unit/e2e/snapshot de `farol-core` (45, 1 ignorado) + contrato/unit de `farol-protocol` (21 +
   `schema_boundaries` 12+1 ignorado + 18 unit).
 - `cargo clippy --workspace --all-targets` — deve ficar limpo, sem warning nenhum.
 - Harness de execução real em **duas camadas** (feature 003, `research.md` D1/D5,
@@ -148,17 +148,41 @@ injetados como variável de ambiente no spawn — não há dependência de keyri
   - **Camada 1** — in-process, sem display, via `iced_test::Emulator`:
     `crates/farol-core/src/e2e_tests.rs` (módulo `#[cfg(test)]` dentro do bin — `farol-core` não tem
     target `lib`, então não existe `--test e2e_harness`; rodar com `cargo test --package farol-core
-    e2e_tests`). Três cenários: `uptime-kuma` alcança `Ready` e popula `monitor-status-grid`
-    (`uptime_kuma_reaches_ready_and_populates_the_monitor_grid`), e `git-local` percorre um
-    handshake real até `Unavailable{VersionIncompatible}`
-    (`emulator_takes_git_local_through_a_real_handshake_to_a_terminal_state`, débito técnico #4,
-    deliberado). Timeouts de 30s/120s por cenário (`## Clarifications` do `spec.md`).
+    e2e_tests`). `uptime-kuma` alcança `Ready` e popula `monitor-status-grid`
+    (`uptime_kuma_reaches_ready_and_populates_the_monitor_grid`); `git-local`, migrado para o
+    protocolo `"0.2"` (débito técnico #4, resolvido — commit `9d2fe77`, issue #4 fechada), percorre
+    um handshake real até `Ready` como qualquer outro plugin
+    (`emulator_takes_git_local_through_a_real_handshake_to_ready`) — deixou de terminar em
+    `Unavailable{VersionIncompatible}`. Timeouts de 30s/120s por cenário (`## Clarifications` do
+    `spec.md`).
+    Mais 7 cenários automatizados na mesma sessão (T036-T042 da feature 002, commit `dbae06c`): tela
+    de setup preenchida via UI (`Selector`/click/type do `iced_test`) leva a `Ready` com dados reais
+    e persiste após reabertura
+    (`setup_form_filled_via_ui_reaches_ready_with_real_data_and_persists_across_restart`); tela de
+    setup não preenchida fica `NotConfigured` (`setup_form_left_unfilled_stays_not_configured`);
+    `base_url` inválido gera `metrics_unreachable` sem sair de `Ready`
+    (`uptime_kuma_reports_metrics_unreachable_for_an_invalid_base_url_but_stays_ready`); recuperação
+    após a instância ficar inacessível e voltar, sem reiniciar o Farol
+    (`uptime_kuma_recovers_after_instance_becomes_unreachable_without_restarting_farol`); resposta
+    `/metrics` não reconhecível como Uptime Kuma vira `metrics_parse_error` sem derrubar o core
+    (`uptime_kuma_reports_metrics_parse_error_for_a_non_metrics_response_without_crashing`); processo
+    do plugin morto via `kill -9` vira `Crashed` sem derrubar o core
+    (`uptime_kuma_process_killed_becomes_crashed_without_taking_down_the_core`); processo travado via
+    `kill -STOP` vira `Unresponsive` sem derrubar o core
+    (`uptime_kuma_process_frozen_becomes_unresponsive_without_taking_down_the_core`). Um oitavo
+    cenário (T039, Cenário 6 de `quickstart.md` — instância acessível sem nenhum monitor cadastrado)
+    fica `#[ignore]`d de propósito
+    (`uptime_kuma_widget_reports_empty_items_when_instance_has_no_monitors`): expõe um gap real de
+    `plugins/uptime-kuma/metrics_parser.py`, que não distingue "zero monitores" de "resposta
+    inválida" — rastreado como débito técnico #5, issue #7, `specs/002-uptime-kuma-plugin/tasks.md`
+    T051; reproduzir com `cargo test --package farol-core e2e_tests -- --ignored`.
   - **Camada 2** — smoke do binário `farol` real (`fn main()`, backend de janela winit de verdade),
     via `tests/integration/harness.sh` — precisa de `xvfb` (`Xvfb`). Confirma 5 condições (subir e
-    sobreviver, `uptime-kuma` chega a `Ready`, `git-local` fica `VersionIncompatible`, encerra em
-    `SIGTERM`, nenhum processo remanescente) e imprime `SUCESSO — 5/5 condições confirmadas em Ns`
-    ou `[FALHA] ...` apontando a condição que caiu, saída `0`/`1`. `tests/integration/README.md`
-    documenta o contrato; o script em si é a Camada 2, não mais um stub.
+    sobreviver, `uptime-kuma` chega a `Ready`, `git-local` chega a `Ready` — mesma migração para
+    `"0.2"` acima, débito técnico #4 resolvido —, encerra em `SIGTERM`, nenhum processo remanescente)
+    e imprime `SUCESSO — 5/5 condições confirmadas em Ns` ou `[FALHA] ...` apontando a condição que
+    caiu, saída `0`/`1`. `tests/integration/README.md` documenta o contrato; o script em si é a
+    Camada 2, não mais um stub.
   - Sob `iced 0.14`, um closure capturante em `Subscription::map` (a armadilha histórica acima) não
     chega a rodar — vira erro `E0080` de compilação, apanhado por `cargo test`/`cargo clippy
     --all-targets` (código de teste) ou já no primeiro passo do `harness.sh` (código de produção).

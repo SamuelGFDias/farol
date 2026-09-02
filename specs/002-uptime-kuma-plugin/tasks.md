@@ -510,8 +510,9 @@ de monitores aparece corretamente na janela do Farol logo em seguida, sem qualqu
   `crates/farol-protocol/tests/schema_boundaries.rs::widget_monitor_status_item_response_time_ms_negative_value_is_a_known_protocol_gap`)
   porque falha contra o código real como está hoje; rodar com `cargo test --package farol-core
   e2e_tests -- --ignored` reproduz o gap sob demanda. `plugins/` está fora dos arquivos autorizados
-  desta subtarefa — não corrigido; precisa virar issue própria (constitution v1.0.0, Governance)
-  antes de esta task poder ser marcada `[X]` e o `#[ignore]` removido.
+  desta subtarefa — não corrigido. Rastreado como débito técnico próprio: issue #7 e T051 (§ Débito
+  técnico ao final deste arquivo) — esta task fica `[ ]` e o `#[ignore]` permanece até T051 ser
+  resolvida.
 
 **Checkpoint**: User Story 1 completa e testável de forma independente — MVP.
 
@@ -682,6 +683,21 @@ qualquer momento, inclusive antes da Fase 1); T050 depende do protocolo `"0.2"` 
   estão fora do escopo de arquivos autorizados desta correção (T036-T042/feature 002 em andamento em
   paralelo toca `e2e_tests.rs`) — não alterados aqui de propósito; atualização desses dois artefatos
   fica como trabalho de acompanhamento.
+- [ ] T051 **[Débito #5]** `plugins/uptime-kuma/metrics_parser.py::parse_metrics` (linhas 94-95) não
+  distingue "zero monitores cadastrados" (deveria ser sucesso, `items: []` — Edge Case de `spec.md`
+  linha 61, Cenário 6 de `quickstart.md`) de "resposta `/metrics` inválida" (deveria ser
+  `metrics_parse_error`, `-32007`) — as duas condições hoje colapsam na mesma exceção
+  `MetricsParseError`, porque nenhuma linha `monitor_status{...}` no corpo é exatamente a assinatura
+  de uma instância real sem monitores. Achado durante a automação de T039 (commit `dbae06c`) e
+  convertido em teste `#[ignore]`d,
+  `crates/farol-core/src/e2e_tests.rs::uptime_kuma_widget_reports_empty_items_when_instance_has_no_monitors`
+  (reproduz o gap sob demanda com `cargo test --package farol-core e2e_tests -- --ignored`). Correção:
+  distinguir os dois casos em `parse_metrics` (ex.: corpo reconhecível como Uptime Kuma via
+  comentários `# HELP`/`# TYPE` de `monitor_status`, mas com zero amostras → `items: []`; corpo não
+  reconhecível de forma alguma → mantém `MetricsParseError`). Critério de pronto: o teste acima passa
+  sem `#[ignore]`; marcar T039 como `[X]`; fechar a issue #7 com `gh issue close 7 --comment
+  "metrics_parser.py distingue zero monitores de resposta inválida — items: [] vs.
+  metrics_parse_error"`.
 
 ---
 

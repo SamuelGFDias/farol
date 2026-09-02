@@ -16,8 +16,9 @@
 # ------------------------
 #   1. o binário sobe e sobrevive à janela de observação (não morre sozinho);
 #   2. `uptime-kuma` alcança `PluginState::Ready`;
-#   3. `git-local` completa um handshake real e **não** alcança `Ready`
-#      (`Unavailable{VersionIncompatible}` — débito técnico #4, deliberado);
+#   3. `git-local` alcança `PluginState::Ready` (migrado para o protocolo
+#      "0.2" — débito técnico #4, resolvido; até então ficava preso em
+#      `Unavailable{VersionIncompatible}` por falar "0.1");
 #   4. o processo encerra ao receber `SIGTERM`;
 #   5. nenhum processo remanescente (core, Xvfb ou plugin) fica para trás.
 #
@@ -271,13 +272,12 @@ transcript_has() {  # <arquivo> <padrão fixo>
 
 UPTIME_KUMA_TO_PLUGIN="$RPC_DIR/uptime-kuma.core-to-plugin.ndjson"
 GIT_LOCAL_TO_PLUGIN="$RPC_DIR/git-local.core-to-plugin.ndjson"
-GIT_LOCAL_TO_CORE="$RPC_DIR/git-local.plugin-to-core.ndjson"
 
-# --- Verificação 1+2+3: sobe, e cada plugin chega ao estado esperado ---------
-log "aguardando (até ${STATE_TIMEOUT_SECONDS}s) os plugins alcançarem seus estados"
+# --- Verificação 1+2+3: sobe, e cada plugin chega a Ready --------------------
+log "aguardando (até ${STATE_TIMEOUT_SECONDS}s) os plugins alcançarem Ready"
 DEADLINE=$((SECONDS + STATE_TIMEOUT_SECONDS))
 UPTIME_KUMA_READY=0
-GIT_LOCAL_HANDSHAKED=0
+GIT_LOCAL_READY=0
 
 while (( SECONDS < DEADLINE )); do
     check_scenario_budget "espera pelos estados dos plugins" || break
@@ -288,17 +288,17 @@ while (( SECONDS < DEADLINE )); do
     fi
 
     # `widget/get` só é emitido por handle_refresh_tick, que retorna cedo se o
-    # estado não for Ready — logo, vê-lo na linha prova a transição.
+    # estado não for Ready — logo, vê-lo na linha prova a transição. Desde a
+    # migração do `git-local` para o protocolo "0.2" (débito técnico #4,
+    # resolvido), os dois plugins alcançam Ready pelo mesmo mecanismo.
     if transcript_has "$UPTIME_KUMA_TO_PLUGIN" '"widget/get"'; then
         UPTIME_KUMA_READY=1
     fi
-    # Handshake real do git-local, respondendo protocolo "0.1".
-    if transcript_has "$GIT_LOCAL_TO_CORE" '"protocol_version":"0.1"' ||
-       transcript_has "$GIT_LOCAL_TO_CORE" '"protocol_version": "0.1"'; then
-        GIT_LOCAL_HANDSHAKED=1
+    if transcript_has "$GIT_LOCAL_TO_PLUGIN" '"widget/get"'; then
+        GIT_LOCAL_READY=1
     fi
 
-    if (( UPTIME_KUMA_READY == 1 && GIT_LOCAL_HANDSHAKED == 1 )); then
+    if (( UPTIME_KUMA_READY == 1 && GIT_LOCAL_READY == 1 )); then
         break
     fi
     sleep 0.2
@@ -311,15 +311,10 @@ if (( FAILED == 0 )); then
         log "OK — uptime-kuma alcançou Ready (widget/get observado na linha)"
     fi
 
-    if (( GIT_LOCAL_HANDSHAKED == 0 )); then
-        fail "git-local não completou o handshake em ${STATE_TIMEOUT_SECONDS}s (nenhuma resposta de protocol_version na transcrição plugin→core)"
-    elif transcript_has "$GIT_LOCAL_TO_PLUGIN" '"widget/get"'; then
-        # Se isto disparar, o débito técnico #4 foi resolvido e o resultado
-        # esperado deste harness mudou — falha de propósito, para o script ser
-        # atualizado em vez de o novo comportamento passar despercebido.
-        fail "git-local alcançou Ready — o débito técnico #4 mudou de estado; atualize este harness e crates/farol-core/src/e2e_tests.rs"
+    if (( GIT_LOCAL_READY == 0 )); then
+        fail "git-local não alcançou Ready em ${STATE_TIMEOUT_SECONDS}s (nenhum widget/get na transcrição core→plugin)"
     else
-        log "OK — git-local fez handshake em 0.1 e ficou Unavailable{VersionIncompatible} (débito #4, esperado)"
+        log "OK — git-local alcançou Ready (widget/get observado na linha)"
     fi
 fi
 
