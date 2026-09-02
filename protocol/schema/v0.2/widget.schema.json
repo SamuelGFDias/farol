@@ -154,7 +154,8 @@
         },
         "response_time_ms": {
           "type": ["integer", "null"],
-          "description": "From `monitor_response_time` (ms), when applicable to the monitor's status; explicit null when not applicable - an explicit union, never inferred from an absent field (same spirit as RemoteStatus.NoRemote in v0.1). Required and nullable, never absent."
+          "minimum": 0,
+          "description": "From `monitor_response_time` (ms), when applicable to the monitor's status; explicit null when not applicable - an explicit union, never inferred from an absent field (same spirit as RemoteStatus.NoRemote in v0.1). Required and nullable, never absent. Never negative - a response time is a duration."
         }
       },
       "required": ["name", "status", "response_time_ms"],

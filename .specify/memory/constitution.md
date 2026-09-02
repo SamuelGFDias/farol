@@ -1,32 +1,21 @@
 <!--
 Sync Impact Report
-- Version change: 0.3.0 → 1.0.0 (amendment)
-- Bump rationale: MAJOR — redefinição incompatível de um princípio existente (Princípio IV,
-  bullet "Segredos"). A versão anterior exigia, em texto normativo, que credenciais de plugin
-  viessem do keyring do sistema operacional (Secret Service/libsecret, 1Password CLI ou
-  equivalente); essa exigência é removida e substituída por um mecanismo diferente — armazenamento
-  dedicado gerenciado pelo core (hoje um arquivo `secrets.toml` com permissão `0600`), nunca pelo
-  plugin. Não é adição de princípio novo nem expansão material de uma seção já existente (não é
-  MINOR), nem esclarecimento de redação sem mudança semântica (não é PATCH) — conforme a própria
-  política de versionamento da seção "Governance": "MAJOR: remoção ou redefinição incompatível de
-  um princípio existente". A garantia central do princípio (o plugin nunca gerencia, lê nem
-  escreve o armazenamento de credencial diretamente) é preservada; o mecanismo concreto que a
-  implementa muda.
-- Modified principles:
-  - IV. Permissões Explícitas por Manifesto — bullet "Segredos" reescrito: troca "elas vêm do
-    keyring do sistema" por "armazenamento dedicado gerenciado pelo core, nunca pelo plugin",
-    deixando explícito que o mecanismo concreto (hoje um arquivo com permissão restrita) pode
-    evoluir no futuro (inclusive para keyring do SO) sem mudar o contrato com o plugin, que sempre
-    recebe o valor já resolvido via variável de ambiente no spawn do processo filho.
-- Modified sections: Core Principles (Princípio IV apenas)
-- Added sections: nenhuma
-- Removed sections: nenhuma
-- Templates requiring follow-up:
-  - specs/002-uptime-kuma-plugin/spec.md — referencia o texto anterior do bullet "Segredos"
-    (keyring do sistema) em múltiplos pontos (linha ~62, FR-005, FR-019, glossário, notas de Out
-    of Scope/Assumptions); reconciliação tratada na mesma sessão desta emenda, fora deste comando.
-  - Nenhum outro template (plan/spec/tasks) verificado neste comando — este comando escreve
-    somente a constitution; templates dependentes leem-na em runtime.
+- Version change: 1.0.0 → 1.1.0 (amendment)
+- Bump rationale: MINOR — expansão material de uma seção existente ("## Governance"), conforme a
+  própria política de versionamento já escrita nessa seção: "MINOR: adição de novo princípio ou
+  expansão material de uma seção existente". Não é MAJOR (nenhum princípio existente é removido ou
+  redefinido de forma incompatível) nem PATCH (não é mero esclarecimento de redação — é uma regra
+  de governança nova, com obrigação MUST própria).
+- Added sections:
+  - "## Governance" ganha um novo bullet, "README como fonte de verdade externa, mantido
+    atualizado", no mesmo estilo dos bullets já existentes (Emendas, Versionamento, Revisão de
+    conformidade, Dívida técnica rastreável). Não é um novo Core Principle (I-VII) — é regra de
+    processo/higiene documental, não princípio de produto sobre os verbos Ver/Agir/Lembrar.
+- Modified principles: nenhum (Core Principles I-VII inalterados).
+- Modified sections: nenhuma além da adição acima.
+- Removed sections: nenhuma.
+- Templates requiring follow-up: nenhum — o README está sendo atualizado em paralelo por outra
+  tarefa desta mesma sessão, não depende desta emenda para isso.
 - Deferred / TODO placeholders: nenhum.
 -->
 
@@ -183,5 +172,15 @@ repositório, esta constitution prevalece até que seja formalmente emendada.
   sessão desaparece do radar do projeto assim que a sessão termina ou o comentário para de ser
   lido; uma issue no tracker é o único registro que sobrevive à sessão que a criou e que pode
   entrar em backlog, milestone ou priorização futura.
+- **README como fonte de verdade externa, mantido atualizado**: o `README.md` é o documento
+  voltado para quem chega ao projeto de fora — status atual do produto, roadmap, integrações
+  previstas. MUST ser atualizado sempre que uma mudança de sessão alterar seu conteúdo de forma
+  material: fase do roadmap concluída, novo plugin de referência funcional, mudança relevante na
+  linha de status do projeto. Rationale: ao contrário do `AGENTS.md` (contexto interno para quem
+  já trabalha no código) ou desta constitution (princípios formais e estáveis), o README é o que
+  alguém lê antes de decidir se vale a pena explorar o projeto — um README desatualizado (ex.:
+  alegando "ainda sem código funcional" quando já existem features completas) passa uma imagem
+  falsa do estado real do projeto, tanto para colaboradores externos quanto para o próprio autor
+  revisitando o projeto depois de um tempo.
 
-**Version**: 1.0.0 | **Ratified**: 2026-08-31 | **Last Amended**: 2026-09-01
+**Version**: 1.1.0 | **Ratified**: 2026-08-31 | **Last Amended**: 2026-09-02

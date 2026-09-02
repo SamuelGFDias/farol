@@ -547,11 +547,11 @@ fn handshake_required_config_item_secret_has_no_numeric_case_but_is_required() {
 // T013 — widget.schema.json
 // -------------------------------------------------------------------------------------------
 
-/// `MonitorStatusItem.response_time_ms` (`type: ["integer","null"]`, `required`, sem `minimum`) —
-/// os dois casos que hoje se comportam corretamente contra `Option<u32>`: `Null` (valor `null`) e
-/// `MissingRequired` (campo obrigatório de fato ausente é rejeitado pelo schema). O terceiro caso
-/// gerado para esta propriedade, `NoMinimumNegative` (`-1`), é o gap conhecido — ver o teste
-/// `#[ignore]`d logo abaixo (T016, `research.md` D3).
+/// `MonitorStatusItem.response_time_ms` (`type: ["integer","null"]`, `required`, `minimum: 0`
+/// desde a correção da issue #5) — os dois casos que se comportam corretamente contra
+/// `Option<u32>`: `Null` (valor `null`) e `MissingRequired` (campo obrigatório de fato ausente é
+/// rejeitado pelo schema). Cobertura do `minimum` em si (`MinimumMinusOne`, `Minimum`) fica na
+/// função seguinte, `widget_monitor_status_item_response_time_ms_minimum_boundaries`.
 #[test]
 fn widget_monitor_status_item_response_time_ms_null_and_missing_required() {
     let schemas = load_schema_set();
@@ -596,45 +596,51 @@ fn widget_monitor_status_item_response_time_ms_null_and_missing_required() {
     );
 }
 
-/// T016 / Cenário 2 de `quickstart.md`: `MonitorStatusItem.response_time_ms` com
-/// `boundary_kind=NoMinimumNegative` (`value=-1`) é permitido por `widget.schema.json` (nenhum
-/// `minimum` declarado) mas `Option<u32>` (`crates/farol-protocol/src/messages.rs`) não consegue
-/// representar valor negativo algum — gap de contrato real, descoberto originalmente porque o
-/// Uptime Kuma real emitiu `-1`. Este teste roda em `cargo test -- --ignored` e prova o mecanismo:
-/// (1) a asserção de schema abaixo passa (o gerador concorda com o schema real: `-1` É válido) e
-/// (2) a asserção de desserialização Rust FALHA (o binding rejeita), no formato de mensagem FR-006
-/// exigido por `contracts/contract-boundary-testing.md`.
+/// Issue #5 (fechada): `MonitorStatusItem.response_time_ms` costumava ser `type: ["integer",
+/// "null"]` sem `minimum`, permitindo `-1` pelo schema enquanto `Option<u32>`
+/// (`crates/farol-protocol/src/messages.rs`) não consegue representar valor negativo algum —
+/// gap de contrato real, descoberto originalmente porque o Uptime Kuma real emitiu `-1`. Fechado
+/// declarando `minimum: 0` em `widget.schema.json` (não alterando o tipo Rust — nenhum plugin
+/// real precisa enviar valor negativo, e o Uptime Kuma já converte seu sentinela `-1` para `null`
+/// do lado Python em `plugins/uptime-kuma/metrics_parser.py`), o mesmo alinhamento que
+/// `RemoteStatus.ahead`/`.behind` já tinham (ver
+/// `widget_remote_status_tracked_ahead_and_behind_minimum_boundaries` logo abaixo). Com
+/// `minimum: 0` declarado, o gerador deixa de produzir `NoMinimumNegative` para este campo e
+/// passa a produzir os casos normais de um campo com `minimum` (`MinimumMinusOne`, `Minimum`),
+/// além de `Null`/`MissingRequired` já cobertos pelo teste acima.
 #[test]
-#[ignore = "débito rastreado (issue #5, github.com/SamuelGFDias/farol/issues/5): \
-            MonitorStatusItem.response_time_ms é Option<u32> (crates/farol-protocol/src/messages.rs) \
-            mas widget.schema.json permite qualquer inteiro, incluindo negativo (sem `minimum`) - \
-            ver research.md D3. Remover este #[ignore] só depois que a issue #5 for resolvida."]
-fn widget_monitor_status_item_response_time_ms_negative_value_is_a_known_protocol_gap() {
+fn widget_monitor_status_item_response_time_ms_minimum_boundaries() {
     let schemas = load_schema_set();
     let validator = schemas.def_validator(WIDGET_ID, "MonitorStatusItem");
     let pointer = "/$defs/MonitorStatusItem/properties/response_time_ms";
     let property_schema = schemas.at(&schemas.widget, pointer);
     let cases = numeric_and_null_boundary_cases(property_schema);
-    let case = cases
-        .iter()
-        .find(|c| c.kind == BoundaryKind::NoMinimumNegative)
-        .expect("gerador deveria produzir NoMinimumNegative para response_time_ms (sem minimum, type integer|null)");
-    assert_eq!(case.value, Some(json!(-1)));
+    assert!(
+        !cases.is_empty(),
+        "esperava ao menos um caso de borda para response_time_ms (minimum:0 declarado)"
+    );
+    assert!(
+        !cases
+            .iter()
+            .any(|c| c.kind == BoundaryKind::NoMinimumNegative),
+        "NoMinimumNegative não deveria mais ser gerado para response_time_ms agora que \
+         widget.schema.json declara minimum:0 (issue #5 fechada)"
+    );
 
     let base = json!({"name": "api_example_com", "status": "up", "response_time_ms": 42});
-    let instance = apply_case(&base, "response_time_ms", case);
-
-    // (1) o gerador concorda com o schema real: -1 é válido (sem `minimum` declarado).
-    assert_case_matches_schema(&validator, "widget.schema.json", pointer, case, &instance);
-
-    // (2) FR-006: a mesma instância, válida pelo schema, é rejeitada pela desserialização Rust.
-    assert_case_deserializes::<MonitorStatusItem>(
-        "widget.schema.json",
-        pointer,
-        case,
-        &instance,
-        "MonitorStatusItem::response_time_ms: Option<u32>",
-    );
+    for case in &cases {
+        let instance = apply_case(&base, "response_time_ms", case);
+        assert_case_matches_schema(&validator, "widget.schema.json", pointer, case, &instance);
+        if case.expected_schema_valid {
+            assert_case_deserializes::<MonitorStatusItem>(
+                "widget.schema.json",
+                pointer,
+                case,
+                &instance,
+                "MonitorStatusItem::response_time_ms: Option<u32>",
+            );
+        }
+    }
 }
 
 /// `RemoteStatus::Tracked { ahead, behind }` — ambos `minimum: 0`. Cobertura adicional dentro de

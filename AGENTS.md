@@ -138,9 +138,9 @@ injetados como variável de ambiente no spawn — não há dependência de keyri
 
 ## Testes
 
-- `cargo test --workspace` — 98 testes passando (+ 1 `#[ignore]`d deliberadamente, ver abaixo):
-  unit/e2e/snapshot de `farol-core` (47) + contrato/unit de `farol-protocol` (21 + `schema_boundaries`
-  12+1 ignorado + 18 unit).
+- `cargo test --workspace` — 99 testes passando (0 `#[ignore]`d): unit/e2e/snapshot de `farol-core`
+  (47) + contrato/unit de `farol-protocol` (21 `contract_schema_validation` + 13 `schema_boundaries`
+  + 18 unit).
 - `cargo clippy --workspace --all-targets` — deve ficar limpo, sem warning nenhum.
 - Harness de execução real em **duas camadas** (feature 003, `research.md` D1/D5,
   `contracts/e2e-harness-contract.md`) — a mesma máquina de estados real (`Program`/`Subscription`/
@@ -196,11 +196,15 @@ injetados como variável de ambiente no spawn — não há dependência de keyri
   `numeric_and_null_boundary_cases()`: deriva de cada JSON Schema (`protocol/schema/v0.2/*`) os
   valores de fronteira que o schema permite mas a implementação Rust pode rejeitar (`Option<T>` vs.
   `"type": [..., "null"]`, ausência de `minimum`/`maximum`, etc.), sem hardcodar caso por caso —
-  `contracts/contract-boundary-testing.md` é o contrato normativo. Um teste,
-  `widget_monitor_status_item_response_time_ms_negative_value_is_a_known_protocol_gap`, fica
-  `#[ignore]`d de propósito — débito técnico pré-existente (`response_time_ms: -1` permitido pelo
-  schema, rejeitado por `Option<u32>`), rastreado como issue #5 fora desta feature; rodar com
-  `cargo test -p farol-protocol --test schema_boundaries -- --ignored` reproduz a falha sob demanda.
+  `contracts/contract-boundary-testing.md` é o contrato normativo. `MonitorStatusItem.response_time_ms`
+  (`widget.schema.json`) costumava permitir `-1` (sem `minimum`) enquanto `Option<u32>`
+  (`messages.rs`) rejeitava — débito técnico que ficava provado por um teste `#[ignore]`d, rastreado
+  como issue #5. Fechado declarando `minimum: 0` no schema (não alterando o tipo Rust — nenhum
+  plugin real precisa de valor negativo, e o Uptime Kuma já converte seu sentinela `-1` para `null`
+  do lado Python em `metrics_parser.py`); o teste foi reescrito como
+  `widget_monitor_status_item_response_time_ms_minimum_boundaries` (sem `#[ignore]`), no mesmo padrão
+  de `widget_remote_status_tracked_ahead_and_behind_minimum_boundaries` para um campo com `minimum`
+  declarado.
 - Verificação visual declarativa — `crates/farol-core/src/visual_snapshot_tests.rs` +
   `crates/farol-core/src/snapshots/*.snap` (via `insta`, `cargo test --package farol-core
   visual_snapshot_tests`): compara `extract_visible_text(app.view())` contra um snapshot textual por
