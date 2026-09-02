@@ -1,0 +1,95 @@
+name: CI
+
+# Contrato: specs/003-automated-testing-infrastructure/contracts/ci-workflow-contract.md
+# Gatilhos (FR-007): todo push e toda pull request, sem filtro de branch/path.
+on:
+  push:
+  pull_request:
+
+jobs:
+  # Suíte existente (contrato/e2e/visual) + testes de contrato/borda (US2) + gate iced_test (US1/US4)
+  # — todos rodam sob o mesmo `cargo test --workspace`, sem harness externo.
+  rust-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo test --workspace
+        run: cargo test --workspace
+
+  # Checagem de estilo Rust — mesmo padrão "sem warning nenhum" já exigido pelo AGENTS.md.
+  rust-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+  # Smoke de processo real (contracts/e2e-harness-contract.md Camada 2, US1): sobe o binário
+  # `farol` de verdade sob Xvfb e confirma que ele sobrevive/encerra limpo via harness.sh.
+  rust-smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install xvfb
+        run: sudo apt-get update && sudo apt-get install -y xvfb
+      - name: cargo build --bin farol
+        run: cargo build --bin farol
+      - name: tests/integration/harness.sh
+        run: ./tests/integration/harness.sh
+
+  # Checagem de estilo Python (FR-007) — roda em todo diretório de plugin via glob, mesmo os
+  # sem pyproject.toml próprio (usa defaults do ruff nesse caso, research.md D6), sem lista
+  # hardcoded de diretórios (FR-013: novo plugin fica coberto automaticamente).
+  python-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install ruff
+        run: pip install ruff
+      - name: ruff check em cada plugins/*/
+        run: |
+          set -e
+          for dir in plugins/*/; do
+            echo "::group::ruff check $dir"
+            ruff check "$dir"
+            echo "::endgroup::"
+          done
+
+  # Testes Python existentes (hoje só plugins/uptime-kuma/, sem framework externo — D7 de
+  # research.md) e qualquer teste em tests/unit/ na raiz do repo (git-local, hoje via unittest).
+  python-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Run Python tests em plugins/*/
+        run: |
+          set -e
+          for test_file in plugins/*/test_*.py; do
+            [ -e "$test_file" ] || continue
+            echo "::group::python3 $test_file"
+            python3 "$test_file"
+            echo "::endgroup::"
+          done
+      - name: Run Python tests em tests/unit/
+        run: |
+          set -e
+          for test_file in tests/unit/test_*.py; do
+            [ -e "$test_file" ] || continue
+            echo "::group::python3 $test_file"
+            python3 "$test_file"
+            echo "::endgroup::"
+          done

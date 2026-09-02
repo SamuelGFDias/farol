@@ -264,24 +264,55 @@ contrato (US2) e o lint — sem ação manual — e sinaliza falha antes de revi
 introduzir uma quebra deliberada e confirmar que a PR é sinalizada como não pronta antes de revisão
 manual.
 
-- [ ] T017 [US3] Criar `.github/workflows/ci.yml` com gatilhos `push`/`pull_request` (FR-007) e o job
+- [X] T017 [US3] Criar `.github/workflows/ci.yml` com gatilhos `push`/`pull_request` (FR-007) e o job
   `rust-test` (`cargo test --workspace` — cobre os 73 testes já existentes após T004 + T005–T007 + T011–T015,
   todos sob o mesmo comando, `contracts/ci-workflow-contract.md`)
-- [ ] T018 [P] [US3] Adicionar job `rust-lint` a `ci.yml` (`cargo clippy --workspace --all-targets --
+- [X] T018 [P] [US3] Adicionar job `rust-lint` a `ci.yml` (`cargo clippy --workspace --all-targets --
   -D warnings`)
-- [ ] T019 [US3] Adicionar job `rust-smoke` a `ci.yml` (`apt-get install -y xvfb` + `cargo build --bin
+- [X] T019 [US3] Adicionar job `rust-smoke` a `ci.yml` (`apt-get install -y xvfb` + `cargo build --bin
   farol` + `tests/integration/harness.sh`, T008) — depende de T008 existir
-- [ ] T020 [P] [US3] Adicionar job `python-lint` a `ci.yml` (`ruff check` em cada `plugins/*/` via
+  **Nota (2026-09-01)**: `tests/integration/harness.sh` (T008) ainda não existe nesta worktree
+  (subtarefa paralela de US1); o job referencia o caminho conforme o contrato — falhará
+  ("No such file or directory") até T008 ser entregue, o que é esperado e não é regressão desta
+  task
+- [X] T020 [P] [US3] Adicionar job `python-lint` a `ci.yml` (`ruff check` em cada `plugins/*/` via
   glob, sem lista hardcoded de diretórios — cobre `plugins/git-local/` mesmo sem `pyproject.toml`
   próprio, usando defaults do `ruff`, `research.md` D6)
-- [ ] T021 [P] [US3] Adicionar job `python-test` a `ci.yml` (`pytest` em cada `plugins/*/` que tiver
+  **Resultado real**: validado localmente (`ruff` instalado via `pip install --user ruff`) —
+  `plugins/uptime-kuma/` passa limpo; `plugins/git-local/` **falha hoje** (2 erros, defaults do
+  `ruff` sem `pyproject.toml` próprio) — comportamento esperado, é exatamente o gap rastreado por
+  T030 (débito técnico já registrado neste `tasks.md`), não uma regressão desta task
+- [X] T021 [P] [US3] Adicionar job `python-test` a `ci.yml` (`pytest` em cada `plugins/*/` que tiver
   teste — hoje só `plugins/uptime-kuma/`)
+  **Resultado real**: implementado como `python3 <arquivo>` direto (não `pytest`), seguindo D7 de
+  `research.md` — `plugins/uptime-kuma/test_metrics_parser.py` já roda assim sem framework externo
+  (confirmado pelo texto da subtarefa recebida); o job também cobre `tests/unit/test_*.py`
+  (`test_git_local_scan.py`), mesmo padrão `unittest` autoexecutável
 
 ### Validação da User Story 3 (Cenário 3 de `quickstart.md`)
 
-- [ ] T022 [US3] Executar Cenário 3 de `quickstart.md`: abrir PR com quebra deliberada, confirmar
+- [X] T022 [US3] Executar Cenário 3 de `quickstart.md`: abrir PR com quebra deliberada, confirmar
   check vermelho antes de revisão manual (SC-003, Acceptance Scenario 2 de US3); reverter, confirmar
   todos os 5 jobs verdes (Acceptance Scenario 3); medir tempo total (SC-004, alvo 10 minutos)
+  **Resultado real (2026-09-01) — validação LOCAL, não via PR real**: esta subtarefa não tem acesso
+  a `gh`/rede autenticada nem escopo para mexer no repositório remoto, então o Cenário 3 não pôde
+  ser executado como descrito (abrir PR real e observar os checks do GitHub). `act` não está
+  disponível no sistema. Validação alternativa (fiel aos comandos exatos de cada job de `ci.yml`,
+  rodados manualmente nesta worktree): `cargo test --workspace` (verde, 73 testes) e `cargo clippy
+  --workspace --all-targets -- -D warnings` (verde) passam hoje; `cargo build --bin farol` passa,
+  `tests/integration/harness.sh` ainda não existe (T008 pendente, subtarefa paralela); `ruff check`
+  por plugin roda e falha em `plugins/git-local/` (débito T030, não regressão); testes Python
+  passam. Sabotagem deliberada e revertida: (1) `crates/farol-protocol/src/version.rs`,
+  `parses_valid_major_minor_string`, alterado `assert_eq!` para valor errado — `cargo test
+  --workspace` falhou visivelmente (`assertion left == right failed`, teste nomeado na saída),
+  revertido, `git status`/`git diff` confirmam zero mudança residual; (2)
+  `plugins/uptime-kuma/test_metrics_parser.py`, `test_negative_response_time_becomes_none`, valor
+  esperado alterado — `python3 plugins/uptime-kuma/test_metrics_parser.py` saiu com código 1 e
+  diff exato do `unittest`, revertido, confirmado limpo. Tempo total (SC-004, alvo 10 min) não
+  medido — sem execução real dos 5 jobs em paralelo no GitHub Actions, não há tempo de wall-clock
+  real de CI a reportar; os comandos individuais rodados aqui somados não ultrapassam poucos
+  segundos localmente, mas isso não é evidência do tempo de CI real (setup de runner, cache,
+  download de toolchain).
 
 **Checkpoint**: US1+US2+US3 entregáveis juntos — infraestrutura de teste completa e automática, só
 falta a verificação visual (US4).

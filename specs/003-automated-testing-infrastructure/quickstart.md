@@ -82,6 +82,15 @@ sem nenhuma ação manual além de abrir a mudança; o job `rust-test` fica verm
 da PR antes de qualquer revisão humana (Acceptance Scenario 2 de US3). Reverter a quebra, `git push`
 de novo, confirmar que todos os jobs ficam verdes (Acceptance Scenario 3) — SC-003.
 
+**Limitação de validação conhecida (T022, 2026-09-01)**: este cenário não pôde ser executado por
+uma subtarefa de implementação isolada (sem `gh`/rede autenticada nem escopo para abrir PR real no
+repositório remoto; `act` não disponível no sistema usado). Validação alternativa realizada: cada
+comando exato de cada job de `ci.yml` rodado manualmente na worktree, incluindo uma sabotagem
+temporária (um `assert_eq!` de teste Rust e uma asserção de teste Python alterados, cada um
+confirmado como causador de saída não-zero visível, depois revertido sem deixar diff) — ver nota em
+`tasks.md` T022 para o detalhe completo. O disparo automático via `push`/`pull_request` do GitHub
+Actions em si (o mecanismo, não os comandos) segue não verificado nesta sessão.
+
 ## Cenário 4 — Regressão visual é detectada sem inspeção manual (User Story 4, P4)
 
 ```bash
