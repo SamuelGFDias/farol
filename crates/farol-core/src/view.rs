@@ -103,7 +103,10 @@ fn view_plugin_slot(slot: &PluginSlot) -> Element<'_, Message> {
 /// mesmo jeito declarativo que já tratava `KnownCapability::Exec` na
 /// feature 001, e este bloco roda para qualquer plugin `Ready`,
 /// independente do `kind` de widget que ele declara.
-fn view_ready<'a>(plugin_name: &'a str, connection: &'a model::PluginConnection) -> Column<'a, Message> {
+fn view_ready<'a>(
+    plugin_name: &'a str,
+    connection: &'a model::PluginConnection,
+) -> Column<'a, Message> {
     let mut content = column![].spacing(8);
 
     if let Some(identity) = &connection.identity {
@@ -379,11 +382,12 @@ fn view_repo_row<'a>(plugin_name: &'a str, item: &'a RepositoryViewModel) -> Ele
 /// conexão por plugin conhecido agora, não mais implícita) — este `plugin_name`
 /// é passado por `view_repo_row`/`view_ready`, propagado da seção que
 /// renderizou este item.
-fn view_fetch_control<'a>(plugin_name: &'a str, item: &'a RepositoryViewModel) -> Element<'a, Message> {
+fn view_fetch_control<'a>(
+    plugin_name: &'a str,
+    item: &'a RepositoryViewModel,
+) -> Element<'a, Message> {
     if item.fetch_in_flight {
-        return text("buscando...")
-            .width(Length::FillPortion(1))
-            .into();
+        return text("buscando...").width(Length::FillPortion(1)).into();
     }
 
     let action = &item.fetch_action;

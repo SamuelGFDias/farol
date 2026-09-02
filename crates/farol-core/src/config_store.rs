@@ -51,7 +51,10 @@ pub fn plugin_config_path(plugin_name: &str) -> PathBuf {
 }
 
 fn config_path_under(base_dir: &Path, plugin_name: &str) -> PathBuf {
-    base_dir.join("plugins").join(plugin_name).join("config.toml")
+    base_dir
+        .join("plugins")
+        .join(plugin_name)
+        .join("config.toml")
 }
 
 /// Lê o `config.toml` de um plugin. Arquivo ausente, ilegível ou malformado resulta em mapa

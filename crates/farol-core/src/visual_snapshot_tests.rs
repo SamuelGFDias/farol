@@ -102,8 +102,8 @@ fn extract_visible_text(element: Element<'_, Message>) -> String {
                 if !text.is_empty() {
                     texts.push(text.to_string());
                 }
-            },
-            _ => {},
+            }
+            _ => {}
         }
         None
     };

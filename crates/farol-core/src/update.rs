@@ -304,20 +304,22 @@ impl Farol {
             .iter()
             .any(|widget| widget.kind == MONITOR_WIDGET_KIND);
         match outcome {
-            WidgetOutcome::Success(result) => match merge_widget_items(&slot.connection.items, result.items) {
-                MergedWidgetItems::Git(items) => {
-                    // T035: preserva `fetch_in_flight`/`last_error` dos
-                    // repositórios já conhecidos — um refresh periódico não
-                    // deve apagar o feedback de uma ação em andamento/com
-                    // erro que ainda não terminou (ver `merge_widget_items`).
-                    slot.connection.items = items;
-                    slot.connection.last_widget_error = None;
+            WidgetOutcome::Success(result) => {
+                match merge_widget_items(&slot.connection.items, result.items) {
+                    MergedWidgetItems::Git(items) => {
+                        // T035: preserva `fetch_in_flight`/`last_error` dos
+                        // repositórios já conhecidos — um refresh periódico não
+                        // deve apagar o feedback de uma ação em andamento/com
+                        // erro que ainda não terminou (ver `merge_widget_items`).
+                        slot.connection.items = items;
+                        slot.connection.last_widget_error = None;
+                    }
+                    MergedWidgetItems::Monitor(monitors) => {
+                        slot.connection.monitor_widget.monitors = monitors;
+                        slot.connection.monitor_widget.last_error = None;
+                    }
                 }
-                MergedWidgetItems::Monitor(monitors) => {
-                    slot.connection.monitor_widget.monitors = monitors;
-                    slot.connection.monitor_widget.last_error = None;
-                }
-            },
+            }
             WidgetOutcome::PluginError(message) => {
                 if is_monitor_widget {
                     slot.connection.monitor_widget.last_error = Some(message);
@@ -473,8 +475,10 @@ impl Farol {
         let Some(form) = slot.connection.setup_form.as_mut() else {
             return;
         };
-        if let Some((_, current_value)) =
-            form.fields.iter_mut().find(|(item, _)| item.name == field_name)
+        if let Some((_, current_value)) = form
+            .fields
+            .iter_mut()
+            .find(|(item, _)| item.name == field_name)
         {
             *current_value = value;
         }
@@ -680,8 +684,9 @@ fn merge_widget_items(
                 .into_iter()
                 .map(|item| {
                     let mut view_model = RepositoryViewModel::from(item);
-                    if let Some(prev) =
-                        previous.iter().find(|prev| prev.repo.id == view_model.repo.id)
+                    if let Some(prev) = previous
+                        .iter()
+                        .find(|prev| prev.repo.id == view_model.repo.id)
                     {
                         view_model.fetch_in_flight = prev.fetch_in_flight;
                         view_model.last_error = prev.last_error.clone();
@@ -712,7 +717,9 @@ pub(crate) mod tests {
     /// generalização em `Vec<PluginSlot>`.
     fn farol_with_widget(suggested_ms: Option<u64>) -> Farol {
         let mut app = Farol::default();
-        let slot = app.slot_mut("git-local").expect("git-local é um plugin conhecido");
+        let slot = app
+            .slot_mut("git-local")
+            .expect("git-local é um plugin conhecido");
         slot.connection.state = PluginState::Ready;
         slot.connection.identity = Some(PluginIdentity {
             plugin_name: "git-local".to_string(),
@@ -764,7 +771,10 @@ pub(crate) mod tests {
             .iter()
             .find(|slot| slot.spawn_config.plugin_name == "git-local")
             .unwrap();
-        assert_eq!(refresh_interval(&slot.connection), Duration::from_millis(5_000));
+        assert_eq!(
+            refresh_interval(&slot.connection),
+            Duration::from_millis(5_000)
+        );
     }
 
     #[test]
@@ -830,11 +840,13 @@ pub(crate) mod tests {
         app.handle_handshake_outcome(
             "git-local",
             HandshakeOutcome::Ready {
-                result: sample_handshake_result(vec![farol_protocol::messages::RequiredConfigItem {
-                    name: "base_url".to_string(),
-                    secret: false,
-                    description: "URL base".to_string(),
-                }]),
+                result: sample_handshake_result(vec![
+                    farol_protocol::messages::RequiredConfigItem {
+                        name: "base_url".to_string(),
+                        secret: false,
+                        description: "URL base".to_string(),
+                    },
+                ]),
                 all_required_config_present: false,
             },
         );
@@ -1192,7 +1204,9 @@ pub(crate) mod tests {
     /// docstring do módulo.
     pub(crate) fn farol_with_monitor_widget() -> Farol {
         let mut app = Farol::default();
-        let slot = app.slot_mut("uptime-kuma").expect("uptime-kuma é um plugin conhecido");
+        let slot = app
+            .slot_mut("uptime-kuma")
+            .expect("uptime-kuma é um plugin conhecido");
         slot.connection.state = PluginState::Ready;
         slot.connection.identity = Some(PluginIdentity {
             plugin_name: "uptime-kuma".to_string(),
@@ -1256,7 +1270,9 @@ pub(crate) mod tests {
                 result: farol_protocol::HandshakeHelloResult {
                     protocol_version: ProtocolVersion::new(0, 2),
                     plugin_name: "uptime-kuma".to_string(),
-                    capabilities: CapabilityManifest { capabilities: vec![] },
+                    capabilities: CapabilityManifest {
+                        capabilities: vec![],
+                    },
                     required_config: required_config.clone(),
                     widgets: vec![farol_protocol::WidgetDeclaration {
                         id: "uptime-kuma-monitors".to_string(),
@@ -1394,8 +1410,18 @@ pub(crate) mod tests {
 
         let slot = app.slot_mut("uptime-kuma").unwrap();
         let form = slot.connection.setup_form.as_ref().unwrap();
-        let base_url_value = &form.fields.iter().find(|(item, _)| item.name == "base_url").unwrap().1;
-        let api_key_value = &form.fields.iter().find(|(item, _)| item.name == "api_key").unwrap().1;
+        let base_url_value = &form
+            .fields
+            .iter()
+            .find(|(item, _)| item.name == "base_url")
+            .unwrap()
+            .1;
+        let api_key_value = &form
+            .fields
+            .iter()
+            .find(|(item, _)| item.name == "api_key")
+            .unwrap()
+            .1;
         assert_eq!(base_url_value, "");
         assert_eq!(api_key_value, "s3cr3t");
     }
@@ -1444,7 +1470,9 @@ pub(crate) mod tests {
             slot.connection.identity = Some(PluginIdentity {
                 plugin_name: "uptime-kuma".to_string(),
                 protocol_version: ProtocolVersion::new(0, 2),
-                capabilities: CapabilityManifest { capabilities: vec![] },
+                capabilities: CapabilityManifest {
+                    capabilities: vec![],
+                },
             });
             let (sender, _receiver) = iced::futures::channel::mpsc::channel::<WorkerInput>(16);
             slot.worker_sender = Some(sender);
@@ -1483,7 +1511,10 @@ pub(crate) mod tests {
     fn subscription_does_not_panic_after_setup_attempt_increments() {
         let mut app = Farol::default();
         let _ = app.subscription();
-        app.slot_mut("uptime-kuma").unwrap().connection.setup_attempt = 1;
+        app.slot_mut("uptime-kuma")
+            .unwrap()
+            .connection
+            .setup_attempt = 1;
         let _ = app.subscription();
         assert_eq!(app.plugins.len(), 2);
     }

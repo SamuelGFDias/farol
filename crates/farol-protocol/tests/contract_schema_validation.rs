@@ -51,8 +51,8 @@ use farol_protocol::{
     ActionDeclaration, ActionInvokeParams, ActionInvokeRequest, ActionInvokeResponse,
     ActionInvokeResult, ActionTarget, CapabilityManifest, ErrorData, ErrorObject, GitRepository,
     HandshakeHello, HandshakeHelloRequest, HandshakeHelloResponse, HandshakeHelloResult,
-    ProtocolVersion, RemoteStatus, RequestId, WidgetDeclaration, WidgetGetParams,
-    WidgetGetRequest, WidgetGetResponse, WidgetGetResult, WidgetItem,
+    ProtocolVersion, RemoteStatus, RequestId, WidgetDeclaration, WidgetGetParams, WidgetGetRequest,
+    WidgetGetResponse, WidgetGetResult, WidgetItem,
 };
 
 // Conteúdo bruto dos 4 schemas normativos, embutido em tempo de compilação. Caminho relativo a
@@ -72,10 +72,14 @@ struct Schemas {
 }
 
 fn load_schemas() -> Schemas {
-    let handshake_value: Value = serde_json::from_str(HANDSHAKE_SCHEMA).expect("handshake.schema.json inválido");
-    let widget_value: Value = serde_json::from_str(WIDGET_SCHEMA).expect("widget.schema.json inválido");
-    let action_value: Value = serde_json::from_str(ACTION_SCHEMA).expect("action.schema.json inválido");
-    let error_value: Value = serde_json::from_str(ERROR_SCHEMA).expect("error.schema.json inválido");
+    let handshake_value: Value =
+        serde_json::from_str(HANDSHAKE_SCHEMA).expect("handshake.schema.json inválido");
+    let widget_value: Value =
+        serde_json::from_str(WIDGET_SCHEMA).expect("widget.schema.json inválido");
+    let action_value: Value =
+        serde_json::from_str(ACTION_SCHEMA).expect("action.schema.json inválido");
+    let error_value: Value =
+        serde_json::from_str(ERROR_SCHEMA).expect("error.schema.json inválido");
 
     // Os 4 documentos são registrados sob suas próprias URLs `$id` para que `$ref` absolutos
     // (ex.: `https://farol.dev/protocol/v0.2/error.schema.json`) resolvam entre eles.
@@ -159,7 +163,12 @@ fn handshake_hello_request_matches_schema() {
         },
     );
     let instance = serde_json::to_value(&req).unwrap();
-    assert_valid(&schemas.handshake, &instance, "handshake.schema.json", "HandshakeHelloRequest positivo");
+    assert_valid(
+        &schemas.handshake,
+        &instance,
+        "handshake.schema.json",
+        "HandshakeHelloRequest positivo",
+    );
 }
 
 #[test]
@@ -185,7 +194,12 @@ fn handshake_hello_response_success_matches_schema() {
         },
     };
     let instance = serde_json::to_value(&resp).unwrap();
-    assert_valid(&schemas.handshake, &instance, "handshake.schema.json", "HandshakeHelloResponse::Success positivo (capability exec)");
+    assert_valid(
+        &schemas.handshake,
+        &instance,
+        "handshake.schema.json",
+        "HandshakeHelloResponse::Success positivo (capability exec)",
+    );
 }
 
 /// Caso positivo novo: capacidade `network` (`host`/`port`), declarada por um plugin como
@@ -218,7 +232,12 @@ fn handshake_hello_response_success_with_network_capability_matches_schema() {
         },
     };
     let instance = serde_json::to_value(&resp).unwrap();
-    assert_valid(&schemas.handshake, &instance, "handshake.schema.json", "HandshakeHelloResponse::Success com capability network");
+    assert_valid(
+        &schemas.handshake,
+        &instance,
+        "handshake.schema.json",
+        "HandshakeHelloResponse::Success com capability network",
+    );
 }
 
 /// Caso positivo novo: `required_config` não-vazio (`RequiredConfigItem`), um item não-secreto
@@ -233,7 +252,9 @@ fn handshake_hello_response_success_with_required_config_matches_schema() {
         result: HandshakeHelloResult {
             protocol_version: ProtocolVersion::new(0, 2),
             plugin_name: "uptime-kuma".to_string(),
-            capabilities: CapabilityManifest { capabilities: vec![] },
+            capabilities: CapabilityManifest {
+                capabilities: vec![],
+            },
             required_config: vec![
                 RequiredConfigItem {
                     name: "base_url".to_string(),
@@ -256,7 +277,12 @@ fn handshake_hello_response_success_with_required_config_matches_schema() {
         },
     };
     let instance = serde_json::to_value(&resp).unwrap();
-    assert_valid(&schemas.handshake, &instance, "handshake.schema.json", "HandshakeHelloResponse::Success com required_config não-vazio");
+    assert_valid(
+        &schemas.handshake,
+        &instance,
+        "handshake.schema.json",
+        "HandshakeHelloResponse::Success com required_config não-vazio",
+    );
 }
 
 #[test]
@@ -275,7 +301,12 @@ fn handshake_hello_response_error_matches_schema() {
         },
     };
     let instance = serde_json::to_value(&resp).unwrap();
-    assert_valid(&schemas.handshake, &instance, "handshake.schema.json", "HandshakeHelloResponse::Error positivo");
+    assert_valid(
+        &schemas.handshake,
+        &instance,
+        "handshake.schema.json",
+        "HandshakeHelloResponse::Error positivo",
+    );
 }
 
 /// Caso negativo: `HandshakeHelloParams` sem `core_name` (campo obrigatório) — nenhuma das 3
@@ -292,7 +323,12 @@ fn handshake_request_missing_core_name_is_rejected() {
             // "core_name" ausente de propósito
         }
     });
-    assert_invalid(&schemas.handshake, &instance, "handshake.schema.json", "HandshakeHelloRequest sem core_name");
+    assert_invalid(
+        &schemas.handshake,
+        &instance,
+        "handshake.schema.json",
+        "HandshakeHelloRequest sem core_name",
+    );
 }
 
 /// Caso negativo: `HandshakeHelloResult` sem `required_config` (campo obrigatório em v0.2,
@@ -313,7 +349,12 @@ fn handshake_result_missing_required_config_is_rejected() {
             "actions": []
         }
     });
-    assert_invalid(&schemas.handshake, &instance, "handshake.schema.json", "HandshakeHelloResult sem required_config");
+    assert_invalid(
+        &schemas.handshake,
+        &instance,
+        "handshake.schema.json",
+        "HandshakeHelloResult sem required_config",
+    );
 }
 
 // -------------------------------------------------------------------------------------------
@@ -330,7 +371,12 @@ fn widget_get_request_matches_schema() {
         },
     );
     let instance = serde_json::to_value(&req).unwrap();
-    assert_valid(&schemas.widget, &instance, "widget.schema.json", "WidgetGetRequest positivo");
+    assert_valid(
+        &schemas.widget,
+        &instance,
+        "widget.schema.json",
+        "WidgetGetRequest positivo",
+    );
 }
 
 #[test]
@@ -366,7 +412,12 @@ fn widget_get_result_matches_schema() {
         },
     };
     let instance = serde_json::to_value(&resp).unwrap();
-    assert_valid(&schemas.widget, &instance, "widget.schema.json", "WidgetGetResult positivo (com item git, WidgetItems::Git)");
+    assert_valid(
+        &schemas.widget,
+        &instance,
+        "widget.schema.json",
+        "WidgetGetResult positivo (com item git, WidgetItems::Git)",
+    );
 }
 
 /// Caso positivo novo: `WidgetGetResult` com `items: WidgetItems::Monitor(...)` — o novo
@@ -395,7 +446,12 @@ fn widget_get_result_with_monitor_items_matches_schema() {
         },
     };
     let instance = serde_json::to_value(&resp).unwrap();
-    assert_valid(&schemas.widget, &instance, "widget.schema.json", "WidgetGetResult positivo (monitor-status-grid, WidgetItems::Monitor)");
+    assert_valid(
+        &schemas.widget,
+        &instance,
+        "widget.schema.json",
+        "WidgetGetResult positivo (monitor-status-grid, WidgetItems::Monitor)",
+    );
 }
 
 /// Caso positivo: `items: []` com `anyOf` (correção da definição em `widget.schema.json` v0.2).
@@ -414,7 +470,12 @@ fn widget_get_result_with_empty_items_matches_schema_via_any_of() {
         "id": 1,
         "result": { "widget_id": "repo-status", "items": [] }
     });
-    assert_valid(&schemas.widget, &instance, "widget.schema.json", "WidgetGetResult com items vazio (anyOf discriminado)");
+    assert_valid(
+        &schemas.widget,
+        &instance,
+        "widget.schema.json",
+        "WidgetGetResult com items vazio (anyOf discriminado)",
+    );
 }
 
 /// Caso negativo: `GitRepository` sem `remote_status` (campo obrigatório).
@@ -443,7 +504,12 @@ fn widget_get_result_missing_remote_status_is_rejected() {
             }]
         }
     });
-    assert_invalid(&schemas.widget, &instance, "widget.schema.json", "GitRepository sem remote_status");
+    assert_invalid(
+        &schemas.widget,
+        &instance,
+        "widget.schema.json",
+        "GitRepository sem remote_status",
+    );
 }
 
 /// Caso negativo: `MonitorStatusItem` com `status` fora do vocabulário conhecido
@@ -463,7 +529,12 @@ fn widget_get_result_monitor_item_with_invalid_status_is_rejected() {
             }]
         }
     });
-    assert_invalid(&schemas.widget, &instance, "widget.schema.json", "MonitorStatusItem com status inválido");
+    assert_invalid(
+        &schemas.widget,
+        &instance,
+        "widget.schema.json",
+        "MonitorStatusItem com status inválido",
+    );
 }
 
 // -------------------------------------------------------------------------------------------
@@ -484,7 +555,12 @@ fn action_invoke_request_matches_schema() {
         },
     );
     let instance = serde_json::to_value(&req).unwrap();
-    assert_valid(&schemas.action, &instance, "action.schema.json", "ActionInvokeRequest positivo");
+    assert_valid(
+        &schemas.action,
+        &instance,
+        "action.schema.json",
+        "ActionInvokeRequest positivo",
+    );
 }
 
 #[test]
@@ -504,7 +580,12 @@ fn action_invoke_response_success_matches_schema() {
         },
     };
     let instance = serde_json::to_value(&resp).unwrap();
-    assert_valid(&schemas.action, &instance, "action.schema.json", "ActionInvokeResponse::Success positivo");
+    assert_valid(
+        &schemas.action,
+        &instance,
+        "action.schema.json",
+        "ActionInvokeResponse::Success positivo",
+    );
 }
 
 #[test]
@@ -523,7 +604,12 @@ fn action_invoke_response_error_matches_schema() {
         },
     };
     let instance = serde_json::to_value(&resp).unwrap();
-    assert_valid(&schemas.action, &instance, "action.schema.json", "ActionInvokeResponse::Error positivo");
+    assert_valid(
+        &schemas.action,
+        &instance,
+        "action.schema.json",
+        "ActionInvokeResponse::Error positivo",
+    );
 }
 
 /// Caso negativo: `ActionInvokeParams` sem `target` (campo obrigatório).
@@ -539,7 +625,12 @@ fn action_invoke_request_missing_target_is_rejected() {
             // "target" ausente de propósito
         }
     });
-    assert_invalid(&schemas.action, &instance, "action.schema.json", "ActionInvokeRequest sem target");
+    assert_invalid(
+        &schemas.action,
+        &instance,
+        "action.schema.json",
+        "ActionInvokeRequest sem target",
+    );
 }
 
 // -------------------------------------------------------------------------------------------
@@ -558,7 +649,12 @@ fn error_object_matches_schema() {
         }),
     };
     let instance = serde_json::to_value(&error).unwrap();
-    assert_valid(&schemas.error, &instance, "error.schema.json", "ErrorObject positivo (com data.reason)");
+    assert_valid(
+        &schemas.error,
+        &instance,
+        "error.schema.json",
+        "ErrorObject positivo (com data.reason)",
+    );
 }
 
 /// Caso positivo adicional: `ErrorObject` sem `data` — o campo é opcional no schema (só
@@ -573,7 +669,12 @@ fn error_object_without_data_matches_schema() {
         data: None,
     };
     let instance = serde_json::to_value(&error).unwrap();
-    assert_valid(&schemas.error, &instance, "error.schema.json", "ErrorObject positivo sem data");
+    assert_valid(
+        &schemas.error,
+        &instance,
+        "error.schema.json",
+        "ErrorObject positivo sem data",
+    );
 }
 
 /// Caso positivo adicional: os três novos `reason`s de v0.2 (`not_configured`,
@@ -597,7 +698,12 @@ fn error_object_with_uptime_kuma_reasons_matches_schema() {
             }),
         };
         let instance = serde_json::to_value(&error).unwrap();
-        assert_valid(&schemas.error, &instance, "error.schema.json", &format!("ErrorObject com reason '{reason}'"));
+        assert_valid(
+            &schemas.error,
+            &instance,
+            "error.schema.json",
+            &format!("ErrorObject com reason '{reason}'"),
+        );
     }
 }
 
@@ -609,5 +715,10 @@ fn error_object_missing_message_is_rejected() {
         "code": -32000
         // "message" ausente de propósito
     });
-    assert_invalid(&schemas.error, &instance, "error.schema.json", "ErrorObject sem message");
+    assert_invalid(
+        &schemas.error,
+        &instance,
+        "error.schema.json",
+        "ErrorObject sem message",
+    );
 }

@@ -235,7 +235,8 @@ fn numeric_and_null_boundary_cases(property_schema: &Value) -> Vec<BoundaryCase>
         (None, None) => {}
     }
 
-    let type_is_numeric = type_includes(property_schema, "integer") || type_includes(property_schema, "number");
+    let type_is_numeric =
+        type_includes(property_schema, "integer") || type_includes(property_schema, "number");
     if minimum.is_none() && exclusive_minimum.is_none() && type_is_numeric {
         cases.push(BoundaryCase {
             kind: BoundaryKind::NoMinimumNegative,
@@ -338,19 +339,35 @@ fn generator_derives_boundary_values_from_the_schemas_own_declared_minimum_and_m
     let schema = json!({"type": "integer", "minimum": 10, "maximum": 20});
     let cases = numeric_and_null_boundary_cases(&schema);
     assert_eq!(
-        cases.iter().find(|c| c.kind == BoundaryKind::MinimumMinusOne).unwrap().value,
+        cases
+            .iter()
+            .find(|c| c.kind == BoundaryKind::MinimumMinusOne)
+            .unwrap()
+            .value,
         Some(json!(9))
     );
     assert_eq!(
-        cases.iter().find(|c| c.kind == BoundaryKind::Minimum).unwrap().value,
+        cases
+            .iter()
+            .find(|c| c.kind == BoundaryKind::Minimum)
+            .unwrap()
+            .value,
         Some(json!(10))
     );
     assert_eq!(
-        cases.iter().find(|c| c.kind == BoundaryKind::MaximumPlusOne).unwrap().value,
+        cases
+            .iter()
+            .find(|c| c.kind == BoundaryKind::MaximumPlusOne)
+            .unwrap()
+            .value,
         Some(json!(21))
     );
     assert_eq!(
-        cases.iter().find(|c| c.kind == BoundaryKind::Maximum).unwrap().value,
+        cases
+            .iter()
+            .find(|c| c.kind == BoundaryKind::Maximum)
+            .unwrap()
+            .value,
         Some(json!(20))
     );
 
@@ -359,11 +376,19 @@ fn generator_derives_boundary_values_from_the_schemas_own_declared_minimum_and_m
     let changed = json!({"type": "integer", "minimum": 100, "maximum": 200});
     let changed_cases = numeric_and_null_boundary_cases(&changed);
     assert_eq!(
-        changed_cases.iter().find(|c| c.kind == BoundaryKind::Minimum).unwrap().value,
+        changed_cases
+            .iter()
+            .find(|c| c.kind == BoundaryKind::Minimum)
+            .unwrap()
+            .value,
         Some(json!(100))
     );
     assert_eq!(
-        changed_cases.iter().find(|c| c.kind == BoundaryKind::MinimumMinusOne).unwrap().value,
+        changed_cases
+            .iter()
+            .find(|c| c.kind == BoundaryKind::MinimumMinusOne)
+            .unwrap()
+            .value,
         Some(json!(99))
     );
 }
@@ -382,7 +407,9 @@ fn generator_no_minimum_negative_only_when_schema_truly_has_no_lower_bound() {
     let bounded = json!({"type": "integer", "minimum": 0});
     let bounded_cases = numeric_and_null_boundary_cases(&bounded);
     assert!(
-        !bounded_cases.iter().any(|c| c.kind == BoundaryKind::NoMinimumNegative),
+        !bounded_cases
+            .iter()
+            .any(|c| c.kind == BoundaryKind::NoMinimumNegative),
         "NoMinimumNegative não deve ser gerado quando o schema já declara minimum"
     );
 }
@@ -418,7 +445,13 @@ fn handshake_capability_network_port_min_max_boundaries() {
     let base = json!({"kind": "network", "host": "kuma.example.com", "port": 443});
     for case in &cases {
         let instance = apply_case(&base, "port", case);
-        assert_case_matches_schema(&validator, "handshake.schema.json", pointer, case, &instance);
+        assert_case_matches_schema(
+            &validator,
+            "handshake.schema.json",
+            pointer,
+            case,
+            &instance,
+        );
         if case.expected_schema_valid {
             assert_case_deserializes::<Capability>(
                 "handshake.schema.json",
@@ -461,7 +494,13 @@ fn handshake_widget_declaration_suggested_refresh_interval_ms_boundaries() {
     });
     for case in &cases {
         let instance = apply_case(&base, "suggested_refresh_interval_ms", case);
-        assert_case_matches_schema(&validator, "handshake.schema.json", pointer, case, &instance);
+        assert_case_matches_schema(
+            &validator,
+            "handshake.schema.json",
+            pointer,
+            case,
+            &instance,
+        );
         if case.expected_schema_valid {
             assert_case_deserializes::<WidgetDeclaration>(
                 "handshake.schema.json",
@@ -529,7 +568,13 @@ fn widget_monitor_status_item_response_time_ms_null_and_missing_required() {
 
     let null_case = cases.iter().find(|c| c.kind == BoundaryKind::Null).unwrap();
     let null_instance = apply_case(&base, "response_time_ms", null_case);
-    assert_case_matches_schema(&validator, "widget.schema.json", pointer, null_case, &null_instance);
+    assert_case_matches_schema(
+        &validator,
+        "widget.schema.json",
+        pointer,
+        null_case,
+        &null_instance,
+    );
     assert_case_deserializes::<MonitorStatusItem>(
         "widget.schema.json",
         pointer,
@@ -662,7 +707,13 @@ fn action_declaration_timeout_hint_ms_boundaries() {
     });
     for case in &cases {
         let instance = apply_case(&base, "timeout_hint_ms", case);
-        assert_case_matches_schema(&validator, "handshake.schema.json", pointer, case, &instance);
+        assert_case_matches_schema(
+            &validator,
+            "handshake.schema.json",
+            pointer,
+            case,
+            &instance,
+        );
         if case.expected_schema_valid {
             assert_case_deserializes::<ActionDeclaration>(
                 "handshake.schema.json",
@@ -722,7 +773,13 @@ fn error_object_code_and_message_boundaries() {
         .find(|c| c.kind == BoundaryKind::NoMinimumNegative)
         .expect("gerador deveria produzir NoMinimumNegative para ErrorObject.code (sem minimum, type integer)");
     let instance = apply_case(&base, "code", no_min_negative);
-    assert_case_matches_schema(&validator, "error.schema.json", code_pointer, no_min_negative, &instance);
+    assert_case_matches_schema(
+        &validator,
+        "error.schema.json",
+        code_pointer,
+        no_min_negative,
+        &instance,
+    );
     assert_case_deserializes::<ErrorObject>(
         "error.schema.json",
         code_pointer,
@@ -761,8 +818,10 @@ fn error_object_code_and_message_boundaries() {
 #[test]
 fn error_data_reason_has_no_applicable_numeric_or_null_boundary_case() {
     let schemas = load_schema_set();
-    let reason_schema =
-        schemas.at(&schemas.error, "/$defs/ErrorObject/properties/data/properties/reason");
+    let reason_schema = schemas.at(
+        &schemas.error,
+        "/$defs/ErrorObject/properties/data/properties/reason",
+    );
     assert!(
         numeric_and_null_boundary_cases(reason_schema).is_empty(),
         "T015: data.reason é string livre — nenhum boundary_kind numérico/nulo esperado; se isto \

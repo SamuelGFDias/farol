@@ -99,16 +99,15 @@ mod tests {
 
     #[test]
     fn load_all_secrets_from_missing_file_is_empty() {
-        let path = PathBuf::from("/definitely/does/not/exist/farol-secrets-store-test/secrets.toml");
+        let path =
+            PathBuf::from("/definitely/does/not/exist/farol-secrets-store-test/secrets.toml");
         assert!(load_all_secrets_from(&path).is_empty());
     }
 
     #[test]
     fn save_and_load_round_trip_forces_0600() {
-        let dir = std::env::temp_dir().join(format!(
-            "farol-secrets-store-test-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("farol-secrets-store-test-{}", std::process::id()));
         fs::create_dir_all(&dir).unwrap();
         let path = dir.join("secrets.toml");
 

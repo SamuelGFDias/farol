@@ -227,8 +227,11 @@ impl HarnessFixture {
         fs::create_dir_all(&repo).expect("criar scan_root da fixture");
 
         git(&repo, &["init", "--quiet", "--initial-branch=main"]);
-        fs::write(repo.join("README.md"), "fixture determinística do harness\n")
-            .expect("escrever arquivo da fixture");
+        fs::write(
+            repo.join("README.md"),
+            "fixture determinística do harness\n",
+        )
+        .expect("escrever arquivo da fixture");
         git(&repo, &["add", "README.md"]);
         git(
             &repo,
@@ -248,7 +251,11 @@ impl HarnessFixture {
         // `git` local se comportar de forma inesperada, o teste falha aqui,
         // com causa óbvia, em vez de mais tarde por um sintoma indireto.
         let head = git(&repo, &["rev-parse", "--verify", "HEAD"]);
-        assert_eq!(head.len(), 40, "HEAD da fixture deveria ser um SHA-1: {head:?}");
+        assert_eq!(
+            head.len(),
+            40,
+            "HEAD da fixture deveria ser um SHA-1: {head:?}"
+        );
 
         let farol_config = base.join("xdg").join("farol");
         write_plugin_config(
@@ -282,7 +289,10 @@ impl HarnessFixture {
     /// comando/args de `plugin_worker::known_plugins()`, só sem a dependência
     /// de `cwd`.
     fn spawn_config(&self, plugin_name: &str) -> PluginSpawnConfig {
-        let main_py = repo_root().join("plugins").join(plugin_name).join("main.py");
+        let main_py = repo_root()
+            .join("plugins")
+            .join(plugin_name)
+            .join("main.py");
         assert!(
             main_py.is_file(),
             "o `main.py` de {plugin_name} deveria existir em {main_py:?}"
@@ -442,7 +452,10 @@ impl MetricsFixtureServer {
     fn start() -> Self {
         let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
             .expect("bind da fixture de /metrics em 127.0.0.1:0");
-        let port = listener.local_addr().expect("porta efêmera da fixture").port();
+        let port = listener
+            .local_addr()
+            .expect("porta efêmera da fixture")
+            .port();
         listener
             .set_nonblocking(true)
             .expect("listener não-bloqueante (para o laço poder observar o shutdown)");
@@ -504,7 +517,7 @@ fn accept_until_shutdown(
             Ok((stream, _)) => serve_metrics_connection(stream, authorized, unauthorized),
             Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
                 std::thread::sleep(Duration::from_millis(5));
-            },
+            }
             Err(_) => break,
         }
     }
@@ -533,7 +546,7 @@ fn serve_metrics_connection(
                 if request.windows(4).any(|window| window == b"\r\n\r\n") {
                     break;
                 }
-            },
+            }
             Err(_) => return,
         }
     }
@@ -557,7 +570,11 @@ fn serve_metrics_connection(
         http_response(401, "text/plain; charset=utf-8", "unauthorized\n")
     } else {
         authorized.fetch_add(1, Ordering::Relaxed);
-        http_response(200, "text/plain; version=0.0.4; charset=utf-8", METRICS_FIXTURE_BODY)
+        http_response(
+            200,
+            "text/plain; version=0.0.4; charset=utf-8",
+            METRICS_FIXTURE_BODY,
+        )
     };
 
     let _ = stream.write_all(response.as_bytes());
@@ -582,8 +599,7 @@ fn http_response(status: u16, content_type: &str, body: &str) -> String {
 /// crate por causa de uma única string de 25 bytes conhecida em tempo de
 /// compilação.
 fn base64_encode(input: &[u8]) -> String {
-    const ALPHABET: &[u8; 64] =
-        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
 
     let mut encoded = String::with_capacity(input.len().div_ceil(3) * 4);
     for chunk in input.chunks(3) {
@@ -681,7 +697,7 @@ where
                         .as_mut()
                         .expect("o Emulator do cenário só é consumido no encerramento")
                         .perform(program, action);
-                },
+                }
                 emulator::Event::Ready => return true,
                 emulator::Event::Failed(_) => return false,
             }
@@ -827,7 +843,7 @@ where
             emulator::Event::Ready => return,
             emulator::Event::Failed(instruction) => {
                 panic!("nenhuma instrução deveria estar em voo aqui, mas {instruction} falhou")
-            },
+            }
         }
     }
 }
@@ -1036,7 +1052,7 @@ fn emulator_takes_git_local_through_a_real_handshake_to_a_terminal_state() {
                 detail.contains("0.1") && detail.contains("0.2"),
                 "o detalhe deveria nomear as duas versões do handshake real, obteve: {detail:?}"
             );
-        },
+        }
         other => panic!(
             "esperava Unavailable{{VersionIncompatible}} (git-local fala 0.1, core fala 0.2 — \
              débito técnico #4), obteve {other:?}"
@@ -1118,7 +1134,9 @@ fn uptime_kuma_reaches_ready_and_populates_the_monitor_grid() {
     let expected = expected_monitors();
     let deadline = Instant::now() + STATE_TIMEOUT;
     loop {
-        harness.budget.check("espera pelo primeiro ciclo de widget/get com dados");
+        harness
+            .budget
+            .check("espera pelo primeiro ciclo de widget/get com dados");
 
         if expected
             .iter()
@@ -1144,7 +1162,16 @@ fn uptime_kuma_reaches_ready_and_populates_the_monitor_grid() {
 
     // A tela mostra os dados *derivados*, não só os nomes: status mapeado e
     // tempo de resposta formatado, incluindo o "—" do sentinela `-1`.
-    for text in ["Monitor", "Status", "Tempo de resposta", "up", "down", "42 ms", "7 ms", "—"] {
+    for text in [
+        "Monitor",
+        "Status",
+        "Tempo de resposta",
+        "up",
+        "down",
+        "42 ms",
+        "7 ms",
+        "—",
+    ] {
         assert!(
             harness.screen_shows(text),
             "o widget monitor-status-grid deveria renderizar {text:?}"

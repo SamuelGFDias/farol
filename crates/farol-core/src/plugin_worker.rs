@@ -70,9 +70,9 @@ use std::time::Duration;
 
 use farol_protocol::{
     decode, encode, ActionInvokeParams, ActionInvokeRequest, ActionInvokeResponse,
-    ActionInvokeResult, ActionTarget, HandshakeHello, HandshakeHelloRequest, HandshakeHelloResponse,
-    HandshakeHelloResult, ProtocolVersion, RequestId, WidgetGetParams, WidgetGetRequest,
-    WidgetGetResponse, WidgetGetResult,
+    ActionInvokeResult, ActionTarget, HandshakeHello, HandshakeHelloRequest,
+    HandshakeHelloResponse, HandshakeHelloResult, ProtocolVersion, RequestId, WidgetGetParams,
+    WidgetGetRequest, WidgetGetResponse, WidgetGetResult,
 };
 // `RequiredConfigItem` (novo em v0.2) ainda não está na lista de re-exports de
 // `crates/farol-protocol/src/lib.rs` (`pub use messages::{...}`) — gap na entrega prévia dessa
@@ -257,7 +257,10 @@ pub enum ActionOutcome {
     /// ou erro de I/O local ao falar com o processo — `target` identifica o
     /// repositório afetado para `update.rs` conseguir associar o erro sem
     /// depender de o plugin ecoar `target` de volta em `error.data`.
-    PluginError { target: ActionTarget, message: String },
+    PluginError {
+        target: ActionTarget,
+        message: String,
+    },
     /// A resposta não chegou dentro do orçamento (`RPC_TIMEOUT_ACTION` ou
     /// `timeout_hint_ms`) — reportado à UI como erro pontual daquela ação
     /// (equivalente a `-32002 action_timeout`, sintetizado pelo core, não
@@ -539,7 +542,13 @@ fn env_var_name(plugin_name: &str, item_name: &str) -> String {
 fn shout_snake(value: &str) -> String {
     value
         .chars()
-        .map(|c| if c.is_ascii_alphanumeric() { c.to_ascii_uppercase() } else { '_' })
+        .map(|c| {
+            if c.is_ascii_alphanumeric() {
+                c.to_ascii_uppercase()
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -550,7 +559,10 @@ fn shout_snake(value: &str) -> String {
 /// Ver [`stored_plugin_config_values`] para a nota de design completa sobre
 /// por que esta checagem é recomputada aqui, e não apenas "lembrada" da
 /// injeção de spawn.
-fn required_config_fully_present(plugin_name: &str, required_config: &[RequiredConfigItem]) -> bool {
+fn required_config_fully_present(
+    plugin_name: &str,
+    required_config: &[RequiredConfigItem],
+) -> bool {
     required_config.iter().all(|item| {
         crate::config_store::resolve_required_config_value(plugin_name, &item.name, item.secret)
             .is_some()
@@ -574,212 +586,216 @@ fn required_config_fully_present(plugin_name: &str, required_config: &[RequiredC
 /// partir do corpo do closure deixou de funcionar (`E0282: type annotations
 /// needed`) — daí `mut output: mpsc::Sender<WorkerEvent>`.
 fn worker(config: PluginSpawnConfig) -> impl Stream<Item = WorkerEvent> {
-    stream::channel(16, move |mut output: mpsc::Sender<WorkerEvent>| async move {
-        let mut command = Command::new(&config.command);
-        command
-            .args(&config.args)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .kill_on_drop(true);
+    stream::channel(
+        16,
+        move |mut output: mpsc::Sender<WorkerEvent>| async move {
+            let mut command = Command::new(&config.command);
+            command
+                .args(&config.args)
+                .stdin(Stdio::piped())
+                .stdout(Stdio::piped())
+                .stderr(Stdio::null())
+                .kill_on_drop(true);
 
-        // T018 (D8): injeta cada valor já persistido para este plugin como
-        // variável de ambiente do processo filho — ver a documentação de
-        // `stored_plugin_config_values` para a decisão de design completa
-        // (por que não filtrado por `required_config`, ainda desconhecido
-        // neste ponto).
-        for (key, value) in stored_plugin_config_values(&config.plugin_name) {
-            command.env(env_var_name(&config.plugin_name, &key), value);
-        }
-
-        let mut child = match command.spawn() {
-            Ok(child) => child,
-            Err(err) => {
-                let _ = output
-                    .send(WorkerEvent::SpawnFailed(format!(
-                        "falha ao iniciar '{} {}': {err}",
-                        config.command,
-                        config.args.join(" ")
-                    )))
-                    .await;
-                return;
+            // T018 (D8): injeta cada valor já persistido para este plugin como
+            // variável de ambiente do processo filho — ver a documentação de
+            // `stored_plugin_config_values` para a decisão de design completa
+            // (por que não filtrado por `required_config`, ainda desconhecido
+            // neste ponto).
+            for (key, value) in stored_plugin_config_values(&config.plugin_name) {
+                command.env(env_var_name(&config.plugin_name, &key), value);
             }
-        };
 
-        let Some(mut stdin) = child.stdin.take() else {
-            let _ = output
-                .send(WorkerEvent::SpawnFailed(
-                    "processo do plugin não expôs stdin".to_string(),
-                ))
-                .await;
-            return;
-        };
-        let Some(stdout) = child.stdout.take() else {
-            let _ = output
-                .send(WorkerEvent::SpawnFailed(
-                    "processo do plugin não expôs stdout".to_string(),
-                ))
-                .await;
-            return;
-        };
-        let mut reader = BufReader::new(stdout);
-
-        // D5, passo 2: registra o canal de entrada assim que o processo está
-        // de pé — antes mesmo do handshake terminar. `update.rs` só efetivamente
-        // usa este `Sender` depois que a conexão estiver `Ready` (T026), mas
-        // guardá-lo cedo simplifica o fluxo do worker (um único ponto de saída
-        // do `Sender`, sem estado intermediário extra).
-        let (input_sender, mut input_receiver) = mpsc::channel::<WorkerInput>(16);
-        if output.send(WorkerEvent::Ready(input_sender)).await.is_err() {
-            // A `Subscription` foi descartada pelo runtime (app encerrando) —
-            // nada a fazer além de deixar `child` ser dropado (kill_on_drop).
-            return;
-        }
-
-        // --- Handshake (T021, correção C1/T011) ---
-
-        let mut next_request_id: i64 = 2; // id=1 é o handshake em si.
-        let hello_request = HandshakeHelloRequest::new(
-            RequestId::Integer(1),
-            HandshakeHello {
-                protocol_version: CORE_PROTOCOL_VERSION,
-                core_name: CORE_NAME.to_string(),
-            },
-        );
-
-        let handshake_outcome = if write_line(&mut stdin, &hello_request).await.is_err() {
-            HandshakeOutcome::Unresponsive
-        } else {
-            match tokio::time::timeout(
-                RPC_TIMEOUT_CONTROL,
-                read_response::<serde_json::Value>(&mut reader),
-            )
-            .await
-            {
-                Err(_elapsed) => HandshakeOutcome::Unresponsive,
-                Ok(Err(_io_or_decode_error)) => HandshakeOutcome::Unresponsive,
-                Ok(Ok(None)) => HandshakeOutcome::Unresponsive, // EOF antes de responder.
-                Ok(Ok(Some(raw_value))) => {
-                    interpret_handshake_response(raw_value, &config.plugin_name)
-                }
-            }
-        };
-
-        let is_ready = matches!(handshake_outcome, HandshakeOutcome::Ready { .. });
-        if output
-            .send(WorkerEvent::HandshakeCompleted(handshake_outcome))
-            .await
-            .is_err()
-        {
-            return;
-        }
-        if !is_ready {
-            // `Unavailable` é terminal para este caso nesta feature
-            // (data-model.md §3) — o worker encerra; não há retry
-            // automático. (Quando `is_ready` é `true` mas
-            // `all_required_config_present` é `false` — `NotConfigured`,
-            // T019 — o worker segue vivo abaixo; é `update.rs` quem decide
-            // não chamar `widget/get` para essa conexão.)
-            return;
-        }
-
-        // --- Ciclo de widget/get e action/invoke (T026, T033), com
-        // detecção concorrente de crash (T038, D6) ---
-        //
-        // Cada `tokio::select!` abaixo corre `wait_for_crash(&mut child)`
-        // ao lado da operação normal — tanto no período ocioso (esperando o
-        // próximo `WorkerInput`) quanto durante o próprio ciclo de I/O de
-        // uma requisição já em voo. Se o processo morrer em qualquer um
-        // desses momentos, o branch de crash vence a corrida e o worker
-        // emite `WorkerEvent::Crashed` imediatamente, sem esperar nenhum
-        // timeout de RPC.
-
-        loop {
-            let input = tokio::select! {
-                detail = wait_for_crash(&mut child) => {
-                    let _ = output.send(WorkerEvent::Crashed(detail)).await;
+            let mut child = match command.spawn() {
+                Ok(child) => child,
+                Err(err) => {
+                    let _ = output
+                        .send(WorkerEvent::SpawnFailed(format!(
+                            "falha ao iniciar '{} {}': {err}",
+                            config.command,
+                            config.args.join(" ")
+                        )))
+                        .await;
                     return;
                 }
-                maybe_input = input_receiver.next() => maybe_input,
             };
 
-            let Some(input) = input else {
-                // Canal de entrada fechado — o lado core (`Farol`) foi
-                // descartado (app encerrando). Nada a fazer além de deixar
-                // `child` ser dropado (`kill_on_drop`).
+            let Some(mut stdin) = child.stdin.take() else {
+                let _ = output
+                    .send(WorkerEvent::SpawnFailed(
+                        "processo do plugin não expôs stdin".to_string(),
+                    ))
+                    .await;
                 return;
             };
+            let Some(stdout) = child.stdout.take() else {
+                let _ = output
+                    .send(WorkerEvent::SpawnFailed(
+                        "processo do plugin não expôs stdout".to_string(),
+                    ))
+                    .await;
+                return;
+            };
+            let mut reader = BufReader::new(stdout);
 
-            match input {
-                WorkerInput::RequestWidget { widget_id } => {
-                    let request_id = RequestId::Integer(next_request_id);
-                    next_request_id += 1;
-                    let request = WidgetGetRequest::new(request_id, WidgetGetParams { widget_id });
+            // D5, passo 2: registra o canal de entrada assim que o processo está
+            // de pé — antes mesmo do handshake terminar. `update.rs` só efetivamente
+            // usa este `Sender` depois que a conexão estiver `Ready` (T026), mas
+            // guardá-lo cedo simplifica o fluxo do worker (um único ponto de saída
+            // do `Sender`, sem estado intermediário extra).
+            let (input_sender, mut input_receiver) = mpsc::channel::<WorkerInput>(16);
+            if output.send(WorkerEvent::Ready(input_sender)).await.is_err() {
+                // A `Subscription` foi descartada pelo runtime (app encerrando) —
+                // nada a fazer além de deixar `child` ser dropado (kill_on_drop).
+                return;
+            }
 
-                    let widget_outcome = tokio::select! {
-                        detail = wait_for_crash(&mut child) => {
-                            let _ = output.send(WorkerEvent::Crashed(detail)).await;
-                            return;
-                        }
-                        outcome = perform_widget_get(&mut stdin, &mut reader, request) => outcome,
-                    };
+            // --- Handshake (T021, correção C1/T011) ---
 
-                    let is_unresponsive = matches!(widget_outcome, WidgetOutcome::Unresponsive);
-                    if output
-                        .send(WorkerEvent::WidgetGetCompleted(widget_outcome))
-                        .await
-                        .is_err()
-                    {
-                        return;
-                    }
-                    if is_unresponsive {
-                        // D6: timeout num ciclo de refresh marca a conexão
-                        // inteira como indisponível — o worker encerra, sem
-                        // tentar de novo.
-                        return;
+            let mut next_request_id: i64 = 2; // id=1 é o handshake em si.
+            let hello_request = HandshakeHelloRequest::new(
+                RequestId::Integer(1),
+                HandshakeHello {
+                    protocol_version: CORE_PROTOCOL_VERSION,
+                    core_name: CORE_NAME.to_string(),
+                },
+            );
+
+            let handshake_outcome = if write_line(&mut stdin, &hello_request).await.is_err() {
+                HandshakeOutcome::Unresponsive
+            } else {
+                match tokio::time::timeout(
+                    RPC_TIMEOUT_CONTROL,
+                    read_response::<serde_json::Value>(&mut reader),
+                )
+                .await
+                {
+                    Err(_elapsed) => HandshakeOutcome::Unresponsive,
+                    Ok(Err(_io_or_decode_error)) => HandshakeOutcome::Unresponsive,
+                    Ok(Ok(None)) => HandshakeOutcome::Unresponsive, // EOF antes de responder.
+                    Ok(Ok(Some(raw_value))) => {
+                        interpret_handshake_response(raw_value, &config.plugin_name)
                     }
                 }
-                WorkerInput::InvokeAction {
-                    action_id,
-                    target,
-                    timeout_hint_ms,
-                } => {
-                    let request_id = RequestId::Integer(next_request_id);
-                    next_request_id += 1;
-                    let timeout = timeout_hint_ms
-                        .map(Duration::from_millis)
-                        .unwrap_or(RPC_TIMEOUT_ACTION);
-                    let request = ActionInvokeRequest::new(
-                        request_id,
-                        ActionInvokeParams {
-                            action_id,
-                            target: target.clone(),
-                        },
-                    );
+            };
 
-                    let action_outcome = tokio::select! {
-                        detail = wait_for_crash(&mut child) => {
-                            let _ = output.send(WorkerEvent::Crashed(detail)).await;
+            let is_ready = matches!(handshake_outcome, HandshakeOutcome::Ready { .. });
+            if output
+                .send(WorkerEvent::HandshakeCompleted(handshake_outcome))
+                .await
+                .is_err()
+            {
+                return;
+            }
+            if !is_ready {
+                // `Unavailable` é terminal para este caso nesta feature
+                // (data-model.md §3) — o worker encerra; não há retry
+                // automático. (Quando `is_ready` é `true` mas
+                // `all_required_config_present` é `false` — `NotConfigured`,
+                // T019 — o worker segue vivo abaixo; é `update.rs` quem decide
+                // não chamar `widget/get` para essa conexão.)
+                return;
+            }
+
+            // --- Ciclo de widget/get e action/invoke (T026, T033), com
+            // detecção concorrente de crash (T038, D6) ---
+            //
+            // Cada `tokio::select!` abaixo corre `wait_for_crash(&mut child)`
+            // ao lado da operação normal — tanto no período ocioso (esperando o
+            // próximo `WorkerInput`) quanto durante o próprio ciclo de I/O de
+            // uma requisição já em voo. Se o processo morrer em qualquer um
+            // desses momentos, o branch de crash vence a corrida e o worker
+            // emite `WorkerEvent::Crashed` imediatamente, sem esperar nenhum
+            // timeout de RPC.
+
+            loop {
+                let input = tokio::select! {
+                    detail = wait_for_crash(&mut child) => {
+                        let _ = output.send(WorkerEvent::Crashed(detail)).await;
+                        return;
+                    }
+                    maybe_input = input_receiver.next() => maybe_input,
+                };
+
+                let Some(input) = input else {
+                    // Canal de entrada fechado — o lado core (`Farol`) foi
+                    // descartado (app encerrando). Nada a fazer além de deixar
+                    // `child` ser dropado (`kill_on_drop`).
+                    return;
+                };
+
+                match input {
+                    WorkerInput::RequestWidget { widget_id } => {
+                        let request_id = RequestId::Integer(next_request_id);
+                        next_request_id += 1;
+                        let request =
+                            WidgetGetRequest::new(request_id, WidgetGetParams { widget_id });
+
+                        let widget_outcome = tokio::select! {
+                            detail = wait_for_crash(&mut child) => {
+                                let _ = output.send(WorkerEvent::Crashed(detail)).await;
+                                return;
+                            }
+                            outcome = perform_widget_get(&mut stdin, &mut reader, request) => outcome,
+                        };
+
+                        let is_unresponsive = matches!(widget_outcome, WidgetOutcome::Unresponsive);
+                        if output
+                            .send(WorkerEvent::WidgetGetCompleted(widget_outcome))
+                            .await
+                            .is_err()
+                        {
                             return;
                         }
-                        outcome = perform_action_invoke(&mut stdin, &mut reader, request, target, timeout) => outcome,
-                    };
+                        if is_unresponsive {
+                            // D6: timeout num ciclo de refresh marca a conexão
+                            // inteira como indisponível — o worker encerra, sem
+                            // tentar de novo.
+                            return;
+                        }
+                    }
+                    WorkerInput::InvokeAction {
+                        action_id,
+                        target,
+                        timeout_hint_ms,
+                    } => {
+                        let request_id = RequestId::Integer(next_request_id);
+                        next_request_id += 1;
+                        let timeout = timeout_hint_ms
+                            .map(Duration::from_millis)
+                            .unwrap_or(RPC_TIMEOUT_ACTION);
+                        let request = ActionInvokeRequest::new(
+                            request_id,
+                            ActionInvokeParams {
+                                action_id,
+                                target: target.clone(),
+                            },
+                        );
 
-                    // Ao contrário de `widget/get`, uma falha aqui NUNCA
-                    // encerra o worker nem contribui para `Unresponsive`
-                    // (D6, `contracts/action-protocol.md`) — só é reportada
-                    // como erro pontual daquela ação; o loop continua.
-                    if output
-                        .send(WorkerEvent::ActionInvokeCompleted(action_outcome))
-                        .await
-                        .is_err()
-                    {
-                        return;
+                        let action_outcome = tokio::select! {
+                            detail = wait_for_crash(&mut child) => {
+                                let _ = output.send(WorkerEvent::Crashed(detail)).await;
+                                return;
+                            }
+                            outcome = perform_action_invoke(&mut stdin, &mut reader, request, target, timeout) => outcome,
+                        };
+
+                        // Ao contrário de `widget/get`, uma falha aqui NUNCA
+                        // encerra o worker nem contribui para `Unresponsive`
+                        // (D6, `contracts/action-protocol.md`) — só é reportada
+                        // como erro pontual daquela ação; o loop continua.
+                        if output
+                            .send(WorkerEvent::ActionInvokeCompleted(action_outcome))
+                            .await
+                            .is_err()
+                        {
+                            return;
+                        }
                     }
                 }
             }
-        }
-    })
+        },
+    )
 }
 
 /// Aguarda a saída do processo filho e formata um detalhe legível para
@@ -813,8 +829,11 @@ async fn perform_widget_get(
     if write_line(stdin, &request).await.is_err() {
         return WidgetOutcome::Unresponsive;
     }
-    match tokio::time::timeout(RPC_TIMEOUT_CONTROL, read_response::<WidgetGetResponse>(reader))
-        .await
+    match tokio::time::timeout(
+        RPC_TIMEOUT_CONTROL,
+        read_response::<WidgetGetResponse>(reader),
+    )
+    .await
     {
         Err(_elapsed) => WidgetOutcome::Unresponsive,
         Ok(Err(_io_or_decode_error)) => WidgetOutcome::Unresponsive,
@@ -869,10 +888,7 @@ async fn perform_action_invoke(
 /// Serializa `message` como uma linha NDJSON (`farol_protocol::encode`) e a
 /// escreve em `stdin`, garantindo o flush (sem isso o plugin pode nunca ver
 /// os bytes, já que pipes são bufferizados).
-async fn write_line<T: serde::Serialize>(
-    stdin: &mut ChildStdin,
-    message: &T,
-) -> io::Result<()> {
+async fn write_line<T: serde::Serialize>(stdin: &mut ChildStdin, message: &T) -> io::Result<()> {
     let line = encode(message).map_err(io::Error::other)?;
     stdin.write_all(line.as_bytes()).await?;
     stdin.flush().await

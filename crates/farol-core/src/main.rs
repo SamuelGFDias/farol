@@ -61,9 +61,7 @@ fn main() -> iced::Result {
 /// mais um `&str`.
 pub(crate) fn program(
     boot: impl Fn() -> Farol + 'static,
-) -> iced::Application<
-    impl iced::Program<State = Farol, Message = Message, Theme = iced::Theme>,
-> {
+) -> iced::Application<impl iced::Program<State = Farol, Message = Message, Theme = iced::Theme>> {
     iced::application(boot, Farol::update, Farol::view)
         .title(WINDOW_TITLE)
         .subscription(Farol::subscription)
@@ -103,9 +101,7 @@ impl Farol {
     /// caminho absoluto, sem depender do registro fixo nem do `cwd` do
     /// processo de teste. O binário real continua passando exatamente
     /// `known_plugins()`.
-    pub(crate) fn with_plugins(
-        spawn_configs: Vec<plugin_worker::PluginSpawnConfig>,
-    ) -> Self {
+    pub(crate) fn with_plugins(spawn_configs: Vec<plugin_worker::PluginSpawnConfig>) -> Self {
         Self {
             plugins: spawn_configs
                 .into_iter()
