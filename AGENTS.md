@@ -193,7 +193,7 @@ injetados como variável de ambiente no spawn — não há dependência de keyri
   `contracts/contract-boundary-testing.md` é o contrato normativo. Um teste,
   `widget_monitor_status_item_response_time_ms_negative_value_is_a_known_protocol_gap`, fica
   `#[ignore]`d de propósito — débito técnico pré-existente (`response_time_ms: -1` permitido pelo
-  schema, rejeitado por `Option<u32>`), rastreado como issue T029 fora desta feature; rodar com
+  schema, rejeitado por `Option<u32>`), rastreado como issue #5 fora desta feature; rodar com
   `cargo test -p farol-protocol --test schema_boundaries -- --ignored` reproduz a falha sob demanda.
 - Verificação visual declarativa — `crates/farol-core/src/visual_snapshot_tests.rs` +
   `crates/farol-core/src/snapshots/*.snap` (via `insta`, `cargo test --package farol-core

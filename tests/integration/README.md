@@ -39,8 +39,8 @@ bruto:
 
 1. o binário sobe e sobrevive à janela de observação;
 2. `uptime-kuma` alcança `PluginState::Ready`;
-3. `git-local` completa um handshake real e **não** alcança `Ready`
-   (`Unavailable{VersionIncompatible}` — débito técnico #4, resultado deliberado);
+3. `git-local` alcança `PluginState::Ready` (débito técnico #4 resolvido — migrado para protocolo
+   `"0.2"` no commit `9d2fe77`, issue #4 fechada);
 4. o processo encerra ao receber `SIGTERM` (status `0` ou `143`);
 5. nenhum processo remanescente — core, Xvfb ou plugin.
 
