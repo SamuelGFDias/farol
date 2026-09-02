@@ -26,26 +26,74 @@ cargo build --workspace
 
 ## Cenário 1 — Harness de execução real detecta sucesso e falha (User Story 1, P1)
 
+> **Comandos revisados na execução de 2026-09-01 (T010)**: não existe um target de teste de
+> integração `e2e_harness` — `farol-core` é um crate só-`bin`, e a Camada 1 vive como módulo
+> `#[cfg(test)]` (achado N3, ver § Path Conventions de `tasks.md`).
+
 ```bash
-# Caminho feliz: harness completo, ambas as camadas
-cargo test --workspace --test e2e_harness
-xvfb-run -a target/debug/farol &   # ou: ./tests/integration/harness.sh
+# Camada 1 (in-process, sem display): o Program real sob o iced_test::Emulator
+cargo test --package farol-core e2e_tests
+
+# Camada 2 (smoke do binário real, precisa de xvfb)
+./tests/integration/harness.sh
 ```
 
-**Esperado**: os testes de `e2e_harness.rs` passam — cada plugin conhecido (`git-local`,
-`uptime-kuma`, contra fixtures sintéticas, `data-model.md` §1) alcança o `PluginState` esperado
-dentro de 30s; nenhum processo filho remanescente. `harness.sh` confirma que o binário real sobe,
-sobrevive à janela de observação e encerra limpo.
+**Esperado (Camada 1)**: os três cenários de `crates/farol-core/src/e2e_tests.rs` passam —
+`uptime-kuma` alcança `Ready` (gate T004), `uptime-kuma` popula o widget `monitor-status-grid` com
+os monitores da fixture HTTP determinística (T006) e `git-local` percorre um handshake real até
+`Unavailable{VersionIncompatible}` (débito técnico #4, resultado deliberado). Nenhum processo filho
+remanescente; cada cenário conclui bem abaixo dos tetos de 30s/120s (`## Clarifications`).
 
-**Regressão deliberada (prova que o harness pega o defeito, `research.md` D1 gate de spike)**:
-reintroduzir manualmente um closure capturante em um dos dois pontos de `Farol::subscription()`
-documentados em `AGENTS.md` (ex.: `.map(move |event| Message::Worker { plugin_name:
-worker_plugin_name.clone(), event })` sem antes mover `plugin_name` para dentro do stream) e rodar
-`cargo test --workspace --test e2e_harness` de novo:
+**Esperado (Camada 2)**: `harness.sh` confirma as cinco condições do
+`contracts/e2e-harness-contract.md` e imprime `SUCESSO — 5/5 condições confirmadas em Ns`, com
+saída `0`. Falhando, a linha `[FALHA] ...` diz qual condição caiu, sem exigir leitura de log bruto.
 
-**Esperado**: o teste correspondente falha, com o panic do `debug_assert!` de
-`iced::Subscription::map` visível na saída — nenhuma investigação manual necessária para saber qual
-verificação falhou (Acceptance Scenario 3 de US1, SC-001). Reverter a regressão antes de continuar.
+### Regressão deliberada — o que mudou (achado N1)
+
+O desenho original deste cenário mandava reintroduzir um closure capturante em `Subscription::map`
+e observar o `debug_assert!` panicar em runtime. **Isso não é mais possível**: em `iced` 0.14 aquele
+`debug_assert!` virou `const { check_zero_sized::<F>() }`, ou seja, a verificação subiu de runtime
+para tempo de compilação. Não há execução de harness a observar — o defeito deixa de existir num
+binário compilado.
+
+O "cenário de falha clara" continua existindo; só mudou de superfície: **o build falha, com uma
+mensagem apontando exatamente o problema**. Reintroduzindo o padrão histórico
+(`.map(move |(_, event)| Message::Worker { plugin_name: plugin_name.clone(), event })`) e rodando
+`cargo test --package farol-core --no-run`:
+
+```text
+error[E0080]: evaluation panicked: The Subscription closure provided is not non-capturing.
+Closures given to Subscription::map or filter_map cannot capture external variables.
+If you need to capture state, consider using Subscription::with.
+...
+note: the above error was encountered while instantiating
+      `fn Subscription::<(String, WorkerEvent)>::map::<{closure@...}, ...>`
+  --> crates/farol-core/src/e2e_tests.rs:1193:25
+```
+
+**Esperado**: erro `E0080` nomeando o arquivo, a linha e a coluna do closure ofensor, mais a
+correção a aplicar (`Subscription::with`) — diagnóstico estritamente melhor que o panic de runtime
+que ele substituiu (Acceptance Scenario 3 de US1, SC-001, satisfeito de forma ainda mais forte).
+Reverter a regressão antes de continuar.
+
+**Detalhe observado em T010, relevante para o CI (US3)**: uma regressão confinada a código de
+**teste** (`#[cfg(test)]`) não quebra `cargo build --bin farol` — logo, não quebra `harness.sh`, que
+compila só o binário. Quem pega esse caso é `cargo test`/`cargo clippy --all-targets`. Reintroduzido
+no código de produção (`update.rs`/`plugin_worker.rs`), o mesmo `E0080` derruba o build do binário e,
+por consequência, o `harness.sh` já no primeiro passo. Os dois jobs de `ci.yml` (`rust-test`/
+`rust-lint` e `rust-smoke`) são, portanto, complementares também para esta classe de defeito.
+
+### Regressão deliberada observável em runtime
+
+Como a classe acima virou erro de compilação, o cenário "harness pega um defeito **rodando**"
+precisa de outro gatilho. Dois foram verificados nesta sessão, ambos com falha clara:
+
+- **Camada 1** — alterar um monitor esperado em `expected_monitors()`: falha em 30s com
+  `o widget monitor-status-grid não foi populado em 30s (requisições autenticadas servidas pela
+  fixture: 2, não autenticadas: 0) — estado observado: Ready`.
+- **Camada 2** — remover o `api_key` do `secrets.toml` da fixture: falha com
+  `[FALHA] uptime-kuma não alcançou Ready em 30s (nenhum widget/get na transcrição core→plugin)`,
+  saída `1`.
 
 ## Cenário 2 — Verificação de contrato pega valor de borda que a implementação rejeita (User Story 2, P2)
 

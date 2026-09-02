@@ -160,7 +160,13 @@ quando não alcançam.
 **Independent Test** (`spec.md`): rodar o harness contra o estado atual do repositório e verificar
 sucesso; introduzir uma regressão equivalente a um dos dois bugs históricos e verificar falha clara.
 
-- [ ] T005 [US1] **🚧 BLOQUEADA por N4 (achado de 2026-09-01, ver `research.md` D1 revisado)** —
+- [X] T005 [US1] **DROPADA como redundante ao gate T004 (decisão do arquiteto, 2026-09-01, ver N4)**
+  — saída (b) das três abaixo: `uptime-kuma` fica sendo o único plugin que exercita `Ready` (T004/
+  T006), e o cenário "git-local percorre o mecanismo real até um estado terminal" já é entregue por
+  `emulator_takes_git_local_through_a_real_handshake_to_a_terminal_state` (T004). Nenhum código
+  novo — provar `Ready` com um segundo plugin que estruturalmente não pode chegar lá não acrescenta
+  cobertura. Texto original abaixo, preservado:
+  **🚧 BLOQUEADA por N4 (achado de 2026-09-01, ver `research.md` D1 revisado)** —
   cenário "git-local alcança Ready" é **impossível** enquanto `plugins/git-local/main.py` declarar
   `PROTOCOL_VERSION = "0.1"` contra um core que fala `"0.2"`: a comparação `MAJOR == 0` de
   `ProtocolVersion::is_compatible_with` torna `Unavailable{VersionIncompatible}` o único desfecho
@@ -170,28 +176,70 @@ sucesso; introduzir uma regressão equivalente a um dos dois bugs históricos e 
   `Ready` (T006) e reescrever T005 como "git-local alcança um estado terminal", que é o que o
   cenário (b) de T004 já entrega — nesse caso T005 vira redundante e sai; (c) escrever o plugin de
   teste dedicado registrado em `research.md` D2 § Alternativas
-- [ ] T006 [US1] Em `crates/farol-core/src/e2e_tests.rs`: cenário "uptime-kuma alcança Ready **com
+- [X] T006 [US1] Em `crates/farol-core/src/e2e_tests.rs`: cenário "uptime-kuma alcança Ready **com
   dados de widget**" — o gate de T004 já cobre o `Ready` em si; o que falta aqui é a fixture HTTP
   determinística de `/metrics` (`research.md` D2, ainda não escrita) e as assertivas sobre os itens
   do widget depois do primeiro `widget/get` bem-sucedido. É este cenário que exercita o segundo bug
   histórico (o timer de refresh só é montado quando um plugin de fato chega a `Ready` — `AGENTS.md`
-  § Armadilha, ponto 2; Acceptance Scenario 2 de US1)
-- [ ] T007 [US1] Em `crates/farol-core/src/e2e_tests.rs`: estender o orçamento de tempo já
+  § Armadilha, ponto 2; Acceptance Scenario 2 de US1).
+  **Entregue**: `uptime_kuma_reaches_ready_and_populates_the_monitor_grid`, mais
+  `MetricsFixtureServer` (o duplo de `/metrics` que faltava de T003 — `std::net::TcpListener` numa
+  thread própria, porta efêmera de `127.0.0.1`, HTTP Basic Auth conferido de verdade, corpo
+  Prometheus no mesmo formato de `plugins/uptime-kuma/test_metrics_parser.py`, incluindo o sentinela
+  `-1` que MUST virar `response_time_ms: null`). Asserções na **tela** (`Selector`/
+  `Instruction::Expect`: nomes, `up`/`down`, `42 ms`, `—`) **e** no modelo
+  (`monitor_widget.monitors`/`last_error`), mais a contagem de requisições autenticadas/não
+  autenticadas servidas pela fixture. Verificado como não-vacuoso (alterar um monitor esperado
+  falha em 30s com mensagem nomeando o estado observado). Nota: o cenário injeta
+  `Message::RefreshTick` pelo `update()` real para não depender do timer de 30s do plugin — mesma
+  mensagem, mesmo `handle_refresh_tick`, só a cadência do relógio é do teste (ver docstring)
+- [X] T007 [US1] Em `crates/farol-core/src/e2e_tests.rs`: estender o orçamento de tempo já
   implementado em T004 (`STATE_TIMEOUT` de 30s por verificação de estado, com mensagem de falha
   nomeando `plugin_name` e o `PluginState` observado — FR-003/FR-004 já satisfeitos) com o teto de
   120s por cenário inteiro (`## Clarifications`), e confirmar que nenhum processo filho remanesce ao
-  final de cada cenário (`contracts/e2e-harness-contract.md` Camada 1)
-- [ ] T008 [US1] Escrever `tests/integration/harness.sh` (Camada 2, smoke de processo real,
+  final de cada cenário (`contracts/e2e-harness-contract.md` Camada 1).
+  **Entregue**: `SCENARIO_TIMEOUT` (120s) aplicado por `ScenarioBudget`, checado dentro de cada laço
+  de espera e reafirmado no encerramento; `assert_no_lingering_children` varre `/proc` por filhos
+  diretos vivos (zumbis à espera de `wait()` ignorados de propósito, documentado). **Nenhum cenário
+  chega perto do teto**: 242ms / 212ms / 464ms medidos, contra 30s por verificação e 120s por
+  cenário — a folga é de duas ordens de grandeza, não há nada a justificar
+- [X] T008 [US1] Escrever `tests/integration/harness.sh` (Camada 2, smoke de processo real,
   `research.md` D5, `contracts/e2e-harness-contract.md` Camada 2): compila `target/debug/farol`,
   sobe sob `xvfb-run -a`, confirma que sobrevive a uma janela curta de observação, encerra limpo via
-  `SIGTERM`, reporta qual das três condições falhou quando falhar
-- [ ] T009 [US1] Atualizar `tests/integration/README.md` para apontar para `harness.sh` (T008)
+  `SIGTERM`, reporta qual das três condições falhou quando falhar.
+  **Entregue, 5 condições (as 3 do contrato + estado dos dois plugins), rodado de verdade: `SUCESSO
+  — 5/5 condições confirmadas em 9s`, saída 0.** Duas decisões registradas no cabeçalho do script:
+  (a) **como observar o estado dos plugins sem display** — um log de diagnóstico permanente no core
+  (`FAROL_LOG=state`) foi **avaliado e recusado** (custo de produção por benefício de teste; e um
+  log é auto-relato, que fica errado junto com a máquina de estados que deveria vigiar); no lugar,
+  um shim de `python3` gerado no diretório temporário grava a transcrição NDJSON de cada plugin, e
+  `widget/get` na direção core→plugin **prova** `Ready` (só `handle_refresh_tick` o emite, e ele
+  retorna cedo fora de `Ready`) — nenhuma linha de código de produção tocada; (b) **órfãos** — o
+  binário roda em grupo de processos próprio (`set -m`) e o `SIGTERM` vai para o **grupo**, porque
+  `kill_on_drop` não roda quando o core é abatido por sinal; a limpeza é reafirmada com `pgrep -g`
+  (mais uma varredura por `pgrep -f "$WORK"`), não presumida. Verificado como não-vacuoso (remover o
+  `api_key` da fixture faz falhar com `[FALHA] uptime-kuma não alcançou Ready em 30s ...`, saída 1)
+- [X] T009 [US1] Atualizar `tests/integration/README.md` para apontar para `harness.sh` (T008)
   finalmente escrito, em vez de descrever um script que nunca existiu — fecha o débito citado em
-  `AGENTS.md`/`spec.md`
+  `AGENTS.md`/`spec.md`. **Entregue**: README reescrito com a tabela Camada 1 × Camada 2, uso do
+  script, fixture, mecanismo de observação e tratamento de órfãos
 
 ### Validação da User Story 1 (Cenário 1 de `quickstart.md`)
 
-- [ ] T010 [US1] Executar Cenário 1 de `quickstart.md`: caminho feliz (T005–T009 verdes) e a
+- [X] T010 [US1] **Executado em 2026-09-01.** Caminho feliz: `cargo test --package farol-core` →
+  35/35 verdes (3 cenários E2E); `./tests/integration/harness.sh` → `SUCESSO — 5/5 condições
+  confirmadas em 9s`, saída 0, nenhum processo remanescente. Regressão deliberada: o padrão
+  histórico de closure capturante foi reintroduzido num teste e o build falhou com
+  `error[E0080]: evaluation panicked: The Subscription closure provided is not non-capturing. ...
+  consider using Subscription::with`, nomeando arquivo/linha/coluna do closure — diagnóstico
+  estritamente melhor que o panic de runtime que substituiu; regressão revertida em seguida.
+  `quickstart.md` § Cenário 1 reescrito para refletir isso (comandos reais, sem o target inexistente
+  `--test e2e_harness`) mais duas regressões observáveis **em runtime** verificadas nesta sessão
+  (uma por camada). Achado registrado no `quickstart.md`: uma regressão confinada a código de teste
+  não quebra `cargo build --bin farol` e, portanto, não quebra o `harness.sh` — os jobs
+  `rust-test`/`rust-lint` e `rust-smoke` de US3 são complementares também para esta classe.
+  Texto original abaixo:
+  Executar Cenário 1 de `quickstart.md`: caminho feliz (T005–T009 verdes) e a
   regressão deliberada — confirmar que o harness falha de forma clara (SC-001); reverter antes de
   prosseguir. **Revisado (N1, 2026-09-01)**: a regressão originalmente proposta (reintroduzir
   `Subscription::map` com closure capturante) **não compila mais** sob `iced` 0.14
