@@ -124,7 +124,7 @@ class FindRepoDirsAndScanTests(unittest.TestCase):
     def test_repo_with_remote_reports_tracked_status_and_enabled_fetch_action(self) -> None:
         bare_remote = self.scan_root / "remote.git"
         bare_remote.mkdir()
-        _run(["git", "init", "--bare"], bare_remote)
+        _run(["git", "init", "--bare", "--initial-branch=main"], bare_remote)
 
         repo_path = self.scan_root / "cloned"
         _clone_with_commit(bare_remote, repo_path, filename="README.md", content="# cloned\n")
@@ -155,7 +155,16 @@ class FetchActionTests(unittest.TestCase):
 
         self.bare_remote = self.tmp_path / "remote.git"
         self.bare_remote.mkdir()
-        _run(["git", "init", "--bare"], self.bare_remote)
+        # `--initial-branch=main` é obrigatório aqui (e não só cosmético): sem ele, o HEAD
+        # simbólico do bare fica no default do ambiente (frequentemente "master" em runners sem
+        # `init.defaultBranch` configurado globalmente). `self.other_clone` abaixo clona este
+        # mesmo bare_remote *depois* que `self.repo_path` já empurrou "main" para ele — se o HEAD
+        # do bare ainda apontar para um "master" inexistente, esse segundo clone falha o checkout
+        # ("remote HEAD refers to nonexistent ref"), fica com HEAD não-nascido, e o
+        # `git symbolic-ref HEAD refs/heads/main` de `_clone_with_commit` cria um "main" local
+        # desconectado (root commit) em vez de retomar o "main" já existente — o `git push`
+        # subsequente é então rejeitado como non-fast-forward por histórias não relacionadas.
+        _run(["git", "init", "--bare", "--initial-branch=main"], self.bare_remote)
 
         self.repo_path = self.tmp_path / "work"
         _clone_with_commit(self.bare_remote, self.repo_path, filename="README.md", content="# work\n")

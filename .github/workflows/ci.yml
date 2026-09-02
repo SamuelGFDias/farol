@@ -39,7 +39,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Install xvfb
-        run: sudo apt-get update && sudo apt-get install -y xvfb
+        # libxkbcommon-x11-0 fornece libxkbcommon-x11.so, exigido pelo backend X11 do
+        # winit/iced (via xkbcommon-dl) e ausente por padrão no runner ubuntu-latest.
+        run: sudo apt-get update && sudo apt-get install -y xvfb libxkbcommon-x11-0
       - name: cargo build --bin farol
         run: cargo build --bin farol
       - name: tests/integration/harness.sh

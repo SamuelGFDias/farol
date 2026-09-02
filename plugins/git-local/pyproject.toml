@@ -1,0 +1,17 @@
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "C4", "UP"]
+
+# `scan.py` e `main.py` (conteúdo) estão fora do escopo autorizado desta correção pontual
+# (issue #6 é só "adicionar pyproject.toml"); alguns docstrings/strings em português ultrapassam
+# `line-length` por poucos caracteres. Ignorar E501 só nesses dois arquivos evita reabrir o
+# conteúdo deles aqui — reduzir as linhas fica para uma limpeza de estilo separada.
+[tool.ruff.lint.per-file-ignores]
+"scan.py" = ["E501"]
+"main.py" = ["E501"]
+
+[tool.ruff.format]
+quote-style = "double"
