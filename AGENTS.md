@@ -33,7 +33,7 @@ diretamente fora desse processo.
 
 ## Arquitetura do core (`crates/farol-core`, binário `farol`)
 
-Padrão Elm/Model-Update-View via `iced 0.13`. Um `cargo run --bin farol` (ou o binário
+Padrão Elm/Model-Update-View via `iced 0.14`. Um `cargo run --bin farol` (ou o binário
 `target/debug/farol`) **precisa rodar com cwd = raiz do repo** — `plugin_worker::known_plugins()`
 usa caminhos relativos (`plugins/git-local/main.py`, `plugins/uptime-kuma/main.py`) para o
 `command`/`args` de cada plugin spawnado.
@@ -66,13 +66,23 @@ usa caminhos relativos (`plugins/git-local/main.py`, `plugins/uptime-kuma/main.p
 
 ### Armadilha real já corrigida: `iced::Subscription::map` exige closure não-capturante
 
-`Subscription::map` faz `debug_assert!(size_of::<F>() == 0, ...)` — um closure `move |x| ...` que
-captura qualquer variável do ambiente **panica em runtime** assim que a `Subscription` é montada
-(mensagem: `"the closure ... is capturing"`), e isso **não aparece em nenhum teste unitário** (eles
-testam `update.rs` chamando `handle_worker_event` diretamente, nunca `Farol::subscription()` de
-verdade rodando sob o runtime `iced`). Só um `cargo run` real revela o panic — motivo pelo qual
-`tasks.md` da feature 002 tem uma task dedicada (T023) só para rodar o binário de verdade antes de
-seguir para as próximas fases.
+Em `iced 0.13`, `Subscription::map` fazia `debug_assert!(size_of::<F>() == 0, ...)` — um closure
+`move |x| ...` que captura qualquer variável do ambiente **panicava em runtime** assim que a
+`Subscription` era montada (mensagem: `"the closure ... is capturing"`), e isso não aparecia em
+nenhum teste unitário (eles testavam `update.rs` chamando `handle_worker_event` diretamente, nunca
+`Farol::subscription()` de verdade rodando sob o runtime `iced`). Só um `cargo run` real revelava o
+panic — motivo pelo qual `tasks.md` da feature 002 tem uma task dedicada (T023) só para rodar o
+binário de verdade antes de seguir para as próximas fases.
+
+**Sob `iced 0.14` (feature 003) essa classe de bug virou erro de compilação**: o mesmo check hoje é
+`const { check_zero_sized::<F>() }` dentro de `Subscription::map`, avaliado em tempo de compilação
+— não existe mais binário compilável com um closure capturante nesse ponto, então não há mais nada
+a "revelar em runtime" para esse caso específico. O relato histórico abaixo (dois pontos distintos
+de `Farol::subscription()`, cada um só alcançável sob uma condição de runtime diferente) continua
+valendo como lição sobre cobertura de teste — só o mecanismo de detecção mudou de `debug_assert!`
+de runtime para erro `E0080` de compilação. Achado completo (N1/N2/N3) e a regressão deliberada que
+comprova o `E0080` atual: `specs/003-automated-testing-infrastructure/research.md` D1 (entrada de
+2026-09-01) e `specs/003-automated-testing-infrastructure/quickstart.md` § Cenário 1.
 
 Padrão correto quando um valor por-plugin (como `plugin_name`) precisa ir dentro da `Message`
 produzida por uma `Subscription`: embuti-lo no **stream** via `futures::StreamExt::map`/dentro de um
@@ -128,19 +138,54 @@ injetados como variável de ambiente no spawn — não há dependência de keyri
 
 ## Testes
 
-- `cargo test --workspace` — 71 testes (unit `farol-core` + unit/contract `farol-protocol`, este
-  último validando (de)serialização contra os JSON Schemas via `jsonschema` crate).
+- `cargo test --workspace` — 89 testes passando (+ 1 `#[ignore]`d deliberadamente, ver abaixo):
+  unit/e2e/snapshot de `farol-core` (38) + contrato/unit de `farol-protocol` (21 +
+  `schema_boundaries` 12+1 ignorado + 18 unit).
 - `cargo clippy --workspace --all-targets` — deve ficar limpo, sem warning nenhum.
-- `tests/integration/` e `tests/contract/` (raiz do repo, fora de qualquer crate) são **só
-  documentação** — `cargo test` nunca os descobre (Cargo só compila `tests/*.rs` dentro de cada
-  crate). `tests/integration/README.md` referencia um `harness.sh` que nunca chegou a ser
-  construído — cenários de `quickstart.md` são validados manualmente rodando o binário de verdade
-  (ver task T023 da feature 002 para um exemplo de execução real + achado).
-- Rodar o binário `farol` manualmente para validar um cenário de `quickstart.md`: precisa de um
-  `DISPLAY` X11 funcional. Sob Xvfb sem WM/GPU real a janela não renderiza visualmente (fica preta),
-  mas o ciclo `update`/handshake/transição de estado roda normalmente e pode ser observado via
-  `eprintln!` de diagnóstico temporário (remover depois) — suficiente para validar comportamento de
-  protocolo sem depender de captura de tela.
+- Harness de execução real em **duas camadas** (feature 003, `research.md` D1/D5,
+  `contracts/e2e-harness-contract.md`) — a mesma máquina de estados real (`Program`/`Subscription`/
+  handshake), verificada de duas formas complementares:
+  - **Camada 1** — in-process, sem display, via `iced_test::Emulator`:
+    `crates/farol-core/src/e2e_tests.rs` (módulo `#[cfg(test)]` dentro do bin — `farol-core` não tem
+    target `lib`, então não existe `--test e2e_harness`; rodar com `cargo test --package farol-core
+    e2e_tests`). Três cenários: `uptime-kuma` alcança `Ready` e popula `monitor-status-grid`
+    (`uptime_kuma_reaches_ready_and_populates_the_monitor_grid`), e `git-local` percorre um
+    handshake real até `Unavailable{VersionIncompatible}`
+    (`emulator_takes_git_local_through_a_real_handshake_to_a_terminal_state`, débito técnico #4,
+    deliberado). Timeouts de 30s/120s por cenário (`## Clarifications` do `spec.md`).
+  - **Camada 2** — smoke do binário `farol` real (`fn main()`, backend de janela winit de verdade),
+    via `tests/integration/harness.sh` — precisa de `xvfb` (`Xvfb`). Confirma 5 condições (subir e
+    sobreviver, `uptime-kuma` chega a `Ready`, `git-local` fica `VersionIncompatible`, encerra em
+    `SIGTERM`, nenhum processo remanescente) e imprime `SUCESSO — 5/5 condições confirmadas em Ns`
+    ou `[FALHA] ...` apontando a condição que caiu, saída `0`/`1`. `tests/integration/README.md`
+    documenta o contrato; o script em si é a Camada 2, não mais um stub.
+  - Sob `iced 0.14`, um closure capturante em `Subscription::map` (a armadilha histórica acima) não
+    chega a rodar — vira erro `E0080` de compilação, apanhado por `cargo test`/`cargo clippy
+    --all-targets` (código de teste) ou já no primeiro passo do `harness.sh` (código de produção).
+- Gerador de casos de borda de contrato — `crates/farol-protocol/tests/schema_boundaries.rs`,
+  `numeric_and_null_boundary_cases()`: deriva de cada JSON Schema (`protocol/schema/v0.2/*`) os
+  valores de fronteira que o schema permite mas a implementação Rust pode rejeitar (`Option<T>` vs.
+  `"type": [..., "null"]`, ausência de `minimum`/`maximum`, etc.), sem hardcodar caso por caso —
+  `contracts/contract-boundary-testing.md` é o contrato normativo. Um teste,
+  `widget_monitor_status_item_response_time_ms_negative_value_is_a_known_protocol_gap`, fica
+  `#[ignore]`d de propósito — débito técnico pré-existente (`response_time_ms: -1` permitido pelo
+  schema, rejeitado por `Option<u32>`), rastreado como issue T029 fora desta feature; rodar com
+  `cargo test -p farol-protocol --test schema_boundaries -- --ignored` reproduz a falha sob demanda.
+- Verificação visual declarativa — `crates/farol-core/src/visual_snapshot_tests.rs` +
+  `crates/farol-core/src/snapshots/*.snap` (via `insta`, `cargo test --package farol-core
+  visual_snapshot_tests`): compara `extract_visible_text(app.view())` contra um snapshot textual por
+  `screen_id` (`data-model.md` §3) para os três estados cobertos — `DashboardReady`, `SetupForm`,
+  `VersionIncompatible` (`dashboard_ready_state`/`setup_form_state`/`version_incompatible_state`).
+  Revisar/aceitar um snapshot alterado intencionalmente: `cargo insta review` (requer `cargo install
+  cargo-insta`, não é pré-requisito pra rodar a suíte).
+- `tests/contract/` (raiz do repo, fora de qualquer crate) permanece só documentação — `cargo test`
+  não o descobre (Cargo só compila `tests/*.rs` dentro de cada crate).
+- Validação manual via `eprintln!` de diagnóstico temporário (usada até a feature 002) foi
+  substituída pela infraestrutura acima — não é mais o caminho recomendado para validar um cenário
+  de `quickstart.md`. Rodar o binário `farol` manualmente (Camada 2 ou fora do harness) ainda precisa
+  de um `DISPLAY` X11 funcional; sob Xvfb sem WM/GPU real a janela não renderiza visualmente (fica
+  preta), mas o ciclo `update`/handshake/transição de estado roda normalmente — é isso que
+  `harness.sh` observa sem instrumentar código de produção (ver cabeçalho do script para o método).
 
 ## Python (plugins)
 

@@ -235,9 +235,32 @@ diff residual.
 
 ## Cenário 5 — Confirmação de que nada trava indefinidamente (Edge Case do `spec.md`)
 
+> **Comando revisado em 2026-09-01 (T028)**: mesmo achado N3 dos Cenários 1 e 4 — `farol-core` é um
+> crate só-`bin`, sem target `lib`, logo não existe `cargo test --workspace --test e2e_harness`. O
+> comando real que exercita os três cenários da Camada 1 é:
+
 ```bash
-time cargo test --workspace --test e2e_harness
+time cargo test --package farol-core e2e_tests
 ```
 
 **Esperado**: conclui bem abaixo de 120s por cenário (timeout de `## Clarifications`) mesmo no pior
 caso local; nenhum processo Python remanescente depois (`ps aux | grep plugins/`).
+
+**Resultado real (T028, 2026-09-01)**:
+
+```text
+running 3 tests
+test e2e_tests::emulator_runs_the_real_subscription_until_a_plugin_reaches_ready ... ok
+test e2e_tests::emulator_takes_git_local_through_a_real_handshake_to_a_terminal_state ... ok
+test e2e_tests::uptime_kuma_reaches_ready_and_populates_the_monitor_grid ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 1.03s
+
+cargo test --package farol-core e2e_tests  0,44s user 0,49s system 73% cpu 1,262 total
+```
+
+3/3 verde em 1,03s (tempo total do processo `time`: 1,262s) — muitas ordens de grandeza abaixo do
+teto de 120s por cenário, mesmo somando os três cenários. `ps aux | grep "plugins/"` rodado antes e
+depois da execução não mostra nenhum processo de `plugins/git-local` nem `plugins/uptime-kuma`
+remanescente (as linhas que casam com `plugins/` no ambiente da sessão são de outra ferramenta —
+`~/.claude/plugins/...` — não relacionadas ao Farol).

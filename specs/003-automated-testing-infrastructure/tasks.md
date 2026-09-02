@@ -464,18 +464,27 @@ visível; verificar que a comparação aponta a diferença.
 
 **Purpose**: Consolidação — nenhuma task desta fase é específica de uma user story.
 
-- [ ] T026 [P] Atualizar `AGENTS.md` § Testes: registrar a suíte agora coberta por CI automático
+- [X] T026 [P] Atualizar `AGENTS.md` § Testes: registrar a suíte agora coberta por CI automático
   (T017–T021), o harness em duas camadas (T005–T009, `tests/integration/harness.sh` deixa de ser um
   stub), o gerador de casos de borda (T011–T015) e a verificação visual declarativa (T023–T024) —
   substitui as linhas hoje desatualizadas sobre `harness.sh` nunca construído e sobre validação
   manual via `eprintln!`
-- [ ] T027 [P] Confirmar `cargo clippy --workspace --all-targets` limpo (sem warning) depois de todo
+  — feito em 2026-09-01: também atualizado `iced 0.13` → `0.14` e reescrita a seção "Armadilha real
+  já corrigida" (o `debug_assert!` de runtime virou `const { check_zero_sized::<F>() }`/erro
+  `E0080` de compilação sob 0.14), confirmada a contagem real de 89 testes via `cargo test
+  --workspace 2>&1 | grep "test result"` antes de escrever o número.
+- [X] T027 [P] Confirmar `cargo clippy --workspace --all-targets` limpo (sem warning) depois de todo
   o código de teste novo desta feature (T001–T025) — mesmo padrão já exigido pelo `AGENTS.md`
-- [ ] T028 Executar Cenário 5 de `quickstart.md` (`time cargo test --package farol-core e2e_tests` —
+  — confirmado de forma independente pelo arquiteto (não re-rodado nesta subtarefa).
+- [X] T028 Executar Cenário 5 de `quickstart.md` (`time cargo test --package farol-core e2e_tests` —
   **não** `--test e2e_harness`: não existe um target de teste de integração, ver N3/§ Path
   Conventions) —
   confirmar que nada trava indefinidamente e que nenhum processo Python remanesce (Edge Case do
   `spec.md`)
+  — feito em 2026-09-01, resultado registrado em `quickstart.md` § Cenário 5: 3/3 testes passam em
+  1,03s (`finished in 1.03s`), tempo total do comando 1,262s (`time`), muito abaixo do teto de
+  120s/cenário; `ps aux | grep "plugins/"` antes e depois não mostra nenhum processo de
+  `plugins/git-local` ou `plugins/uptime-kuma` remanescente.
 
 ---
 
