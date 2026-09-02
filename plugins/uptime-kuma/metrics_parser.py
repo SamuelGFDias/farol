@@ -98,7 +98,12 @@ def parse_metrics(body: str) -> list[dict]:
     for monitor_name, raw_status in statuses.items():
         response_time_ms = None
         if monitor_name in response_times:
-            response_time_ms = round(response_times[monitor_name])
+            raw_response_time = response_times[monitor_name]
+            # O Uptime Kuma emite -1 como sentinela de "não aplicável" (ex.: monitores `docker`).
+            # Um tempo de resposta nunca é negativo de verdade, então qualquer valor < 0 vira
+            # None (→ `null` no JSON) — ver protocol/schema/v0.2/widget.schema.json.
+            if raw_response_time >= 0:
+                response_time_ms = round(raw_response_time)
         items.append(
             {
                 "name": monitor_name,

@@ -417,6 +417,34 @@ de monitores aparece corretamente na janela do Farol logo em seguida, sem qualqu
   execução real de 12s sem panic, verificados pelo arquiteto de forma independente do relato dos
   subagentes.
 
+  **3º bug real encontrado ao validar contra uma instância Uptime Kuma de verdade (não hipotético —
+  achado pelo usuário testando manualmente T036)**: com `base_url`/`api_key` corretos, a UI mostrava
+  `uptime-kuma` como `Unavailable{Unresponsive}` ("não respondeu a tempo"), embora o plugin
+  respondesse a tudo em microssegundos. Causa raiz (investigada por `executor-critico` com
+  instrumentação temporária no binário real, revertida antes de finalizar): o Uptime Kuma emite
+  `monitor_response_time{...} -1` para monitores sem medição aplicável (ex.: tipo `docker`);
+  `plugins/uptime-kuma/metrics_parser.py` repassava esse `-1` direto; o binding Rust
+  (`MonitorStatusItem.response_time_ms: Option<u32>`, `crates/farol-protocol/src/messages.rs:322` —
+  correto, deliberadamente sem sinal) rejeita o valor negativo na desserialização; como
+  `WidgetGetResponse` é `#[serde(untagged)]`, essa falha de um único campo derruba a tentativa de
+  decodificar como QUALQUER variante conhecida; `plugin_worker.rs` mapeia esse erro de decode para
+  `WidgetOutcome::Unresponsive` — mascarando "resposta indecodificável" como "sem resposta",
+  diagnóstico enganoso. Corrigido no lugar certo: `metrics_parser.py` agora mapeia qualquer
+  `monitor_response_time` negativo para `None` (`null` no wire) — exatamente o que
+  `protocol/schema/v0.2/widget.schema.json:145-148` já documentava como o significado correto de
+  "não aplicável" ("same spirit as `RemoteStatus.NoRemote`"). Teste de regressão novo
+  (`test_metrics_parser.py::test_negative_response_time_becomes_none`) reproduz literalmente a linha
+  real que causou o bug. Verificado pelo arquiteto: execução real do binário mostra `uptime-kuma`
+  chegando a `Ready` e mantendo o processo do plugin vivo (5 monitores, `Container`/`Minio` com
+  `response_time_ms: null`).
+
+  **Dívida técnica identificada, não corrigida nesta subtarefa** (fora do escopo — mudaria o
+  contrato de `WidgetOutcome`, não é um bug de widget do uptime-kuma): `plugin_worker.rs` colapsa
+  todo erro de leitura/decode de `widget/get` em `WidgetOutcome::Unresponsive`, sem distinguir "sem
+  resposta dentro do timeout" de "resposta chegou mas não decodificou" — mesma classe de problema que
+  a correção C1/T011 já resolveu especificamente para o handshake. Precisa virar issue (constitution
+  do projeto exige) antes de ser corrigida.
+
 ### Validação da User Story 1 (cenários de `quickstart.md`, renumerados nesta sessão)
 
 - [ ] T036 [US1] Executar Cenário 1 de `quickstart.md` — primeira execução sem `config.toml`/
