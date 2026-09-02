@@ -695,7 +695,13 @@ fn merge_widget_items(
 }
 
 #[cfg(test)]
-mod tests {
+// `pub(crate)` (T024 da feature 003): `visual_snapshot_tests.rs` (US4, módulo
+// irmão deste — nenhum dos dois é descendente do outro) reaproveita
+// `farol_with_monitor_widget`/`sample_required_config` daqui em vez de
+// duplicar a construção de `PluginIdentity`/`CapabilityManifest`/
+// `WidgetDeclaration` — só a visibilidade do módulo e das duas funções
+// mudou, nenhuma lógica nova foi adicionada.
+pub(crate) mod tests {
     use super::*;
     use farol_protocol::messages::{Capability, KnownCapability, WidgetItems};
     use farol_protocol::{CapabilityManifest, ProtocolVersion};
@@ -1179,7 +1185,12 @@ mod tests {
     /// Análogo de `farol_with_widget`, mas para a entrada `uptime-kuma`
     /// (T015: um slot fixo por plugin conhecido) já `Ready`, com um widget
     /// `monitor-status-grid` declarado (T031/T033).
-    fn farol_with_monitor_widget() -> Farol {
+    ///
+    /// `pub(crate)` (T024 da feature 003): reaproveitado por
+    /// `visual_snapshot_tests.rs` para o `screen_id` `DashboardReady`, que só
+    /// precisa completar com `monitor_widget.monitors` não vazio — ver
+    /// docstring do módulo.
+    pub(crate) fn farol_with_monitor_widget() -> Farol {
         let mut app = Farol::default();
         let slot = app.slot_mut("uptime-kuma").expect("uptime-kuma é um plugin conhecido");
         slot.connection.state = PluginState::Ready;
@@ -1202,7 +1213,12 @@ mod tests {
         app
     }
 
-    fn sample_required_config() -> Vec<farol_protocol::messages::RequiredConfigItem> {
+    /// `pub(crate)` (T024 da feature 003): reaproveitado por
+    /// `visual_snapshot_tests.rs` para o `screen_id` `SetupForm` — mesmos
+    /// dois campos que o handshake real de `uptime-kuma` declara
+    /// (`sample_handshake_result`/T030 acima), evitando uma segunda lista
+    /// divergente de `RequiredConfigItem`.
+    pub(crate) fn sample_required_config() -> Vec<farol_protocol::messages::RequiredConfigItem> {
         vec![
             farol_protocol::messages::RequiredConfigItem {
                 name: "base_url".to_string(),

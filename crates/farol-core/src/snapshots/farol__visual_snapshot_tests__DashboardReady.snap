@@ -1,0 +1,21 @@
+---
+source: crates/farol-core/src/visual_snapshot_tests.rs
+expression: extract_visible_text(app.view())
+---
+git-local
+Iniciando plugin...
+uptime-kuma
+Plugin: uptime-kuma (protocolo 0.2)
+Capacidades declaradas: network(monitor.example.com:443)
+Monitor
+Status
+Tempo de resposta
+farol-api
+up
+42 ms
+farol-db
+down
+7 ms
+farol-container
+up
+—

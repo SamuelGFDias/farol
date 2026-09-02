@@ -160,8 +160,13 @@ Actions em si (o mecanismo, não os comandos) segue não verificado nesta sessã
 
 ## Cenário 4 — Regressão visual é detectada sem inspeção manual (User Story 4, P4)
 
+> **Comando revisado na execução de 2026-09-01 (T025)**: mesmo achado N3 do Cenário 1 — `farol-core`
+> é um crate só-`bin`, sem target `lib`, então não existe (nem pode existir sem criar `src/lib.rs`) um
+> target de teste de integração `--test visual_snapshot`. A Camada de verificação visual vive como
+> módulo `#[cfg(test)]` dentro do próprio bin, igual a `e2e_tests.rs`.
+
 ```bash
-cargo test -p farol-core --test visual_snapshot
+cargo test --package farol-core visual_snapshot_tests
 ```
 
 **Esperado (primeira vez / sem mudança)**: passa, snapshot estável (Acceptance Scenario 2 de US4).
@@ -172,6 +177,61 @@ cobertos (`data-model.md` §3 — ex. o título de `view_setup_form`) e rodar de
 **Esperado**: o teste falha, `insta` mostra o diff textual exato do que mudou (Acceptance Scenario 3
 de US4, SC-005) — sem abrir o Farol. Reverter a mudança, ou (se a mudança fosse intencional) rodar
 `cargo insta review` e commitar o `.snap` atualizado.
+
+**Resultado real (T025, 2026-09-01)**:
+
+Estabilidade (Acceptance Scenario 2) — `cargo test --package farol-core visual_snapshot_tests` rodado
+duas vezes seguidas sem nenhuma mudança em `view.rs`/`update.rs`/`model.rs`:
+
+```text
+running 3 tests
+test visual_snapshot_tests::version_incompatible_screen_matches_snapshot ... ok
+test visual_snapshot_tests::dashboard_ready_screen_matches_snapshot ... ok
+test visual_snapshot_tests::setup_form_screen_matches_snapshot ... ok
+
+test result: ok. 3 passed; 0 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.39s
+```
+
+3/3 verdes nas duas execuções, nenhum `crates/farol-core/src/snapshots/*.snap.new` gerado — nenhum
+alarme falso.
+
+Regressão deliberada — o headline do braço `UnavailableReason::VersionIncompatible` em
+`view.rs::unavailable_message` alterado de `"Plugin indisponível — versão de protocolo
+incompatível"` para `"Plugin indisponível — versão de protocolo INCOMPATÍVEL (regressão deliberada
+T025)"`:
+
+```text
+Snapshot file: crates/farol-core/src/snapshots/farol__visual_snapshot_tests__VersionIncompatible.snap
+Snapshot: VersionIncompatible
+Source: crates/farol-core/src/visual_snapshot_tests.rs:256
+────────────────────────────────────────────────────────────────────────────────
+Expression: extract_visible_text(app.view())
+────────────────────────────────────────────────────────────────────────────────
+-old snapshot
++new results
+────────────┬───────────────────────────────────────────────────────────────────
+    1     1 │ git-local
+    2       │-Plugin indisponível — versão de protocolo incompatível
+          2 │+Plugin indisponível — versão de protocolo INCOMPATÍVEL (regressão deliberada T025)
+    3     3 │ plugin fala protocolo 0.1, core fala 0.2 (débito técnico #4)
+    4     4 │ uptime-kuma
+    5     5 │ Iniciando plugin...
+────────────┴───────────────────────────────────────────────────────────────────
+
+thread 'visual_snapshot_tests::version_incompatible_screen_matches_snapshot' panicked at .../insta-1.48.0/src/runtime.rs:719:13:
+snapshot assertion for 'VersionIncompatible' failed in line 256
+test visual_snapshot_tests::version_incompatible_screen_matches_snapshot ... FAILED
+
+test result: FAILED. 2 passed; 1 failed; 0 ignored; 0 measured; 35 filtered out; finished in 0.43s
+```
+
+Diff textual exato, linha a linha, nomeando arquivo/linha do teste (`visual_snapshot_tests.rs:256`) —
+Acceptance Scenario 3 e SC-005 satisfeitos. Note que **só** o snapshot `VersionIncompatible` falhou:
+`DashboardReady` e `SetupForm` continuaram verdes na mesma execução, confirmando que a mudança em um
+`screen_id` não produz alarme falso cruzado nos outros dois. Regressão revertida em seguida
+(`view.rs` volta ao texto original) e o arquivo `.snap.new` pendente removido; `cargo test --package
+farol-core visual_snapshot_tests` volta a 3/3 verde, `git status`/`git diff` confirmam `view.rs` sem
+diff residual.
 
 ## Cenário 5 — Confirmação de que nada trava indefinidamente (Edge Case do `spec.md`)
 

@@ -405,22 +405,56 @@ sem captura de tela nem inspeção manual.
 **Independent Test** (`spec.md`): gerar uma captura de uma tela conhecida; introduzir uma mudança
 visível; verificar que a comparação aponta a diferença.
 
-- [ ] T023 [US4] Criar `crates/farol-core/src/visual_snapshot_tests.rs` (módulo `#[cfg(test)]`
+- [X] T023 [US4] Criar `crates/farol-core/src/visual_snapshot_tests.rs` (módulo `#[cfg(test)]`
   declarado em `main.rs`, mesma forma de `e2e_tests.rs` — ver § Path Conventions e N3): helper que extrai uma
   representação textual determinística de um `Element<Message>` via a `Selector` API de `iced_test`
   (todo texto visível, em ordem de composição estável — `contracts/visual-snapshot-contract.md`)
-- [ ] T024 [US4] Em `visual_snapshot_tests.rs`: três construtores de estado `Farol` (reaproveitando os
+  **Entregue**: `extract_visible_text` usa `iced_test::simulator()` (não o `Emulator` de
+  `e2e_tests.rs` — nenhum `Program`/`Subscription`/processo filho envolvido, só `Farol::view()` já
+  pronto) com um `Selector` fechado sobre `FnMut(Candidate<'_>) -> Option<()>` que **nunca** "encontra"
+  nada (sempre `None`): é isso que faz `Simulator::find`/`Finder` (`iced_selector::find`) percorrer a
+  árvore inteira em vez de parar no primeiro texto — `Simulator` não expõe `Selector::find_all`
+  diretamente (seus campos `raw`/`renderer` são privados da própria `iced_test`), então o texto de
+  cada `Candidate::Text`/`Candidate::TextInput` (`value` OU `placeholder`, via
+  `TextInput::text()`) é acumulado como efeito colateral em vez de como valor de retorno do
+  `Selector`. Ordem de travessia é depth-first (mesma ordem de composição de `column!`/`row!` em
+  `view.rs`), confirmada estável em execuções repetidas (ver T025)
+- [X] T024 [US4] Em `visual_snapshot_tests.rs`: três construtores de estado `Farol` (reaproveitando os
   construtores de fixture de estado já existentes em `update.rs`, tornando-os `pub(crate)` onde
   necessário) para `DashboardReady`, `SetupForm` e `VersionIncompatible` (`data-model.md` §3); um
   `insta::assert_snapshot!` por `screen_id`, commitando os `.snap` de referência em
   `crates/farol-core/src/snapshots/`
+  **Entregue**: `update.rs` ganhou só mudanças de visibilidade (nenhuma lógica nova, per o pedido da
+  subtarefa) — `mod tests` → `pub(crate) mod tests`, `farol_with_monitor_widget`/
+  `sample_required_config` → `pub(crate) fn`. `DashboardReady` reaproveita
+  `update::tests::farol_with_monitor_widget()` (uptime-kuma `Ready`, widget `monitor-status-grid`
+  declarado) completando só `monitor_widget.monitors` (3 itens, incluindo o sentinela `-1` de T006/D3)
+  — o resto (identidade, capacidades) já vem do construtor reaproveitado. `SetupForm` reaproveita
+  `update::tests::sample_required_config()` (os mesmos dois campos do handshake real de uptime-kuma)
+  para montar `PluginConnection::setup_form`/`state = Unavailable{NotConfigured}` — sem construtor
+  dedicado a reaproveitar aqui (o estado é sempre montado inline nos testes de `update.rs`), construído
+  por mutação de campo direta, mesmo padrão que `e2e_tests.rs::plugin_state` já usa para os mesmos
+  campos crate-visíveis. `VersionIncompatible` (git-local): idem, sem construtor a reaproveitar,
+  mutação direta de `slot.connection.state`. Três `.snap` gerados via `INSTA_UPDATE=always cargo test`
+  (sem `cargo-insta` instalado — não é pré-requisito, só conveniência de revisão local per
+  `quickstart.md`) e commitados em `crates/farol-core/src/snapshots/`
 
 ### Validação da User Story 4 (Cenário 4 de `quickstart.md`)
 
-- [ ] T025 [US4] Executar Cenário 4 de `quickstart.md`: confirmar estabilidade sem mudança
+- [X] T025 [US4] Executar Cenário 4 de `quickstart.md`: confirmar estabilidade sem mudança
   (Acceptance Scenario 2 de US4); alterar deliberadamente um texto visível em `view.rs` para um dos
   três `screen_id`s e confirmar que `insta` aponta o diff exato (Acceptance Scenario 3, SC-005);
   reverter antes de prosseguir
+  **Executado em 2026-09-01.** Ver "Resultado real (T025, 2026-09-01)" em `quickstart.md` § Cenário 4
+  para a saída completa. Resumo: `cargo test --package farol-core visual_snapshot_tests` rodado duas
+  vezes seguidas sem nenhuma mudança — 3/3 verdes nas duas execuções, nenhum `.snap.new` gerado
+  (estabilidade, Acceptance Scenario 2). Regressão deliberada em
+  `view.rs::unavailable_message` (o headline do braço `VersionIncompatible`) — `cargo test` aponta o
+  diff exato linha a linha só no snapshot `VersionIncompatible` (`DashboardReady`/`SetupForm`
+  continuam verdes, sem alarme falso cruzado), nomeando arquivo/linha (`visual_snapshot_tests.rs:256`)
+  e mostrando a linha antiga (`-`) e a nova (`+`) lado a lado — Acceptance Scenario 3, SC-005
+  satisfeito. Regressão revertida; `cargo test` volta a 3/3 verde, `git status`/`git diff` confirmam
+  `view.rs` sem diff residual e nenhum `.snap.new` remanescente
 
 **Checkpoint**: Todas as quatro user stories entregáveis — feature completa.
 

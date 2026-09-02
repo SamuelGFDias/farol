@@ -24,6 +24,8 @@ mod plugin_worker;
 mod secrets_store;
 mod update;
 mod view;
+#[cfg(test)]
+mod visual_snapshot_tests;
 
 /// Título da janela do app — extraído para constante junto com [`program`]
 /// (T002 da feature 003) para que o binário real e o `iced_test::Emulator`

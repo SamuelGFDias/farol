@@ -1,0 +1,13 @@
+---
+source: crates/farol-core/src/visual_snapshot_tests.rs
+expression: extract_visible_text(app.view())
+---
+git-local
+Iniciando plugin...
+uptime-kuma
+Plugin "uptime-kuma" aguardando configuração — preencha os campos abaixo.
+URL base da instância Uptime Kuma
+URL base da instância Uptime Kuma
+API Key de métricas do Uptime Kuma
+API Key de métricas do Uptime Kuma
+Confirmar
