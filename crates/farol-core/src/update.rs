@@ -305,7 +305,8 @@ impl Farol {
             .any(|widget| widget.kind == MONITOR_WIDGET_KIND);
         match outcome {
             WidgetOutcome::Success(result) => {
-                match merge_widget_items(&slot.connection.items, result.items) {
+                let items = normalize_widget_items(result.items, is_monitor_widget);
+                match merge_widget_items(&slot.connection.items, items) {
                     MergedWidgetItems::Git(items) => {
                         // T035: preserva `fetch_in_flight`/`last_error` dos
                         // repositórios já conhecidos — um refresh periódico não
@@ -649,6 +650,36 @@ fn set_fetch_error(items: &mut [RepositoryViewModel], repo_id: &str, message: St
 enum MergedWidgetItems {
     Git(Vec<RepositoryViewModel>),
     Monitor(Vec<farol_protocol::messages::MonitorStatusItem>),
+}
+
+/// Corrige a ambiguidade documentada de `farol_protocol::messages::WidgetItems`
+/// (`#[serde(untagged)]`, `crates/farol-protocol/src/messages.rs`): as duas
+/// variantes serializam como `Vec<T>` simples, então um array `items: []`
+/// desserializa sempre como a primeira variante tentada (`Git`), mesmo
+/// quando a resposta veio de um widget `monitor-status-grid` (débito #5,
+/// issue #7 — achado ao corrigir T039/T051: uma instância Uptime Kuma real
+/// sem monitores cadastrados devolve `items: []`, que
+/// `handle_widget_outcome` roteava para `connection.items`, o campo errado,
+/// deixando `monitor_widget.last_error` da leitura anterior nunca limpo).
+///
+/// O core já sabe, pelo `kind` que este `widget_id` declarou no handshake
+/// (`is_monitor_widget`, calculado por `handle_widget_outcome` antes de
+/// chamar esta função), qual vocabulário esperar — a correção mora aqui, no
+/// ponto de consumo, e não no formato wire (`protocol/schema/v0.2/
+/// widget.schema.json` continua um `oneOf` de dois arrays, sem tag). Um
+/// array **não vazio** nunca é ambíguo (os campos de `WidgetItem` e
+/// `MonitorStatusItem` não coincidem, então o `serde` já resolve certo) —
+/// só o caso vazio precisa de ajuda.
+fn normalize_widget_items(
+    items: farol_protocol::messages::WidgetItems,
+    is_monitor_widget: bool,
+) -> farol_protocol::messages::WidgetItems {
+    match (items, is_monitor_widget) {
+        (farol_protocol::messages::WidgetItems::Git(items), true) if items.is_empty() => {
+            farol_protocol::messages::WidgetItems::Monitor(Vec::new())
+        }
+        (items, _) => items,
+    }
 }
 
 /// T031 (generaliza T035 original — feature 001): funde uma nova lista de

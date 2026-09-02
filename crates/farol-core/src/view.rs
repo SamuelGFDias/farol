@@ -355,7 +355,9 @@ fn view_repo_row<'a>(plugin_name: &'a str, item: &'a RepositoryViewModel) -> Ele
         // Distinto tanto de "sem remoto" quanto de "0 à frente / 0 atrás": remote configurado,
         // mas sem branch de tracking (`@{u}`) — ahead/behind não são computáveis, não "zero"
         // (débito técnico #3 / issue #3, `tasks.md` T049).
-        RemoteStatus::NoUpstreamTracking => "sem tracking configurado (ahead/behind desconhecido)".to_string(),
+        RemoteStatus::NoUpstreamTracking => {
+            "sem tracking configurado (ahead/behind desconhecido)".to_string()
+        }
     };
 
     let main_row = row![

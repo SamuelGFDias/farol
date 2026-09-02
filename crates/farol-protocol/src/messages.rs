@@ -343,11 +343,17 @@ pub struct MonitorStatusItem {
 /// implementação"): um enum sobre o `Vec<T>` inteiro, não um enum por elemento nem dois campos
 /// `Option<Vec<T>>` mutuamente exclusivos — porque o discriminante real é o `widget_id`/`kind`
 /// do *pedido* inteiro (conhecido pelo core antes mesmo de receber a resposta, `data-model.md`
-/// §1.4), nunca um dado por item dentro do array. Ambiguidade aceita conscientemente: como as
-/// duas variantes serializam como `Vec<T>` simples, um array vazio `[]` desserializa sempre como
-/// a primeira variante tentada (`Git`, pela ordem de declaração) — inofensivo na prática porque
-/// o core nunca infere a forma pelo conteúdo de `items` isoladamente; ele já sabe, pelo `kind`
-/// que o `widget_id` declarou no handshake, qual variante esperar.
+/// §1.4), nunca um dado por item dentro do array. Ambiguidade aceita conscientemente no tipo em
+/// si: como as duas variantes serializam como `Vec<T>` simples, um array vazio `[]` desserializa
+/// sempre como a primeira variante tentada (`Git`, pela ordem de declaração).
+///
+/// **Débito #5 (issue #7), corrigido**: essa ambiguidade só é de fato inofensiva porque quem
+/// consome este tipo corrige o caso vazio explicitamente — `crate::update::normalize_widget_items`
+/// em `farol-core`, usando o `kind` que o `widget_id` já declarou no handshake (a mesma informação
+/// que esta doc sempre afirmou estar disponível). Antes dessa correção, uma instância Uptime Kuma
+/// real sem monitores cadastrados (`items: []`) chegava aqui como `Git(vec![])` e era roteada para
+/// o campo errado de `PluginConnection` — achado ao automatizar T039/T051
+/// (`specs/002-uptime-kuma-plugin/tasks.md`).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum WidgetItems {

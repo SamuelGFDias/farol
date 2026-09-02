@@ -492,27 +492,26 @@ de monitores aparece corretamente na janela do Farol logo em seguida, sem qualqu
   `NotConfigured`; a distinção observável do lado do core entre os dois erros é a própria
   `PluginState` (T037 nunca chega a `Ready`; aqui a conexão fica `Ready` o tempo todo, só
   sinalizando o erro pontual do widget).
-- [ ] T039 [US1] Executar Cenário 6 de `quickstart.md` (renumerado — era Cenário 7) — apontar
+- [X] T039 [US1] Executar Cenário 6 de `quickstart.md` (renumerado — era Cenário 7) — apontar
   `base_url` para uma instância Uptime Kuma real, acessível, sem nenhum monitor cadastrado; confirmar
   `widget/get` com sucesso e `items: []` como estado válido, distinto de qualquer um dos erros acima
   (Edge Case do spec, análogo a diretório sem repositórios git da feature 001)
 
-  **Bloqueio encontrado nesta sessão (automação, 2026-09-01) — não corrigido, fora do escopo
-  autorizado**: `plugins/uptime-kuma/metrics_parser.py::parse_metrics` (linhas 94-95) não distingue
-  "zero monitores" de "resposta não reconhecível" — as duas condições produzem exatamente a mesma
-  falha, `MetricsParseError` (nenhuma linha `monitor_status{...}` no corpo, que é justamente o que
-  uma instância sem monitores emite). Confirmado interativamente
-  (`python3 -c "from metrics_parser import parse_metrics; parse_metrics('# HELP ...\n')"` →
-  `MetricsParseError: nenhuma linha monitor_status{...} encontrada no corpo de /metrics`). Convertido
-  em teste automatizado que exercita o critério de aceite **documentado** (sucesso, `items: []`) —
-  `crates/farol-core/src/e2e_tests.rs::uptime_kuma_widget_reports_empty_items_when_instance_has_no_monitors`,
-  `#[ignore]`d de propósito (mesmo padrão de
-  `crates/farol-protocol/tests/schema_boundaries.rs::widget_monitor_status_item_response_time_ms_negative_value_is_a_known_protocol_gap`)
-  porque falha contra o código real como está hoje; rodar com `cargo test --package farol-core
-  e2e_tests -- --ignored` reproduz o gap sob demanda. `plugins/` está fora dos arquivos autorizados
-  desta subtarefa — não corrigido. Rastreado como débito técnico próprio: issue #7 e T051 (§ Débito
-  técnico ao final deste arquivo) — esta task fica `[ ]` e o `#[ignore]` permanece até T051 ser
-  resolvida.
+  **Resolvido (débito #5, T051, 2026-09-02)**: dois bugs distintos, ambos corrigidos.
+  (1) `plugins/uptime-kuma/metrics_parser.py::parse_metrics` não distinguia "zero monitores" de
+  "resposta não reconhecível" — corrigido reconhecendo a declaração `# HELP`/`# TYPE monitor_status`
+  (sempre emitida pelo Prometheus para uma família de métrica registrada, mesmo sem amostras) como
+  sinal de instância real; ver `test_metrics_parser.py::test_instance_with_no_monitors_returns_empty_items`.
+  (2) Achado só depois de (1): mesmo com o plugin corrigido, o teste e2e continuava travando —
+  `crates/farol-protocol/src/messages.rs::WidgetItems` (`#[serde(untagged)]`) desserializa `items: []`
+  sempre como a primeira variante (`Git`), mesmo vindo de um widget `monitor-status-grid`;
+  `handle_widget_outcome` (`crates/farol-core/src/update.rs`) roteava esse `Git(vec![])` para
+  `connection.items` em vez de `connection.monitor_widget.monitors`, deixando `last_error` da
+  primeira leitura (racing contra o poller) nunca limpo. Corrigido com
+  `update::normalize_widget_items`, que usa o `kind` já conhecido do `widget_id`
+  (`is_monitor_widget`) para corrigir só o caso ambíguo (array vazio). Teste
+  `crates/farol-core/src/e2e_tests.rs::uptime_kuma_widget_reports_empty_items_when_instance_has_no_monitors`
+  não é mais `#[ignore]`d — passa em ~350ms-2.4s.
 
 **Checkpoint**: User Story 1 completa e testável de forma independente — MVP.
 
@@ -607,19 +606,69 @@ story.
   validar só registro histórico do schema, sem binding Rust ativo — decisão de implementação desta
   task: adaptar para usar o novo tipo estruturado (perdendo a cobertura do formato `v0.1` real) ou
   aposentar o teste com uma nota explicando por quê (depende de T008, T009, T010; antes de T045)
-- [ ] T044 [P] `farol-protocol`: testes de contrato (`cargo test`) para `Capability`
+- [x] T044 [P] `farol-protocol`: testes de contrato (`cargo test`) para `Capability`
   (serialização/deserialização de `exec`/`network` — **sem** `secret`, removida nesta revisão — contra
   `protocol/schema/v0.2/handshake.schema.json`), `RequiredConfigItem`/`required_config`, e para
   `MonitorStatusItem`/`kind: "monitor-status-grid"` contra `protocol/schema/v0.2/widget.schema.json`,
   em `tests/contract/` (depende de T008, T009, T010)
-- [ ] T045 [P] `farol-core`: teste de unidade da renderização do novo `kind` de widget
+
+  **Já satisfeita por T043 (2026-09-02)**: a migração de `contract_schema_validation.rs` para os
+  schemas `v0.2` (Correção H3, commit anterior a esta sessão) já cobre integralmente o escopo desta
+  task — `handshake_hello_response_success_matches_schema` (`Capability::Exec`),
+  `handshake_hello_response_success_with_network_capability_matches_schema` (`Capability::Network`),
+  `handshake_hello_response_success_with_required_config_matches_schema`/
+  `handshake_result_missing_required_config_is_rejected` (`RequiredConfigItem`/`required_config`),
+  `widget_get_result_with_monitor_items_matches_schema`/
+  `widget_get_result_with_empty_items_matches_schema_via_any_of`/
+  `widget_get_result_monitor_item_with_invalid_status_is_rejected` (`MonitorStatusItem`/
+  `monitor-status-grid`) — todas em `crates/farol-protocol/tests/contract_schema_validation.rs`, com
+  a mesma justificativa de layout já documentada no cabeçalho do arquivo para não morar em
+  `tests/contract/` na raiz do workspace (Cargo não compila testes de integração fora de
+  `<crate>/tests/`). Nenhum teste novo necessário.
+- [x] T045 [P] `farol-core`: teste de unidade da renderização do novo `kind` de widget
   (`monitor-status-grid`, incluindo o estado explícito de erro/não-configurado distinto de lista
   vazia) e do formulário de setup (`SetupForm`, T035), em `tests/unit/` (depende de T033, T035)
-- [ ] T046 [P] plugin `uptime-kuma`: testes `pytest` — parsing Prometheus com corpos sintéticos
+
+  **Concluída (2026-09-02)**: `SetupForm` e `monitor-status-grid` (lista populada) já tinham
+  cobertura via os `screen_id`s `SetupForm`/`DashboardReady` de `visual_snapshot_tests.rs` (T024 da
+  feature 003) — nenhum teste novo necessário para esses dois. O que faltava genuinamente era o
+  estado explícito de erro (`monitor_widget.last_error`), até agora só exercitado por e2e lentos
+  (T037/T040/T041, processo real). Adicionado o 4º `screen_id`, `MonitorWidgetError`
+  (`monitor_widget_error_state`/`monitor_widget_error_screen_matches_snapshot` em
+  `crates/farol-core/src/visual_snapshot_tests.rs`), extensão prevista pelo próprio FR-013 de
+  `specs/003-automated-testing-infrastructure/contracts/visual-snapshot-contract.md` — erro
+  preenchido **e** lista de uma leitura anterior preservada na mesma tela, distinguindo visualmente
+  de "0 monitores, sem erro" (T039) e de "lista populada, sem erro" (`DashboardReady`). Snapshot de
+  referência em `crates/farol-core/src/snapshots/farol__visual_snapshot_tests__MonitorWidgetError.snap`.
+  "Não-configurado" (`SetupForm`) é estado *distinto* de "erro pontual do widget"
+  (`MonitorWidgetError`) — os dois screen_ids juntos cobrem a frase completa da task.
+- [x] T046 [P] plugin `uptime-kuma`: testes `pytest` — parsing Prometheus com corpos sintéticos
   válidos e inválidos (`metrics_parser.py`), mapeamento de status FR-012, lógica de cache/erro do
   poller mockando a chamada HTTP e a **leitura de variável de ambiente** (`config.py`/`secrets.py`,
   T021/T022 — substitui o mock de `op read` de versões anteriores deste documento), em
   `tests/unit/test_uptime_kuma_*.py`
+
+  **Concluída (2026-09-02)**: `unittest` (stdlib), não `pytest` — D7 de `research.md` reafirma D3 da
+  feature 001 ("apenas biblioteca padrão") para a implementação do plugin como um todo; manter os
+  testes em `unittest` segue o mesmo espírito, mesma justificativa já registrada em
+  `tests/unit/test_git_local_scan.py` (feature 001) para essa mesma escolha. Arquivos novos ficam
+  junto de `test_metrics_parser.py` (`plugins/uptime-kuma/test_*.py`), **não** em `tests/unit/`
+  (existente, `tests/unit/README.md`, usado por `git-local`/feature 001) — divergência **pré-existente**
+  desta sessão (não introduzida aqui): diferente de `tests/contract/` (T044, impossível para Cargo
+  descobrir), `tests/unit/` funciona tecnicamente para Python (`test_git_local_scan.py` roda dali sem
+  problema). `test_metrics_parser.py` já morava em `plugins/uptime-kuma/` antes desta task (commit
+  anterior a esta sessão) — reconciliar os dois layouts exigiria mover um arquivo pré-existente fora
+  do escopo autorizado; os três arquivos novos seguem o precedente já em vigor para este plugin
+  específico, para não fragmentar ainda mais (metade num lugar, metade no outro). Cobertura:
+  `test_metrics_parser.py` ganhou mapeamento de status FR-012 explícito (4
+  valores conhecidos + valor fora do domínio + linha malformada tolerada) além dos casos já
+  existentes; `test_poller.py` (novo) — `MetricsCache` (estado inicial, `record_success`/
+  `record_error`, erro não apaga sucesso anterior) e `PollerThread._poll_once` com
+  `metrics_client.fetch_metrics` mockado (`unittest.mock.patch`, sucesso/`metrics_unreachable`/
+  `metrics_parse_error`), nunca rede real nem `Thread.run`; `test_config.py`/`test_secrets.py`
+  (novos) — `load_base_url`/`load_api_key` via `unittest.mock.patch.dict(os.environ, ...)`, valor
+  sintético, presente/ausente/vazio. 21 testes no total (`python3 -m unittest discover -p
+  "test_*.py"`), `ruff check .` limpo.
 
 ---
 
@@ -683,7 +732,7 @@ qualquer momento, inclusive antes da Fase 1); T050 depende do protocolo `"0.2"` 
   estão fora do escopo de arquivos autorizados desta correção (T036-T042/feature 002 em andamento em
   paralelo toca `e2e_tests.rs`) — não alterados aqui de propósito; atualização desses dois artefatos
   fica como trabalho de acompanhamento.
-- [ ] T051 **[Débito #5]** `plugins/uptime-kuma/metrics_parser.py::parse_metrics` (linhas 94-95) não
+- [x] T051 **[Débito #5]** `plugins/uptime-kuma/metrics_parser.py::parse_metrics` (linhas 94-95) não
   distingue "zero monitores cadastrados" (deveria ser sucesso, `items: []` — Edge Case de `spec.md`
   linha 61, Cenário 6 de `quickstart.md`) de "resposta `/metrics` inválida" (deveria ser
   `metrics_parse_error`, `-32007`) — as duas condições hoje colapsam na mesma exceção
@@ -698,6 +747,16 @@ qualquer momento, inclusive antes da Fase 1); T050 depende do protocolo `"0.2"` 
   sem `#[ignore]`; marcar T039 como `[X]`; fechar a issue #7 com `gh issue close 7 --comment
   "metrics_parser.py distingue zero monitores de resposta inválida — items: [] vs.
   metrics_parse_error"`.
+  **Nota de implementação (2026-09-02)**: a correção do plugin (acima) foi necessária mas não
+  suficiente — com ela sozinha o teste continuava travando. Segundo bug, no `farol-core`, achado só
+  depois: `farol_protocol::messages::WidgetItems` (`#[serde(untagged)]`) desserializa `items: []`
+  sempre como a primeira variante (`Git`), mesmo vindo de `monitor-status-grid`; `handle_widget_outcome`
+  (`crates/farol-core/src/update.rs`) confiava nessa variante em vez do `kind` já conhecido do
+  `widget_id` (`is_monitor_widget`, calculado ali mesmo mas só usado no branch de erro), então
+  roteava o sucesso vazio para `connection.items` (campo errado) e nunca limpava
+  `monitor_widget.last_error`. Corrigido com a função nova `update::normalize_widget_items`. Ver T039
+  acima e o comentário atualizado em `crates/farol-protocol/src/messages.rs::WidgetItems` para o
+  detalhe completo. Issue #7 fechada.
 
 ---
 

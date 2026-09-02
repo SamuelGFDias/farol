@@ -8,11 +8,20 @@ Reconhece **apenas** duas famílias de métrica, uma linha por amostra:
   `2→pending`, `3→maintenance`).
 - `monitor_response_time{monitor_name="...", ...} <valor>` → `response_time_ms` (arredondado).
 
-Qualquer outra família de métrica e qualquer linha de comentário (`#`) são ignoradas. Linhas
-malformadas isoladas dentro das duas famílias reconhecidas (ex.: sem `monitor_name`) são puladas —
-tolerância parcial. `MetricsParseError` é levantado apenas quando a resposta inteira é inválida:
-nenhuma linha `monitor_status{...}` reconhecível em todo o corpo, ou algum valor de `monitor_status`
-fora de `{0, 1, 2, 3}`.
+Qualquer outra família de métrica é ignorada. Linhas malformadas isoladas dentro das duas famílias
+reconhecidas (ex.: sem `monitor_name`) são puladas — tolerância parcial. `MetricsParseError` é
+levantado apenas quando a resposta inteira é inválida: nenhum sinal de `monitor_status` reconhecível
+em todo o corpo (nem amostra, nem a declaração `# HELP`/`# TYPE monitor_status` que o Prometheus
+sempre emite para uma família de métrica registrada, mesmo sem nenhuma amostra), ou algum valor de
+`monitor_status` fora de `{0, 1, 2, 3}`.
+
+Uma instância Uptime Kuma real, acessível, mas sem nenhum monitor cadastrado, ainda emite a
+declaração `# HELP`/`# TYPE monitor_status` (o exportador declara a família de métrica
+independentemente de haver amostras) — só não emite nenhuma linha `monitor_status{...}`. Esse caso é
+distinto de um corpo genuinamente não reconhecível (ex.: página HTML de erro), que não tem nem a
+declaração nem a amostra: o primeiro é sucesso com `items: []` (Edge Case de `spec.md`, Cenário 6 de
+`quickstart.md`, T039/T051 de `specs/002-uptime-kuma-plugin/tasks.md`), o segundo continua
+`MetricsParseError`.
 
 Apenas biblioteca padrão — `re`.
 """
@@ -33,6 +42,8 @@ _METRIC_LINE_RE = re.compile(
 )
 _LABEL_RE = re.compile(r'(?P<key>[A-Za-z_][A-Za-z0-9_]*)\s*=\s*"(?P<value>[^"]*)"')
 
+_MONITOR_STATUS_DECLARATION_RE = re.compile(r"^#\s*(HELP|TYPE)\s+monitor_status\b")
+
 
 class MetricsParseError(Exception):
     """Corpo de `/metrics` não reconhecível como resposta válida do Uptime Kuma (`-32007`)."""
@@ -52,10 +63,15 @@ def parse_metrics(body: str) -> list[dict]:
     statuses: dict[str, int] = {}
     response_times: dict[str, float] = {}
     found_monitor_status_line = False
+    found_monitor_status_declaration = False
 
     for raw_line in body.splitlines():
         line = raw_line.strip()
-        if not line or line.startswith("#"):
+        if not line:
+            continue
+        if line.startswith("#"):
+            if _MONITOR_STATUS_DECLARATION_RE.match(line):
+                found_monitor_status_declaration = True
             continue
 
         match = _METRIC_LINE_RE.match(line)
@@ -91,7 +107,7 @@ def parse_metrics(body: str) -> list[dict]:
                 # Valor não numérico — linha malformada isolada, pulada.
                 continue
 
-    if not found_monitor_status_line:
+    if not found_monitor_status_line and not found_monitor_status_declaration:
         raise MetricsParseError("nenhuma linha monitor_status{...} encontrada no corpo de /metrics")
 
     items: list[dict] = []

@@ -1829,48 +1829,23 @@ fn uptime_kuma_reports_metrics_unreachable_for_an_invalid_base_url_but_stays_rea
     assert_no_lingering_children();
 }
 
-/// **T039 [US1] (achado nesta sessão — gap real do plugin, não corrigido:
-/// `plugins/` está fora do escopo autorizado desta subtarefa)** — Cenário 6
-/// de `quickstart.md`: instância Uptime Kuma real, acessível, mas recém
+/// **T039 [US1] / T051 (débito #5, issue #7 — corrigido)** — Cenário 6 de
+/// `quickstart.md`: instância Uptime Kuma real, acessível, mas recém
 /// instalada e sem nenhum monitor cadastrado. O critério de aceite
 /// documentado (`spec.md` Edge Case, `quickstart.md` Cenário 6, `tasks.md`
 /// T039) é `widget/get` responder com sucesso e `items: []` — estado válido,
 /// análogo ao diretório sem repositórios git da feature 001.
 ///
-/// A implementação atual de `plugins/uptime-kuma/metrics_parser.py::parse_metrics`
-/// (linhas 94-95) não distingue "zero monitores" de "resposta não
-/// reconhecível": as duas condições produzem exatamente a mesma falha,
-/// `MetricsParseError` (`found_monitor_status_line == False` sempre que não
-/// há NENHUMA linha `monitor_status{...}` no corpo — que é justamente o que
-/// uma instância sem monitores emite, já que o Uptime Kuma só gera uma
-/// amostra Prometheus por monitor configurado). Confirmado interativamente
-/// antes de escrever este teste:
-///
-/// ```text
-/// $ python3 -c "from metrics_parser import parse_metrics, MetricsParseError; \
-///     parse_metrics('# HELP monitor_status ...\n# TYPE monitor_status gauge\n')"
-/// MetricsParseError: nenhuma linha monitor_status{...} encontrada no corpo de /metrics
-/// ```
-///
-/// Ou seja: hoje, uma instância real sem monitores devolve `error(-32007,
-/// metrics_parse_error)` pelo `widget/get`, não `items: []`. Fora do escopo
-/// autorizado desta subtarefa corrigir (`plugins/` está off-limits) —
-/// reportado como bloqueio, não corrigido por conta própria. Precisa virar
-/// issue própria (constitution v1.0.0, Governance: débito técnico é issue
-/// obrigatória) antes deste teste poder deixar de ser `#[ignore]`d — mesmo
-/// padrão já usado por
-/// `crates/farol-protocol/tests/schema_boundaries.rs::widget_monitor_status_item_response_time_ms_negative_value_is_a_known_protocol_gap`
-/// (ver `AGENTS.md` § Testes).
-///
-/// Este teste fica `#[ignore]`d de propósito: exercita o critério de aceite
-/// DOCUMENTADO (sucesso, `items: []`), então falha contra o código real como
-/// está hoje — rodar com `cargo test --package farol-core e2e_tests --
-/// --ignored` reproduz o gap sob demanda; deixá-lo habilitado por padrão
-/// quebraria `cargo test` para todo mundo por um comportamento pré-existente
-/// do plugin, não uma regressão desta subtarefa.
+/// `plugins/uptime-kuma/metrics_parser.py::parse_metrics` distinguia "zero
+/// monitores" de "resposta não reconhecível" incorretamente: as duas
+/// condições produziam exatamente a mesma falha, `MetricsParseError`, porque
+/// a única checagem era a presença de uma linha `monitor_status{...}` com
+/// amostra. Corrigido reconhecendo também a declaração `# HELP`/`# TYPE
+/// monitor_status` (que o Prometheus sempre emite para uma família de
+/// métrica registrada, mesmo sem amostras) como sinal de instância real —
+/// ver `plugins/uptime-kuma/metrics_parser.py` e
+/// `plugins/uptime-kuma/test_metrics_parser.py::test_instance_with_no_monitors_returns_empty_items`.
 #[test]
-#[ignore = "gap real em plugins/uptime-kuma/metrics_parser.py (zero monitores vira \
-            metrics_parse_error, não items: []) — issue #7"]
 fn uptime_kuma_widget_reports_empty_items_when_instance_has_no_monitors() {
     let _guard = e2e_guard();
     let metrics = MetricsFixtureServer::start_with_body(EMPTY_METRICS_FIXTURE_BODY);

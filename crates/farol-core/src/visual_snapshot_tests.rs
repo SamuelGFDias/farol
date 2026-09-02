@@ -234,6 +234,38 @@ fn version_incompatible_state() -> Farol {
     app
 }
 
+/// `screen_id` `MonitorWidgetError` (T045, `specs/002-uptime-kuma-plugin/tasks.md`) — extensão do
+/// conjunto de `data-model.md` §3 (FR-013 de `visual-snapshot-contract.md`: um novo `screen_id` é
+/// só mais um construtor + `assert_snapshot!`, sem mudar o mecanismo).
+///
+/// Cobre o estado que só os testes e2e (`e2e_tests.rs`, T037/T040/T041 — lentos, processo real)
+/// exercitavam até aqui: `monitor_widget.last_error` preenchido, **distinto** tanto do estado "0
+/// monitores, sem erro" (T039, `Nenhum monitor cadastrado nesta instância.`) quanto de "lista
+/// populada, sem erro" ([`dashboard_ready_state`]) — `view_monitor_grid`
+/// (`crates/farol-core/src/view.rs`) MUST mostrar só o texto do erro quando não há lista prévia
+/// preservada (FR-008/FR-013/FR-014/SC-001/SC-005 de `specs/002-uptime-kuma-plugin/spec.md`, ver a
+/// docstring de `view_monitor_grid`). Além disso, esta fixture preserva um monitor de uma leitura
+/// anterior bem-sucedida (`data-model.md` §3.1: erro pontual não apaga `monitors`, FR-017) — o
+/// mesmo cenário provado ao vivo por T040, aqui como snapshot rápido, sem processo filho.
+fn monitor_widget_error_state() -> Farol {
+    let mut app = crate::update::tests::farol_with_monitor_widget();
+
+    let slot = app
+        .plugins
+        .iter_mut()
+        .find(|slot| slot.spawn_config.plugin_name == "uptime-kuma")
+        .expect("uptime-kuma é um plugin conhecido");
+    slot.connection.monitor_widget.monitors = vec![MonitorStatusItem {
+        name: "farol-api".to_string(),
+        status: MonitorStatus::Up,
+        response_time_ms: Some(42),
+    }];
+    slot.connection.monitor_widget.last_error =
+        Some("falha ao consultar /metrics da instância Uptime Kuma configurada".to_string());
+
+    app
+}
+
 // ---------------------------------------------------------------------------
 // Um `insta::assert_snapshot!` por `screen_id`
 // ---------------------------------------------------------------------------
@@ -254,4 +286,10 @@ fn setup_form_screen_matches_snapshot() {
 fn version_incompatible_screen_matches_snapshot() {
     let app = version_incompatible_state();
     insta::assert_snapshot!("VersionIncompatible", extract_visible_text(app.view()));
+}
+
+#[test]
+fn monitor_widget_error_screen_matches_snapshot() {
+    let app = monitor_widget_error_state();
+    insta::assert_snapshot!("MonitorWidgetError", extract_visible_text(app.view()));
 }

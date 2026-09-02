@@ -138,9 +138,9 @@ injetados como variável de ambiente no spawn — não há dependência de keyri
 
 ## Testes
 
-- `cargo test --workspace` — 96 testes passando (+ 2 `#[ignore]`d deliberadamente, ver abaixo):
-  unit/e2e/snapshot de `farol-core` (45, 1 ignorado) + contrato/unit de `farol-protocol` (21 +
-  `schema_boundaries` 12+1 ignorado + 18 unit).
+- `cargo test --workspace` — 98 testes passando (+ 1 `#[ignore]`d deliberadamente, ver abaixo):
+  unit/e2e/snapshot de `farol-core` (47) + contrato/unit de `farol-protocol` (21 + `schema_boundaries`
+  12+1 ignorado + 18 unit).
 - `cargo clippy --workspace --all-targets` — deve ficar limpo, sem warning nenhum.
 - Harness de execução real em **duas camadas** (feature 003, `research.md` D1/D5,
   `contracts/e2e-harness-contract.md`) — a mesma máquina de estados real (`Program`/`Subscription`/
@@ -170,12 +170,18 @@ injetados como variável de ambiente no spawn — não há dependência de keyri
     (`uptime_kuma_process_killed_becomes_crashed_without_taking_down_the_core`); processo travado via
     `kill -STOP` vira `Unresponsive` sem derrubar o core
     (`uptime_kuma_process_frozen_becomes_unresponsive_without_taking_down_the_core`). Um oitavo
-    cenário (T039, Cenário 6 de `quickstart.md` — instância acessível sem nenhum monitor cadastrado)
-    fica `#[ignore]`d de propósito
-    (`uptime_kuma_widget_reports_empty_items_when_instance_has_no_monitors`): expõe um gap real de
-    `plugins/uptime-kuma/metrics_parser.py`, que não distingue "zero monitores" de "resposta
-    inválida" — rastreado como débito técnico #5, issue #7, `specs/002-uptime-kuma-plugin/tasks.md`
-    T051; reproduzir com `cargo test --package farol-core e2e_tests -- --ignored`.
+    cenário (T039, Cenário 6 de `quickstart.md` — instância acessível sem nenhum monitor cadastrado,
+    `uptime_kuma_widget_reports_empty_items_when_instance_has_no_monitors`) não é mais `#[ignore]`d
+    (débito técnico #5, issue #7 fechada, `specs/002-uptime-kuma-plugin/tasks.md` T051, 2026-09-02) —
+    dois bugs reais corrigidos: (1) `plugins/uptime-kuma/metrics_parser.py::parse_metrics` não
+    distinguia "zero monitores" de "resposta inválida" (corrigido reconhecendo a declaração `# HELP`/
+    `# TYPE monitor_status` como sinal de instância real, mesmo sem amostras); (2) achado só depois
+    de corrigir (1) — `farol_protocol::messages::WidgetItems` (`#[serde(untagged)]`) desserializa um
+    `items: []` sempre como a primeira variante (`Git`), mesmo vindo de `monitor-status-grid`,
+    fazendo `handle_widget_outcome` (`crates/farol-core/src/update.rs`) rotear o sucesso vazio para o
+    campo errado de `PluginConnection` e nunca limpar `monitor_widget.last_error` — corrigido com
+    `update::normalize_widget_items`, que usa o `kind` já conhecido do `widget_id` para resolver só o
+    caso ambíguo (array vazio).
   - **Camada 2** — smoke do binário `farol` real (`fn main()`, backend de janela winit de verdade),
     via `tests/integration/harness.sh` — precisa de `xvfb` (`Xvfb`). Confirma 5 condições (subir e
     sobreviver, `uptime-kuma` chega a `Ready`, `git-local` chega a `Ready` — mesma migração para
@@ -198,10 +204,15 @@ injetados como variável de ambiente no spawn — não há dependência de keyri
 - Verificação visual declarativa — `crates/farol-core/src/visual_snapshot_tests.rs` +
   `crates/farol-core/src/snapshots/*.snap` (via `insta`, `cargo test --package farol-core
   visual_snapshot_tests`): compara `extract_visible_text(app.view())` contra um snapshot textual por
-  `screen_id` (`data-model.md` §3) para os três estados cobertos — `DashboardReady`, `SetupForm`,
-  `VersionIncompatible` (`dashboard_ready_state`/`setup_form_state`/`version_incompatible_state`).
-  Revisar/aceitar um snapshot alterado intencionalmente: `cargo insta review` (requer `cargo install
-  cargo-insta`, não é pré-requisito pra rodar a suíte).
+  `screen_id` (`data-model.md` §3, extensível por FR-013 de `visual-snapshot-contract.md`) para os
+  quatro estados cobertos — `DashboardReady`, `SetupForm`, `VersionIncompatible`
+  (`dashboard_ready_state`/`setup_form_state`/`version_incompatible_state`) e, desde T045
+  (`specs/002-uptime-kuma-plugin/tasks.md`, 2026-09-02), `MonitorWidgetError`
+  (`monitor_widget_error_state`) — erro pontual do widget `monitor-status-grid`
+  (`monitor_widget.last_error`) com uma lista de uma leitura anterior preservada, distinto tanto de
+  "0 monitores, sem erro" quanto de "lista populada, sem erro". Revisar/aceitar um snapshot alterado
+  intencionalmente: `cargo insta review` (requer `cargo install cargo-insta`, não é pré-requisito pra
+  rodar a suíte).
 - `tests/contract/` (raiz do repo, fora de qualquer crate) permanece só documentação — `cargo test`
   não o descobre (Cargo só compila `tests/*.rs` dentro de cada crate).
 - Validação manual via `eprintln!` de diagnóstico temporário (usada até a feature 002) foi
@@ -215,3 +226,17 @@ injetados como variável de ambiente no spawn — não há dependência de keyri
 
 `plugins/*/pyproject.toml` configura `ruff` (lint). Rodar `ruff check` dentro do diretório do
 plugin antes de considerar uma mudança Python pronta.
+
+- `git-local` (feature 001): testes em `tests/unit/test_git_local_scan.py` (raiz do repo,
+  `unittest`, ver `tests/unit/README.md`) — repositórios git reais em diretórios temporários, não
+  mocks de subprocess.
+- `uptime-kuma` (feature 002): testes colocados junto do código
+  (`plugins/uptime-kuma/test_*.py`, `unittest`, D7 de `research.md`), **não** em `tests/unit/` —
+  divergência de layout pré-existente entre as duas features, não corrigida (mover exigiria tocar um
+  arquivo fora do escopo de quem a criou; ver a nota de T046 em
+  `specs/002-uptime-kuma-plugin/tasks.md`). Rodar tudo junto: `python3 -m unittest discover -p
+  "test_*.py"` dentro de `plugins/uptime-kuma/` (21 testes) — `test_metrics_parser.py` (parsing
+  Prometheus, mapeamento de status FR-012), `test_poller.py` (cache/erro do poller,
+  `metrics_client.fetch_metrics` mockado via `unittest.mock`), `test_config.py`/`test_secrets.py`
+  (leitura de `FAROL_PLUGIN_UPTIME_KUMA_BASE_URL`/`_API_KEY` via `unittest.mock.patch.dict(os.environ,
+  ...)`, nunca segredo real).
