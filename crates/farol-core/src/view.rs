@@ -335,8 +335,9 @@ fn view_repo_header() -> Element<'static, Message> {
 
 /// Renderiza uma linha do widget `status-grid`: nome do repositório,
 /// working tree suja/limpa (FR-013), estado do remoto — "sem remoto"
-/// (FR-014) visualmente distinguível de "0 à frente / 0 atrás" porque vem de
-/// uma variante diferente de `RemoteStatus` (nunca inferido por ausência de
+/// (FR-014) e "sem tracking configurado" (débito técnico #3 / issue #3)
+/// visualmente distinguíveis entre si e de "0 à frente / 0 atrás" porque vêm
+/// de variantes diferentes de `RemoteStatus` (nunca inferido por ausência de
 /// campo) — e a ação de fetch (T032/T036). Quando a última invocação de
 /// fetch para este repositório falhou, uma segunda linha com o erro é
 /// exibida logo abaixo, sem substituir os dados do repositório já
@@ -351,6 +352,10 @@ fn view_repo_row<'a>(plugin_name: &'a str, item: &'a RepositoryViewModel) -> Ele
     let remote_label = match &repo.remote_status {
         RemoteStatus::Tracked { ahead, behind } => format!("{ahead} à frente / {behind} atrás"),
         RemoteStatus::NoRemote => "sem remoto".to_string(),
+        // Distinto tanto de "sem remoto" quanto de "0 à frente / 0 atrás": remote configurado,
+        // mas sem branch de tracking (`@{u}`) — ahead/behind não são computáveis, não "zero"
+        // (débito técnico #3 / issue #3, `tasks.md` T049).
+        RemoteStatus::NoUpstreamTracking => "sem tracking configurado (ahead/behind desconhecido)".to_string(),
     };
 
     let main_row = row![

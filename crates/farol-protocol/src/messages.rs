@@ -260,11 +260,21 @@ pub enum HandshakeHelloResponse {
 /// (`protocol/SPEC.md`/`widget.schema.json`). `NoRemote` é uma serialização distinta de um
 /// repositório rastreado reportando 0 ahead / 0 behind: o core nunca precisa inferir "sem remoto"
 /// a partir de um campo ausente.
+///
+/// `NoUpstreamTracking` (débito técnico #3, issue #3, `specs/002-uptime-kuma-plugin/tasks.md`
+/// T049) é uma terceira variante distinta das outras duas: um remote está configurado
+/// (`git remote` não-vazio, diferente de `NoRemote`), mas o branch atual não tem branch de
+/// tracking definido (`@{u}` falha), então `ahead`/`behind` não são computáveis — sem essa
+/// variante, `git-local` caía num fallback silencioso `Tracked { ahead: 0, behind: 0 }`,
+/// indistinguível de "sincronizado com o remoto de verdade". Existe só em `protocol/schema/v0.2/
+/// widget.schema.json` (schema v0.1 permanece congelado como histórico, não recebeu esta
+/// variante).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RemoteStatus {
     Tracked { ahead: u64, behind: u64 },
     NoRemote,
+    NoUpstreamTracking,
 }
 
 /// Um repositório reportado por `widget/get` (`protocol/SPEC.md` §5.2, `data-model.md` §1.5).

@@ -1,12 +1,18 @@
 #!/usr/bin/env python3
-"""Plugin de referência `git-local` — o lado "servidor" do protocolo Farol v0.1.
+"""Plugin de referência `git-local` — o lado "servidor" do protocolo Farol v0.2.
 
 Prova que o protocolo (`protocol/SPEC.md`) é agnóstico de linguagem (D3 de `research.md`): este
 arquivo não importa nem depende do crate Rust `farol-protocol` em nenhum momento — é uma
-implementação independente lendo apenas `protocol/SPEC.md` + `protocol/schema/v0.1/*.schema.json`
+implementação independente lendo apenas `protocol/SPEC.md` + `protocol/schema/v0.2/*.schema.json`
 + os contratos em `specs/001-walking-skeleton-git-plugin/contracts/`. `crates/farol-protocol/src/
 messages.rs` foi consultado só como referência cruzada de vocabulário de campo (nomes JSON exatos,
 já que ele serializa/desserializa contra os mesmos schemas), nunca como fonte normativa.
+
+Migrado de `protocol_version = "0.1"` para `"0.2"` (débito técnico #4 / T050,
+`specs/002-uptime-kuma-plugin/tasks.md`) — o único campo do handshake que muda é `capabilities`
+(passa de `string[]` para `Capability[]` estruturado, `research.md` D1 da feature 002) mais o campo
+novo `required_config` (D8 da mesma feature), sempre `[]` aqui: `git-local` não tem nenhuma
+credencial/configuração a declarar. `widgets`/`actions` permanecem exatamente como antes.
 
 Transporte: JSON-RPC 2.0 sobre NDJSON em stdin/stdout (`protocol/SPEC.md` §2-§4). O core é sempre
 quem inicia cada requisição; este processo nunca escreve nada em stdout antes de receber e
@@ -26,7 +32,7 @@ import config
 import scan
 
 JSONRPC_VERSION = "2.0"
-PROTOCOL_VERSION = "0.1"
+PROTOCOL_VERSION = "0.2"
 PLUGIN_NAME = "git-local"
 
 WIDGET_ID = "repo-status"
@@ -68,7 +74,8 @@ def handle_handshake_hello(request: dict) -> dict:
     result = {
         "protocol_version": PROTOCOL_VERSION,
         "plugin_name": PLUGIN_NAME,
-        "capabilities": {"capabilities": ["exec"]},
+        "capabilities": {"capabilities": [{"kind": "exec"}]},
+        "required_config": [],
         "widgets": [
             {
                 "id": WIDGET_ID,

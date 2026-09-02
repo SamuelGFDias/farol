@@ -46,7 +46,7 @@
 
     "RemoteStatus": {
       "title": "RemoteStatus",
-      "description": "Discriminated union on `kind`. \"no_remote\" is a distinct serialization from a tracked repo reporting 0 ahead / 0 behind - the core never has to infer \"no remote\" from an absent field.",
+      "description": "Discriminated union on `kind`. \"no_remote\" is a distinct serialization from a tracked repo reporting 0 ahead / 0 behind - the core never has to infer \"no remote\" from an absent field. \"no_upstream_tracking\" (new in v0.2, technical debt #3 / issue #3, specs/002-uptime-kuma-plugin/tasks.md T049) is a third distinct state: a remote is configured (unlike no_remote), but the current branch has no tracking branch (`@{u}`) set, so ahead/behind are not computable - distinct from both no_remote and from a genuine 0 ahead / 0 behind. Not present in v0.1 (protocol/schema/v0.1/widget.schema.json, retained as-is / frozen historical).",
       "oneOf": [
         {
           "title": "RemoteStatusTracked",
@@ -72,6 +72,16 @@
           "type": "object",
           "properties": {
             "kind": { "const": "no_remote" }
+          },
+          "required": ["kind"],
+          "additionalProperties": false
+        },
+        {
+          "title": "RemoteStatusNoUpstreamTracking",
+          "type": "object",
+          "description": "A remote is configured, but the current branch has no upstream tracking branch set - ahead/behind are unknown, not zero.",
+          "properties": {
+            "kind": { "const": "no_upstream_tracking" }
           },
           "required": ["kind"],
           "additionalProperties": false

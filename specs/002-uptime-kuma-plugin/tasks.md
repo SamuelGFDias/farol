@@ -567,7 +567,7 @@ qualquer momento, inclusive antes da Fase 1); T050 depende do protocolo `"0.2"` 
   `resolver = "2"` em `[workspace]` no `Cargo.toml` raiz. Critério de pronto: `cargo metadata --format-version=1`
   confirma `resolver: "2"`; fechar a issue #2 com `gh issue close 2 --comment "Cargo.toml corrigido —
   resolver = \"2\" declarado em [workspace]"`.
-- [ ] T049 **[Débito #3]** `plugins/git-local/scan.py:_ahead_behind` (linhas 74-99) cai em fallback
+- [x] T049 **[Débito #3]** `plugins/git-local/scan.py:_ahead_behind` (linhas 74-99) cai em fallback
   silencioso `(0, 0)` quando o remote existe (`git remote` não-vazio) mas o branch atual não tem
   upstream de tracking configurado (`@{u}` falha) — esse caso não é o estado `no_remote` que o
   contrato já define, e o fallback mascara a diferença entre "0 ahead/0 behind de verdade" e "não dá
@@ -579,7 +579,13 @@ qualquer momento, inclusive antes da Fase 1); T050 depende do protocolo `"0.2"` 
   presente, testado com um repositório de fixture nessa condição; fechar a issue #3 com
   `gh issue close 3 --comment "RemoteStatus ganhou no_upstream_tracking — ahead/behind não confunde
   mais 'sem tracking' com '0 commits de diferença'"`.
-- [ ] T050 **[Débito #4]** `plugins/git-local/main.py` declara `protocol_version = "0.1"` e
+  **Nota de implementação (2026-09-01)**: como T050 (abaixo) foi resolvido na mesma sessão, `git-local`
+  já fala `"0.2"` — o `RemoteStatus.NoUpstreamTracking` novo foi adicionado só a
+  `protocol/schema/v0.2/widget.schema.json` (o schema efetivamente validado pelos testes de contrato
+  Rust; `v0.1` fica congelado, histórico, sem esta variante). `enabled` da ação de fetch passou a ser
+  `remote_status.kind != "no_remote"` (antes `== "tracked"`): `git fetch` continua fazendo sentido sem
+  branch de tracking, só `ahead`/`behind` ficam indisponíveis.
+- [x] T050 **[Débito #4]** `plugins/git-local/main.py` declara `protocol_version = "0.1"` e
   `capabilities: {"capabilities": ["exec"]}` (formato antigo, `string[]`) — incompatível com um core
   em `"0.2"` (esta feature, T003–T019). Correção: atualizar `plugins/git-local/main.py` para declarar
   `protocol_version = "0.2"` e `capabilities.capabilities: [{"kind": "exec"}]` (novo formato
@@ -591,6 +597,17 @@ qualquer momento, inclusive antes da Fase 1); T050 depende do protocolo `"0.2"` 
   `"0.2"`; fechar a issue #4 com `gh issue close 4 --comment "git-local migrado para protocol_version
   0.2 e Capability estruturada — Ready contra o core desta feature"`. Depende de T003–T013 (protocolo
   `"0.2"` completo + correções C1/H1/H2/H4 do lado do core).
+  **Nota de implementação (2026-09-01)**: `required_config: []` também precisou ser adicionado ao
+  `result` do handshake (campo obrigatório em `HandshakeHelloResult` sob `"0.2"`, mesmo vazio —
+  `protocol/schema/v0.2/handshake.schema.json`), além de `capabilities.capabilities: [{"kind":
+  "exec"}]`. **Divergência conhecida, fora do escopo desta correção**: com `git-local` agora chegando
+  a `Ready`, dois artefatos que hardcodavam o estado antigo (`VersionIncompatible`/`"0.1"`) passam a
+  falhar — `crates/farol-core/src/e2e_tests.rs::emulator_takes_git_local_through_a_real_handshake_to_a_terminal_state`
+  (`cargo test --workspace`) e `tests/integration/harness.sh` (que já traz, na própria mensagem de
+  falha, a instrução `"atualize este harness e crates/farol-core/src/e2e_tests.rs"`). Ambos os arquivos
+  estão fora do escopo de arquivos autorizados desta correção (T036-T042/feature 002 em andamento em
+  paralelo toca `e2e_tests.rs`) — não alterados aqui de propósito; atualização desses dois artefatos
+  fica como trabalho de acompanhamento.
 
 ---
 

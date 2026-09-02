@@ -2,10 +2,11 @@
 
 Implementa a lógica normativa de
 `specs/001-walking-skeleton-git-plugin/contracts/git-local-plugin.md` (§ Varredura, § Ação de
-fetch) e a forma de dado de `protocol/schema/v0.1/widget.schema.json`
-(`GitRepository`/`RemoteStatus`/`WidgetItem`) e `handshake.schema.json` (`ActionDeclaration`,
-campos em snake_case). Produz dicionários já no formato JSON exato esperado por essas mensagens —
-`main.py` só embrulha o resultado na envelope JSON-RPC.
+fetch) e a forma de dado de `protocol/schema/v0.2/widget.schema.json`
+(`GitRepository`/`RemoteStatus`/`WidgetItem`, copiada como-está de v0.1 exceto pelo estado novo
+`no_upstream_tracking` — débito técnico #3, `tasks.md` T049) e `handshake.schema.json`
+(`ActionDeclaration`, campos em snake_case). Produz dicionários já no formato JSON exato esperado
+por essas mensagens — `main.py` só embrulha o resultado na envelope JSON-RPC.
 
 Apenas biblioteca padrão (`subprocess`, `pathlib`, `shutil`) — decisão D3 de `research.md`.
 """
@@ -71,6 +72,20 @@ def _remote_names(repo_path: Path) -> list[str]:
     return [line for line in result.stdout.splitlines() if line.strip()]
 
 
+def _has_upstream_tracking(repo_path: Path) -> bool:
+    """`True` se o branch atual tem um branch de tracking (`@{u}`) configurado.
+
+    Equivalente a `git rev-parse --abbrev-ref --symbolic-full-name @{u}` ter sucesso (código de
+    saída `0`) — só o código de saída importa aqui, não o valor de stdout. Chamada só depois que o
+    chamador (`_remote_status`) já confirmou que existe ao menos um remote configurado
+    (`_remote_names` não-vazio); por isso um `@{u}` que falha *neste* ponto significa
+    especificamente "remote existe, mas upstream de tracking nunca foi configurado" — distinto do
+    caso "sem remote nenhum" (débito técnico #3 / issue #3, `tasks.md` T049).
+    """
+    result = _run_git(["rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}"], repo_path)
+    return result.returncode == 0
+
+
 def _ahead_behind(repo_path: Path) -> tuple[int, int]:
     """`(ahead, behind)` do branch atual em relação ao upstream configurado.
 
@@ -79,10 +94,10 @@ def _ahead_behind(repo_path: Path) -> tuple[int, int]:
     upstream" (= `behind`), a contagem à direita é "commits só alcançáveis a partir de HEAD"
     (= `ahead`).
 
-    Caso de borda não coberto explicitamente pelo contrato: um remote pode estar configurado
-    (`git remote` não-vazio) sem que o branch atual tenha upstream de tracking definido (`@{u}`
-    falha). Isso não é o estado "no_remote" que o contrato define — o fallback aqui é `(0, 0)` em
-    vez de propagar um erro, mantendo o widget utilizável mesmo nesse caso de borda.
+    Só é chamada por `_remote_status` depois que `_has_upstream_tracking` já confirmou que `@{u}`
+    resolve — o fallback `(0, 0)` abaixo é defensivo (git retornando algo inesperado apesar de
+    `@{u}` resolver), não mais o caminho usado para o caso "sem upstream de tracking" (esse agora
+    tem seu próprio estado, `RemoteStatus.NoUpstreamTracking` — issue #3).
     """
     result = _run_git(["rev-list", "--left-right", "--count", "@{u}...HEAD"], repo_path)
     if result.returncode != 0:
@@ -100,9 +115,13 @@ def _ahead_behind(repo_path: Path) -> tuple[int, int]:
 
 
 def _remote_status(repo_path: Path) -> dict:
-    """Monta o `RemoteStatus` (`{"kind":"no_remote"}` ou `{"kind":"tracked","ahead":N,"behind":M}`)."""
+    """Monta o `RemoteStatus`: `{"kind":"no_remote"}`, `{"kind":"no_upstream_tracking"}` (remote
+    configurado, mas sem branch de tracking — issue #3, distinto de "0 ahead / 0 behind de
+    verdade") ou `{"kind":"tracked","ahead":N,"behind":M}`."""
     if not _remote_names(repo_path):
         return {"kind": "no_remote"}
+    if not _has_upstream_tracking(repo_path):
+        return {"kind": "no_upstream_tracking"}
     ahead, behind = _ahead_behind(repo_path)
     return {"kind": "tracked", "ahead": ahead, "behind": behind}
 
@@ -111,11 +130,13 @@ def build_repo_item(repo_path: Path) -> dict:
     """Monta um `WidgetItem` (`repo` + `fetch_action`) para um repositório já identificado.
 
     Invariante MUST (`contracts/widget-protocol.md`): `remote_status.kind == "no_remote"` ⟺
-    `fetch_action.enabled == False`.
+    `fetch_action.enabled == False`. Um repositório `"no_upstream_tracking"` ainda tem `enabled ==
+    True`: `git fetch` busca de todos os remotes configurados independente de branch de tracking —
+    só `ahead`/`behind` (que dependem de `@{u}`) ficam indisponíveis nesse caso, não o fetch em si.
     """
     repo_id = str(repo_path.resolve())
     remote_status = _remote_status(repo_path)
-    enabled = remote_status["kind"] == "tracked"
+    enabled = remote_status["kind"] != "no_remote"
 
     repo = {
         "id": repo_id,

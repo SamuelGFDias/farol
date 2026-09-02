@@ -102,6 +102,28 @@ class FindRepoDirsAndScanTests(unittest.TestCase):
             {"type": "repo", "id": item["repo"]["id"]},
         )
 
+    def test_repo_with_remote_but_no_upstream_tracking_reports_distinct_state(self) -> None:
+        # Débito técnico #3 / issue #3 (`tasks.md` T049): remote configurado via `git remote add`
+        # sem `push -u`/`branch --set-upstream-to` MUST NOT cair no fallback `(0, 0)` de
+        # "tracked" — `@{u}` não resolve nesse caso, então o estado correto é
+        # "no_upstream_tracking", distinto tanto de "no_remote" quanto de um "tracked" 0/0 real.
+        bare_remote = self.scan_root / "remote.git"
+        bare_remote.mkdir()
+        _run(["git", "init", "--bare", "--initial-branch=main"], bare_remote)
+
+        repo_path = self.scan_root / "no-tracking"
+        _init_repo_with_commit(repo_path, name="no-tracking")
+        _run(["git", "remote", "add", "origin", str(bare_remote)], repo_path)
+
+        items = scan.scan_repositories(self.scan_root)
+
+        self.assertEqual(len(items), 1)
+        item = items[0]
+        self.assertEqual(item["repo"]["remote_status"], {"kind": "no_upstream_tracking"})
+        # Diferente de "no_remote": `git fetch` continua fazendo sentido aqui (busca de um remote
+        # de verdade), só ahead/behind ficam indisponíveis — a ação de fetch permanece habilitada.
+        self.assertTrue(item["fetch_action"]["enabled"])
+
     def test_dirty_repo_is_reported_as_dirty(self) -> None:
         repo_path = self.scan_root / "dirty"
         _init_repo_with_commit(repo_path, name="dirty")
