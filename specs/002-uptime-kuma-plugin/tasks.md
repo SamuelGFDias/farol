@@ -556,13 +556,13 @@ correspondente (`gh issue close <N> --comment "..."`) — instrução registrada
 nesta sessão de planejamento. T047–T049 são independentes entre si e da feature 002 (podem rodar a
 qualquer momento, inclusive antes da Fase 1); T050 depende do protocolo `"0.2"` desta feature.
 
-- [ ] T047 **[Débito #1]** `rustfmt.toml` usa opções exclusivas de `nightly`
+- [x] T047 **[Débito #1]** `rustfmt.toml` usa opções exclusivas de `nightly`
   (`format_code_in_doc_comments`, `wrap_comments`, `format_strings`, `format_macro_matchers`,
   `match_block_trailing_comma`) num toolchain `stable`. Correção: remover essas cinco opções de
   `rustfmt.toml`. Critério de pronto: `cargo fmt --check` roda sem erro de "unknown config option" em
   toolchain `stable`; fechar a issue #1 com `gh issue close 1 --comment "rustfmt.toml corrigido —
   opções exclusivas de nightly removidas"`.
-- [ ] T048 **[Débito #2]** `Cargo.toml` do workspace não declara `resolver`, então `cargo` assume o
+- [x] T048 **[Débito #2]** `Cargo.toml` do workspace não declara `resolver`, então `cargo` assume o
   resolver v1 apesar do `edition = "2021"` de cada crate membro. Correção: adicionar
   `resolver = "2"` em `[workspace]` no `Cargo.toml` raiz. Critério de pronto: `cargo metadata --format-version=1`
   confirma `resolver: "2"`; fechar a issue #2 com `gh issue close 2 --comment "Cargo.toml corrigido —
