@@ -4,7 +4,7 @@
 //! Diferente de `contract_schema_validation.rs` (exemplos manuais, escritos à mão um a um), este
 //! arquivo deriva casos de borda (`MinimumMinusOne`/`Minimum`/`MaximumPlusOne`/`Maximum`/
 //! `NoMinimumNegative`/`Null`/`MissingRequired`) diretamente do CONTEÚDO REAL dos JSON Schemas
-//! `protocol/schema/v0.2/*.schema.json`, em tempo de execução do teste — nunca de uma constante
+//! `protocol/schema/v0.3/*.schema.json`, em tempo de execução do teste — nunca de uma constante
 //! Rust paralela que apenas descreve o schema. Se o schema mudar (um `minimum` for editado, um
 //! campo deixar de ser `required`...), os valores gerados aqui mudam junto, sem precisar tocar
 //! este arquivo — é essa propriedade que faz o teste realmente quebrar quando schema e binding
@@ -42,18 +42,18 @@
 use jsonschema::{Registry, Validator};
 use serde_json::{json, Value};
 
-use farol_protocol::messages::{Capability, KnownCapability, MonitorStatusItem};
+use farol_protocol::messages::{Capability, KnownCapability, MonitorStatusItem, VpnStatusItem};
 use farol_protocol::{ActionDeclaration, ErrorObject, RemoteStatus, WidgetDeclaration};
 
-const HANDSHAKE_ID: &str = "https://farol.dev/protocol/v0.2/handshake.schema.json";
-const WIDGET_ID: &str = "https://farol.dev/protocol/v0.2/widget.schema.json";
-const ACTION_ID: &str = "https://farol.dev/protocol/v0.2/action.schema.json";
-const ERROR_ID: &str = "https://farol.dev/protocol/v0.2/error.schema.json";
+const HANDSHAKE_ID: &str = "https://farol.dev/protocol/v0.3/handshake.schema.json";
+const WIDGET_ID: &str = "https://farol.dev/protocol/v0.3/widget.schema.json";
+const ACTION_ID: &str = "https://farol.dev/protocol/v0.3/action.schema.json";
+const ERROR_ID: &str = "https://farol.dev/protocol/v0.3/error.schema.json";
 
-const HANDSHAKE_SCHEMA: &str = include_str!("../../../protocol/schema/v0.2/handshake.schema.json");
-const WIDGET_SCHEMA: &str = include_str!("../../../protocol/schema/v0.2/widget.schema.json");
-const ACTION_SCHEMA: &str = include_str!("../../../protocol/schema/v0.2/action.schema.json");
-const ERROR_SCHEMA: &str = include_str!("../../../protocol/schema/v0.2/error.schema.json");
+const HANDSHAKE_SCHEMA: &str = include_str!("../../../protocol/schema/v0.3/handshake.schema.json");
+const WIDGET_SCHEMA: &str = include_str!("../../../protocol/schema/v0.3/widget.schema.json");
+const ACTION_SCHEMA: &str = include_str!("../../../protocol/schema/v0.3/action.schema.json");
+const ERROR_SCHEMA: &str = include_str!("../../../protocol/schema/v0.3/error.schema.json");
 
 // -------------------------------------------------------------------------------------------
 // Carregamento dos schemas (equivalente a `load_schemas()` de `contract_schema_validation.rs`,
@@ -77,22 +77,22 @@ fn load_schema_set<'a>() -> SchemaSet<'a> {
 
     let registry = Registry::new()
         .add(
-            "https://farol.dev/protocol/v0.2/handshake.schema.json",
+            "https://farol.dev/protocol/v0.3/handshake.schema.json",
             handshake.clone(),
         )
         .expect("URI de handshake.schema.json inválida")
         .add(
-            "https://farol.dev/protocol/v0.2/widget.schema.json",
+            "https://farol.dev/protocol/v0.3/widget.schema.json",
             widget.clone(),
         )
         .expect("URI de widget.schema.json inválida")
         .add(
-            "https://farol.dev/protocol/v0.2/action.schema.json",
+            "https://farol.dev/protocol/v0.3/action.schema.json",
             action.clone(),
         )
         .expect("URI de action.schema.json inválida")
         .add(
-            "https://farol.dev/protocol/v0.2/error.schema.json",
+            "https://farol.dev/protocol/v0.3/error.schema.json",
             error.clone(),
         )
         .expect("URI de error.schema.json inválida")
@@ -675,6 +675,92 @@ fn widget_remote_status_tracked_ahead_and_behind_minimum_boundaries() {
             }
         }
     }
+}
+
+/// `VpnStatusItem.elapsed_seconds` (`type: ["number","null"]`, `required`, `minimum: 0` — novo em
+/// v0.3, `research.md` D3, `data-model.md` §1.3, feature 004 T012) — mesmo padrão de
+/// `widget_monitor_status_item_response_time_ms_minimum_boundaries` acima: um campo obrigatório,
+/// nullable, com `minimum` declarado desde o primeiro dia (diferente de `response_time_ms`, que
+/// só ganhou `minimum` ao fechar a issue #5) — o gerador não deve produzir `NoMinimumNegative`
+/// aqui, e os casos `MinimumMinusOne`/`Minimum` devem bater com o schema e (quando válidos)
+/// desserializar como `VpnStatusItem`.
+#[test]
+fn widget_vpn_status_item_elapsed_seconds_minimum_boundaries() {
+    let schemas = load_schema_set();
+    let validator = schemas.def_validator(WIDGET_ID, "VpnStatusItem");
+    let pointer = "/$defs/VpnStatusItem/properties/elapsed_seconds";
+    let property_schema = schemas.at(&schemas.widget, pointer);
+    let cases = numeric_and_null_boundary_cases(property_schema);
+    assert!(
+        !cases.is_empty(),
+        "esperava ao menos um caso de borda para elapsed_seconds (minimum:0 declarado)"
+    );
+    assert!(
+        !cases
+            .iter()
+            .any(|c| c.kind == BoundaryKind::NoMinimumNegative),
+        "NoMinimumNegative não deveria ser gerado para elapsed_seconds — widget.schema.json já \
+         declara minimum:0 desde a introdução do campo em v0.3"
+    );
+
+    let base = json!({
+        "state": "connected",
+        "active_profile": "work-vpn",
+        "elapsed_seconds": 125.5,
+        "available_profiles": [],
+        "disconnect_action": {
+            "id": "vpn.disconnect",
+            "label": "Desconectar",
+            "target": {"type": "vpn-connection", "id": "active"},
+            "enabled": true
+        }
+    });
+    for case in &cases {
+        let instance = apply_case(&base, "elapsed_seconds", case);
+        assert_case_matches_schema(&validator, "widget.schema.json", pointer, case, &instance);
+        if case.expected_schema_valid {
+            assert_case_deserializes::<VpnStatusItem>(
+                "widget.schema.json",
+                pointer,
+                case,
+                &instance,
+                "VpnStatusItem::elapsed_seconds: Option<f64>",
+            );
+        }
+    }
+}
+
+/// `VpnStatusItem.elapsed_seconds` — `MissingRequired`: campo obrigatório e nullable (nunca
+/// ausente), mesmo padrão de `widget_monitor_status_item_response_time_ms_null_and_missing_required`
+/// para `response_time_ms`.
+#[test]
+fn widget_vpn_status_item_elapsed_seconds_missing_required_is_rejected() {
+    let schemas = load_schema_set();
+    let validator = schemas.def_validator(WIDGET_ID, "VpnStatusItem");
+    let parent = schemas.at(&schemas.widget, "/$defs/VpnStatusItem");
+    let case = missing_required_case(parent, "elapsed_seconds")
+        .expect("elapsed_seconds deveria estar em `required` de VpnStatusItem");
+
+    let base = json!({
+        "state": "disconnected",
+        "active_profile": null,
+        "elapsed_seconds": null,
+        "available_profiles": [],
+        "disconnect_action": {
+            "id": "vpn.disconnect",
+            "label": "Desconectar",
+            "target": {"type": "vpn-connection", "id": "active"},
+            "enabled": false
+        }
+    });
+    let instance = apply_case(&base, "elapsed_seconds", &case);
+    assert_case_matches_schema(
+        &validator,
+        "widget.schema.json",
+        "/$defs/VpnStatusItem",
+        &case,
+        &instance,
+    );
 }
 
 // -------------------------------------------------------------------------------------------

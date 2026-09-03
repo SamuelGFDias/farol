@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://farol.dev/protocol/v0.3/action.schema.json",
+  "title": "Farol Protocol v0.3 — action/invoke",
+  "description": "Request and response envelopes for the action/invoke method. See protocol/SPEC.md §5.3 for the normative round-trip and §7.2 for its dedicated timeout budget (RPC_TIMEOUT_ACTION, distinct from RPC_TIMEOUT_CONTROL used by handshake/hello and widget/get). References ActionTarget from handshake.schema.json and GitRepository/VpnStatusItem from widget.schema.json. Evolved from v0.2 (protocol/schema/v0.2/action.schema.json, retained as-is): ActionInvokeResult, previously a fixed object shape carrying only repo, is now a oneOf discriminated by which single property is present - repo (unchanged, git-local's fetch action) or the new vpn_status (research.md D2/D4-D5, data-model.md §1.5), returned by the openfortivpn-gui reference plugin's vpn.connect/vpn.disconnect actions. The wire already emitted by git-local ({\"repo\": {...}}) keeps validating against the first branch unchanged - this is an additive change.",
+  "oneOf": [
+    { "$ref": "#/$defs/ActionInvokeRequest" },
+    { "$ref": "#/$defs/ActionInvokeResponseSuccess" },
+    { "$ref": "#/$defs/ActionInvokeResponseError" }
+  ],
+  "$defs": {
+    "RequestId": {
+      "title": "RequestId",
+      "oneOf": [
+        { "type": "integer" },
+        { "type": "string", "minLength": 1 }
+      ]
+    },
+
+    "ActionInvokeParams": {
+      "title": "ActionInvokeParams",
+      "type": "object",
+      "properties": {
+        "action_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Must match the `id` of an ActionDeclaration the plugin previously declared (in the handshake result and/or a widget/get response) for the given target, with enabled=true."
+        },
+        "target": {
+          "$ref": "https://farol.dev/protocol/v0.3/handshake.schema.json#/$defs/ActionTarget",
+          "description": "MUST be echoed back verbatim from the target of the ActionDeclaration that motivated this invocation - the core MUST NOT reconstruct a target on its own."
+        }
+      },
+      "required": ["action_id", "target"],
+      "additionalProperties": false
+    },
+
+    "ActionInvokeRequest": {
+      "title": "ActionInvokeRequest",
+      "type": "object",
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "id": { "$ref": "#/$defs/RequestId" },
+        "method": { "const": "action/invoke" },
+        "params": { "$ref": "#/$defs/ActionInvokeParams" }
+      },
+      "required": ["jsonrpc", "id", "method", "params"],
+      "additionalProperties": false
+    },
+
+    "ActionInvokeResult": {
+      "title": "ActionInvokeResult",
+      "description": "Result of a successful action invocation. Discriminated by which single property is present - new in v0.3 (research.md D2/D4-D5, data-model.md §1.5); v0.2 (protocol/schema/v0.2/action.schema.json, retained as-is) had a single fixed object shape carrying only repo. For the git-local reference plugin's git.fetch action, repo is the post-fetch repository state. For the openfortivpn-gui reference plugin's vpn.connect/vpn.disconnect actions, vpn_status is the post-action VpnStatusItem - same pattern as git.fetch, the core replaces the corresponding widget's data with this value directly, without an additional widget/get call (FR-018-equivalent of this feature). The wire already emitted by git-local ({\"repo\": {...}}) keeps validating against the first branch, unchanged.",
+      "oneOf": [
+        {
+          "title": "ActionInvokeResultRepo",
+          "type": "object",
+          "properties": {
+            "repo": {
+              "$ref": "https://farol.dev/protocol/v0.3/widget.schema.json#/$defs/GitRepository",
+              "description": "Updated state of the target repository after the action ran."
+            }
+          },
+          "required": ["repo"],
+          "additionalProperties": false
+        },
+        {
+          "title": "ActionInvokeResultVpnStatus",
+          "type": "object",
+          "description": "New in v0.3 (research.md D2/D4-D5, data-model.md §1.5) - returned by vpn.connect/vpn.disconnect.",
+          "properties": {
+            "vpn_status": {
+              "$ref": "https://farol.dev/protocol/v0.3/widget.schema.json#/$defs/VpnStatusItem",
+              "description": "Updated VPN connection status after the action ran."
+            }
+          },
+          "required": ["vpn_status"],
+          "additionalProperties": false
+        }
+      ]
+    },
+
+    "ActionInvokeResponseSuccess": {
+      "title": "ActionInvokeResponseSuccess",
+      "type": "object",
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "id": { "$ref": "#/$defs/RequestId" },
+        "result": { "$ref": "#/$defs/ActionInvokeResult" }
+      },
+      "required": ["jsonrpc", "id", "result"],
+      "additionalProperties": false
+    },
+
+    "ActionInvokeResponseError": {
+      "title": "ActionInvokeResponseError",
+      "type": "object",
+      "description": "E.g. code -32001 / reason \"fetch_failed\" when the underlying action execution failed, or code -32002 / reason \"action_timeout\" synthesized by the core when RPC_TIMEOUT_ACTION elapses. MUST NOT cause the plugin process to exit (protocol/SPEC.md §8.3) - the plugin keeps responding to subsequent requests. Never marks the plugin connection unavailable by itself.",
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "id": { "$ref": "#/$defs/RequestId" },
+        "error": { "$ref": "https://farol.dev/protocol/v0.3/error.schema.json" }
+      },
+      "required": ["jsonrpc", "id", "error"],
+      "additionalProperties": false
+    }
+  }
+}

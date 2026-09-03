@@ -332,11 +332,69 @@ pub struct MonitorStatusItem {
     pub response_time_ms: Option<u32>,
 }
 
+/// Estado de conexão VPN — espelha `StatusPayload.state` da CLI `openfortivpn-gui status --json`
+/// (novo em v0.3, `research.md` D3, `data-model.md` §1.1). **Sem** variante `Error`: uma falha ao
+/// consultar o estado (CLI ausente do `PATH`, ou `ErrorPayload`/`internal_error` devolvido pela
+/// própria CLI) é reportada como erro de protocolo em `widget/get` (`-32008`/
+/// `vpn_status_unavailable`), nunca espremida dentro deste enum — mesmo raciocínio já aplicado a
+/// `RemoteStatus` e a `MonitorStatus` nesta base: um estado observável é distinto de uma falha de
+/// leitura.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VpnConnectionState {
+    Disconnected,
+    Connecting,
+    Connected,
+}
+
+/// Um perfil de VPN conhecido pelo plugin `openfortivpn-gui`, pareado com a `ActionDeclaration`
+/// que conecta a ele — mesmo padrão de [`WidgetItem`] pareando `GitRepository` com `fetch_action`,
+/// reaproveitado um nível abaixo (por perfil, não pelo widget inteiro), porque é o perfil — não o
+/// widget como um todo — que é o alvo de `vpn.connect` (novo em v0.3, `research.md` D4,
+/// `data-model.md` §1.2).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct VpnProfile {
+    /// Nome de exibição do perfil, como conhecido pela CLI `openfortivpn-gui`.
+    pub name: String,
+    /// `id: "vpn.connect"`, `target: {type: "vpn-profile", id: <name deste perfil>}`. MUST ter
+    /// `enabled: true` se e somente se `VpnStatusItem.state == Disconnected` (`research.md` D4) —
+    /// invariante equivalente à já existente entre `WidgetItem.fetch_action.enabled` e
+    /// `repo.remote_status.kind == "no_remote"`.
+    pub connect_action: ActionDeclaration,
+}
+
+/// Um item reportado por `widget/get` para um widget declarado com `kind: "vpn-status"` (novo em
+/// v0.3, `research.md` D2-D4, `data-model.md` §1.3), pelo plugin de referência `openfortivpn-gui`.
+/// Diferente de [`WidgetItem`]/[`MonitorStatusItem`], `WidgetGetResult.items` para este `kind` é um
+/// singleton — sempre um array de zero ou um `VpnStatusItem`, refletindo que há no máximo uma
+/// sessão VPN ativa por vez (`research.md` D3), nunca uma lista de N itens independentes.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct VpnStatusItem {
+    /// Estado de conexão atual.
+    pub state: VpnConnectionState,
+    /// Espelha `selected_profile` da CLI. `None` explícito quando nenhum perfil está
+    /// selecionado/ativo, nunca inferido de campo ausente.
+    pub active_profile: Option<String>,
+    /// `Some` apenas quando `state == Connected` (espelha `session.elapsed_seconds` da CLI quando
+    /// `session` não é `null`); `None` explícito quando não aplicável, nunca inferido de campo
+    /// ausente — mesmo espírito de `MonitorStatusItem::response_time_ms`. Campo obrigatório e
+    /// nullable, nunca ausente. Nunca negativo — é uma duração.
+    pub elapsed_seconds: Option<f64>,
+    /// Todos os perfis de VPN conhecidos pelo plugin, cada um pareado com seu próprio
+    /// `connect_action` (`research.md` D4). MAY ser vazio se a CLI não reportar nenhum perfil
+    /// configurado.
+    pub available_profiles: Vec<VpnProfile>,
+    /// `id: "vpn.disconnect"`, `target: {type: "vpn-connection", id: "active"}`. MUST ter
+    /// `enabled: true` se e somente se `state == Connected` (`research.md` D4).
+    pub disconnect_action: ActionDeclaration,
+}
+
 /// União discriminada pelo `kind` do widget que originou a resposta de `widget/get` — `Git`
-/// (`Vec<WidgetItem>`) para `kind: "status-grid"`, ou `Monitor` (`Vec<MonitorStatusItem>`) para
-/// `kind: "monitor-status-grid"`. Nunca mista: cada resposta contém só um dos dois vocabulários
-/// (`data-model.md` §1.4, correção C3; `protocol/schema/v0.2/widget.schema.json`
-/// `WidgetGetResult.items`, um `oneOf` de dois arrays).
+/// (`Vec<WidgetItem>`) para `kind: "status-grid"`, `Monitor` (`Vec<MonitorStatusItem>`) para
+/// `kind: "monitor-status-grid"`, ou `Vpn` (`Vec<VpnStatusItem>`, novo em v0.3, sempre length 0 ou
+/// 1 — `research.md` D3) para `kind: "vpn-status"`. Nunca mista: cada resposta contém só um dos
+/// vocabulários (`data-model.md` §1.4, correção C3; `protocol/schema/v0.3/widget.schema.json`
+/// `WidgetGetResult.items`, um `anyOf` de três arrays).
 ///
 /// `#[serde(untagged)]` faz `items` serializar, no wire, como o array simples já fixado pelo
 /// schema JSON — sem tag/envelope extra. Decisão de desenho (item de C3 marcado como "decisão de
@@ -344,7 +402,7 @@ pub struct MonitorStatusItem {
 /// `Option<Vec<T>>` mutuamente exclusivos — porque o discriminante real é o `widget_id`/`kind`
 /// do *pedido* inteiro (conhecido pelo core antes mesmo de receber a resposta, `data-model.md`
 /// §1.4), nunca um dado por item dentro do array. Ambiguidade aceita conscientemente no tipo em
-/// si: como as duas variantes serializam como `Vec<T>` simples, um array vazio `[]` desserializa
+/// si: como as três variantes serializam como `Vec<T>` simples, um array vazio `[]` desserializa
 /// sempre como a primeira variante tentada (`Git`, pela ordem de declaração).
 ///
 /// **Débito #5 (issue #7), corrigido**: essa ambiguidade só é de fato inofensiva porque quem
@@ -353,12 +411,20 @@ pub struct MonitorStatusItem {
 /// que esta doc sempre afirmou estar disponível). Antes dessa correção, uma instância Uptime Kuma
 /// real sem monitores cadastrados (`items: []`) chegava aqui como `Git(vec![])` e era roteada para
 /// o campo errado de `PluginConnection` — achado ao automatizar T039/T051
-/// (`specs/002-uptime-kuma-plugin/tasks.md`).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// (`specs/002-uptime-kuma-plugin/tasks.md`). `Vpn` (novo em v0.3) reconhece mais um `kind`
+/// (`"vpn-status"`) sob a mesma correção existente, sem mudança de abordagem
+/// (`data-model.md` §1.4).
+///
+/// **Nota de derive**: `WidgetItems` deixou de derivar `Eq` em v0.3 — `VpnStatusItem` carrega
+/// `elapsed_seconds: Option<f64>` (`f64` não implementa `Eq`, só `PartialEq`), então nenhum tipo
+/// que o contenha transitivamente (`WidgetItems`, e por consequência `WidgetGetResult`) pode mais
+/// derivar `Eq`. `PartialEq` continua suficiente para todo `assert_eq!` existente.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum WidgetItems {
     Git(Vec<WidgetItem>),
     Monitor(Vec<MonitorStatusItem>),
+    Vpn(Vec<VpnStatusItem>),
 }
 
 /// Params do request `widget/get`.
@@ -389,15 +455,18 @@ impl WidgetGetRequest {
     }
 }
 
-/// Result de sucesso do `widget/get`.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Result de sucesso do `widget/get`. Não deriva `Eq` desde v0.3 — `items: WidgetItems` pode
+/// conter `VpnStatusItem::elapsed_seconds: Option<f64>`, e `f64` não implementa `Eq` (ver nota em
+/// [`WidgetItems`]).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct WidgetGetResult {
     /// Ecoa o `widget_id` do request.
     pub widget_id: String,
-    /// `Vec<WidgetItem>` ou `Vec<MonitorStatusItem>`, conforme o `kind` que este `widget_id`
-    /// declarou no handshake (correção C3, `data-model.md` §1.4). MAY ser vazia para qualquer
-    /// `kind` — um `scan_root` configurado sem repositórios embaixo, ou uma instância Uptime Kuma
-    /// sem monitores cadastrados, são ambos estados válidos, não erros.
+    /// `Vec<WidgetItem>`, `Vec<MonitorStatusItem>` ou `Vec<VpnStatusItem>`, conforme o `kind` que
+    /// este `widget_id` declarou no handshake (correção C3, `data-model.md` §1.4). MAY ser vazia
+    /// para qualquer `kind` — um `scan_root` configurado sem repositórios embaixo, uma instância
+    /// Uptime Kuma sem monitores cadastrados, ou um plugin de VPN momentaneamente incapaz de
+    /// representar o status como item singleton, são todos estados válidos, não erros.
     pub items: WidgetItems,
 }
 
@@ -454,12 +523,29 @@ impl ActionInvokeRequest {
     }
 }
 
-/// Result de sucesso de `action/invoke`. Para `git.fetch`, é o estado pós-fetch do repositório —
-/// o core substitui os dados do repositório diretamente por este valor, sem um `widget/get`
-/// adicional (`protocol/SPEC.md` FR-018 / `data-model.md` §4).
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct ActionInvokeResult {
-    pub repo: GitRepository,
+/// Result de sucesso de `action/invoke` — discriminado pela única propriedade presente no objeto
+/// (novo em v0.3, `research.md` D2/D4-D5, `data-model.md` §1.5). Até v0.2 (`protocol/schema/v0.2/
+/// action.schema.json`, congelado), era uma struct única carregando só `repo`; generalizado aqui
+/// para `oneOf`/enum untagged porque o resultado pós-ação passa a variar por plugin: `Git` para
+/// `git.fetch` do plugin `git-local` (estado pós-fetch do repositório), `Vpn` (novo) para
+/// `vpn.connect`/`vpn.disconnect` do plugin `openfortivpn-gui` (estado pós-ação da conexão VPN). Em
+/// ambos os casos o core substitui os dados do widget correspondente diretamente por este valor,
+/// sem um `widget/get` adicional (`protocol/SPEC.md` FR-018 / `data-model.md` §4/§1.5).
+///
+/// `#[serde(untagged)]` faz cada variante serializar como o objeto de propriedade única já fixado
+/// pelo schema JSON (`{"repo": {...}}` ou `{"vpn_status": {...}}`) — sem tag/envelope extra. O wire
+/// já emitido por `git-local` (`{"repo": {...}}`) continua validando sem alteração, contra a
+/// primeira variante tentada.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ActionInvokeResult {
+    Git {
+        repo: GitRepository,
+    },
+    /// Novo em v0.3. Estado pós-ação da conexão VPN, devolvido por `vpn.connect`/`vpn.disconnect`.
+    Vpn {
+        vpn_status: VpnStatusItem,
+    },
 }
 
 /// Resposta a um `action/invoke` — sucesso ou erro pontual (`-32001`/`fetch_failed`,

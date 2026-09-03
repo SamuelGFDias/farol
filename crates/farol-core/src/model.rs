@@ -166,6 +166,16 @@ pub struct PluginConnection {
     /// para qualquer conexão cujo widget declarado seja `status-grid`
     /// (`git-local`) — nunca populado nesse caso.
     pub monitor_widget: MonitorWidgetViewModel,
+    /// T017 (`specs/004-vpn-status-plugin/data-model.md` §2.1) — análogo de
+    /// `monitor_widget` acima, mas para o widget `vpn-status` do plugin
+    /// `openfortivpn-vpn`. Populado por `update::handle_widget_outcome`/
+    /// `handle_action_outcome` a partir das variantes
+    /// `farol_protocol::messages::WidgetItems::Vpn`/
+    /// `ActionInvokeResult::Vpn` (T024/T031, fora do escopo de T013-T019).
+    /// Continua com o `Default` vazio (`VpnWidgetViewModel::default()`) para
+    /// qualquer conexão cujo widget declarado não seja `"vpn-status"` —
+    /// mesma regra já aplicada a `monitor_widget`.
+    pub vpn_widget: VpnWidgetViewModel,
     /// T030 (D8) — formulário de setup ativo para esta conexão, presente
     /// se e somente se `state == Unavailable{reason: NotConfigured, ..}`
     /// (`update::handle_handshake_outcome` constrói/limpa este campo junto
@@ -244,6 +254,50 @@ pub struct MonitorWidgetViewModel {
     pub last_error: Option<String>,
 }
 
+/// Estado de UI do widget `vpn-status` do plugin `openfortivpn-vpn`
+/// (`specs/004-vpn-status-plugin/data-model.md` §2.1, T017) — análogo, para
+/// este widget, de `monitor_widget` (`MonitorWidgetViewModel`) acima.
+///
+/// **Wiring desta subtarefa (T013-T019)**: só o tipo é introduzido aqui e o
+/// campo `PluginConnection::vpn_widget` é adicionado com `Default` vazio —
+/// popular `status`/`last_error` a partir de um `widget/get` bem-sucedido
+/// (mesmo mecanismo já usado para `monitor_widget` em
+/// `update::handle_widget_outcome`) é escopo de T024, e
+/// `connect_in_flight`/`disconnect_in_flight`/`last_action_error` a partir de
+/// `action/invoke` (`vpn.connect`/`vpn.disconnect`) é escopo de T031 — ambas
+/// tasks futuras, fora desta subtarefa.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct VpnWidgetViewModel {
+    /// Último `VpnStatusItem` recebido com sucesso de `widget/get` para o
+    /// `widget_id` `"vpn-connection"`. `None` só antes do primeiro
+    /// `widget/get` bem-sucedido (mesmo espírito de
+    /// `MonitorWidgetViewModel::monitors` vazio inicialmente) — diferente de
+    /// `monitors`, que é sempre uma lista (mesmo vazia), este widget é
+    /// singleton (`research.md` D3: no máximo uma sessão VPN por vez), por
+    /// isso `Option<VpnStatusItem>` em vez de `Vec<VpnStatusItem>`.
+    pub status: Option<farol_protocol::messages::VpnStatusItem>,
+    /// Erro pontual do último `widget/get` deste widget
+    /// (`vpn_status_unavailable`/`exec_unavailable`, `research.md` D5),
+    /// preservando `status` anterior — mesmo padrão de
+    /// `MonitorWidgetViewModel::last_error`. Distinto de
+    /// `PluginState::Unavailable` — um erro de leitura pontual não muda o
+    /// estado geral de disponibilidade da conexão.
+    pub last_error: Option<String>,
+    /// `true` enquanto uma invocação de `action/invoke` de `vpn.connect`
+    /// está pendente para este widget (`research.md` D7) — estado de UI
+    /// local, não de protocolo; mesmo padrão de
+    /// `RepositoryViewModel::fetch_in_flight`.
+    pub connect_in_flight: bool,
+    /// Idem, para `vpn.disconnect`.
+    pub disconnect_in_flight: bool,
+    /// Erro da última invocação de `vpn.connect`/`vpn.disconnect` (mensagem
+    /// já traduzida pelo plugin, FR-007 de `spec.md`), limpo no próximo
+    /// sucesso — mesmo padrão de `RepositoryViewModel::last_error` para
+    /// `git.fetch`. Distinto de `last_error` acima, que é sobre `widget/get`,
+    /// não sobre uma ação.
+    pub last_action_error: Option<String>,
+}
+
 /// Estado de UI do formulário de setup de um plugin
 /// (`specs/002-uptime-kuma-plugin/data-model.md` §3.2, T030, D8) —
 /// consumido pela `view` quando `PluginState::Unavailable{reason:
@@ -301,6 +355,7 @@ impl Default for PluginConnection {
             items: Vec::new(),
             last_widget_error: None,
             monitor_widget: MonitorWidgetViewModel::default(),
+            vpn_widget: VpnWidgetViewModel::default(),
             setup_form: None,
             setup_attempt: 0,
         }

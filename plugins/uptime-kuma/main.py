@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plugin de referência `uptime-kuma` — o lado "servidor" do protocolo Farol v0.2.
+"""Plugin de referência `uptime-kuma` — o lado "servidor" do protocolo Farol v0.3.
 
 Prova do suporte do protocolo a plugins de rede e configuração de usuário (D1/D8 de `research.md`
 da feature 002): este arquivo não importa nem depende do crate Rust `farol-protocol` em nenhum
@@ -20,6 +20,8 @@ Handlers declarados:
   latência de rede.
 
 Apenas biblioteca padrão (D7 de `research.md`) — `json`, `sys`, `threading`.
+Migrado para `"0.3"` como parte da feature 004 (`specs/004-vpn-status-plugin/research.md` D2)
+— mudança mecânica, nenhum campo novo usado por este plugin.
 """
 
 from __future__ import annotations
@@ -33,7 +35,7 @@ from config import load_base_url
 from poller import DEFAULT_POLL_INTERVAL_MS, MetricsCache, PollerThread
 
 JSONRPC_VERSION = "2.0"
-PROTOCOL_VERSION = "0.2"
+PROTOCOL_VERSION = "0.3"
 PLUGIN_NAME = "uptime-kuma"
 WIDGET_ID = "uptime-kuma-monitors"
 

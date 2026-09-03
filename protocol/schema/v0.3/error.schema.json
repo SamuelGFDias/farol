@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://farol.dev/protocol/v0.3/error.schema.json",
+  "title": "Farol Protocol v0.3 — JSON-RPC Error Object",
+  "description": "The `error` member of any Farol protocol JSON-RPC response (handshake/hello, widget/get, action/invoke). See protocol/SPEC.md §8 for the normative prose. `code` follows the standard JSON-RPC 2.0 reserved range (-32700..-32600..-32603) for generic protocol errors, or the Farol domain range (-32000 to -32099) for the reasons below. `data.reason` is REQUIRED whenever `code` is one of the Farol domain codes. The shape of ErrorObject is unchanged from v0.2 (protocol/schema/v0.2/error.schema.json) - `data.reason` was already an open string, so this revision only extends the textual catalog below with the two new reasons reserved by the openfortivpn-gui reference plugin (research.md D5, contracts/protocol-delta-v0.3.md).\n\nFarol domain error catalog (protocol v0.3, code -> reason -> where -> meaning):\n-32000 -> protocol_version_incompatible -> handshake/hello response (plugin-side refusal path) -> the plugin refuses the protocol_version proposed by the core.\n-32001 -> fetch_failed -> action/invoke response -> the underlying action execution failed (e.g. `git fetch` returned a non-zero exit code); `data.detail` MAY carry the underlying error output.\n-32002 -> action_timeout -> synthesized by the core (not the plugin) when RPC_TIMEOUT_ACTION elapses on a single action/invoke call -> does not by itself mark the plugin connection unavailable.\n-32003 -> exec_unavailable -> handshake/hello or action/invoke response -> an executable the plugin depends on for a declared capability (e.g. `exec`) is not available in the environment; the plugin reports this as a pointwise failure without exiting its own process. Remains in the general protocol catalog (used by the git-local reference plugin for the `git` binary), but the uptime-kuma reference plugin has no use for it (D8 revised - uptime-kuma no longer invokes any external binary, so it never hits this reason).\n-32004 -> scan_root_unreadable -> widget/get response -> a configured path the plugin needs to read exists but is not accessible (permission error) - distinct from \"does not exist/empty\", which MUST be reported as success with empty data, never as an error.\n-32005 -> not_configured -> widget/get response (uptime-kuma reference plugin; defense-in-depth safeguard, not the primary path) -> some item of the plugin's declared required_config (e.g. `base_url` and/or `api_key`) is missing/empty in the plugin process's environment (FAROL_PLUGIN_UPTIME_KUMA_..., research.md D8). The primary path by which the user learns a plugin is unconfigured is the core refusing to advance PluginState to Ready (PluginState = Unavailable{NotConfigured}) once it compares the required_config received at handshake time against what it managed to inject, showing a setup screen instead of ever calling widget/get for that connection - this error is a safeguard reachable in practice only if that barrier is somehow bypassed. Detected once at process startup; persists until the process is restarted with valid configuration (no hot-reload in this revision).\n-32006 -> metrics_unreachable -> widget/get response (uptime-kuma reference plugin) -> the polling thread's latest attempt to contact `${base_url}/metrics` failed for a network reason: HTTP timeout, connection refused, wrong host, or a non-2xx HTTP response (including 401/403 - this revision does not distinguish \"wrong credential\" from \"host unreachable\" within this reason). `data.detail` MAY carry the underlying exception message.\n-32007 -> metrics_parse_error -> widget/get response (uptime-kuma reference plugin) -> the latest attempt got an HTTP response, but the body is not recognizable as valid Uptime Kuma Prometheus /metrics output: no `monitor_status{...}` line found, or some `monitor_status` value outside {0,1,2,3} - treated as a failure of the entire response for that attempt, not a partial result.\n-32008 -> vpn_status_unavailable -> widget/get response (openfortivpn-gui reference plugin, new in v0.3) -> `openfortivpn-gui status --json` is present in PATH but returned an ErrorPayload/internal_error, or its output is not interpretable as valid JSON of the expected schema. `data.detail` MAY carry the raw CLI message. Distinct from `-32003`/`exec_unavailable`, reused unmodified by this plugin for the case where the `openfortivpn-gui` binary itself is missing from PATH (research.md D5).\n-32009 -> vpn_action_failed -> action/invoke response (openfortivpn-gui reference plugin, new in v0.3) -> the underlying `connect`/`disconnect` CLI invocation failed - any of the CLI's six possible error codes (`profile_not_found`, `already_connected`, `not_connected`, `connect_timeout`, `sudo_denied`, `internal_error`). A single domain code covers all six causes, following the precedent already set by `-32001`/`fetch_failed` (git-local) - the specific cause is carried in `data`, not split across distinct codes/reasons. `data.detail` = `{cli_code, cli_message}`, the raw CLI error code and message; the ErrorObject's own `message` carries the already-translated human-readable text (FR-007 of that plugin's spec).\n\nThis catalog is normative for the git-local, uptime-kuma and openfortivpn-gui reference plugins. A future plugin MAY reserve additional `reason` values within the same -32000..-32099 code range, documented in that plugin's own section, as long as it does not reuse a `code` already defined above with a different meaning. `data.reason` is therefore intentionally left as an open string (not a closed enum) in this schema so that forward-compatible plugins are not rejected by validation.",
+  "$ref": "#/$defs/ErrorObject",
+  "$defs": {
+    "ErrorObject": {
+      "type": "object",
+      "title": "ErrorObject",
+      "description": "Standard JSON-RPC 2.0 error object, as used by every Farol protocol method. `message` is for humans/logs only - code MUST distinguish error kinds via `code`/`data.reason`, never by parsing `message`.",
+      "properties": {
+        "code": {
+          "type": "integer",
+          "description": "Numeric error identifier. Either a standard JSON-RPC 2.0 reserved code (-32700, -32600, -32601, -32602, -32603) or a Farol domain code in the reserved application range -32000 to -32099 (see this file's top-level description for the v0.3 catalog)."
+        },
+        "message": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Human-readable error message, for logs/diagnostics. Not a stable identifier - callers MUST use `code`/`data.reason` for programmatic handling."
+        },
+        "data": {
+          "type": "object",
+          "description": "Structured error detail. REQUIRED to be present with a `reason` field whenever `code` is a Farol domain code (-32000 to -32099). Additional properties beyond `reason` vary per `reason` (e.g. `detail`, `target`) and are intentionally left open by this schema.",
+          "properties": {
+            "reason": {
+              "type": "string",
+              "minLength": 1,
+              "description": "Farol domain reason string, e.g. \"protocol_version_incompatible\", \"fetch_failed\", \"action_timeout\", \"exec_unavailable\", \"scan_root_unreadable\", \"not_configured\", \"metrics_unreachable\", \"metrics_parse_error\", or a future plugin-specific reason within the reserved code range. Intentionally not a closed enum, to remain forward-compatible with reasons introduced by future plugins/versions."
+            }
+          },
+          "additionalProperties": true
+        }
+      },
+      "required": ["code", "message"],
+      "additionalProperties": false
+    }
+  }
+}

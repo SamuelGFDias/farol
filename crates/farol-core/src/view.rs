@@ -385,9 +385,11 @@ fn view_repo_row<'a>(plugin_name: &'a str, item: &'a RepositoryViewModel) -> Ele
 /// antes da resposta anterior chegar (assíncrona, via `Message::Worker`,
 /// sem travar a janela).
 ///
-/// **T015**: `Message::FetchRequested` ganhou o campo `plugin_name` (uma
-/// conexão por plugin conhecido agora, não mais implícita) — este `plugin_name`
-/// é passado por `view_repo_row`/`view_ready`, propagado da seção que
+/// **T015**: `Message::ActionInvokeRequested` (renomeada em T019, feature
+/// 004, do nome anterior específico de `git.fetch` — mesmos campos,
+/// identificador genérico) ganhou o campo `plugin_name` (uma conexão por
+/// plugin conhecido agora, não mais implícita) — este `plugin_name` é
+/// passado por `view_repo_row`/`view_ready`, propagado da seção que
 /// renderizou este item.
 fn view_fetch_control<'a>(
     plugin_name: &'a str,
@@ -398,7 +400,7 @@ fn view_fetch_control<'a>(
     }
 
     let action = &item.fetch_action;
-    let on_press = action.enabled.then(|| Message::FetchRequested {
+    let on_press = action.enabled.then(|| Message::ActionInvokeRequested {
         plugin_name: plugin_name.to_string(),
         action_id: action.id.clone(),
         target: action.target.clone(),

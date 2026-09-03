@@ -1,5 +1,5 @@
 //! Teste de contrato: valida que o JSON produzido/aceito pelos tipos de `farol_protocol::messages`
-//! é genuinamente válido contra os 4 JSON Schemas normativos em `protocol/schema/v0.2/*.schema.json`
+//! é genuinamente válido contra os 4 JSON Schemas normativos em `protocol/schema/v0.3/*.schema.json`
 //! — não apenas "o Rust concorda consigo mesmo" (isso já é coberto pelos testes de unidade internos
 //! de round-trip em `src/framing.rs`, `src/version.rs` e `src/messages.rs`), mas "o Rust concorda
 //! com o contrato normativo do protocolo".
@@ -11,10 +11,20 @@
 //! (`Vec<WidgetItem>` fixo). Os tipos de `farol_protocol::messages` evoluíram para o protocolo
 //! `"0.2"` (`Capability` discriminado por `kind`, `RequiredConfigItem`/`required_config`,
 //! `MonitorStatusItem` e `WidgetItems` como união discriminada) — o formato antigo não compila
-//! mais contra esses tipos. Como o contrato normativo vigente agora é `v0.2`, este arquivo passa a
-//! carregar e validar contra `protocol/schema/v0.2/*.schema.json`; `protocol/schema/v0.1/`
-//! permanece intocado como registro histórico do formato que `git-local` (até a migração da issue
-//! #4/T050) ainda fala.
+//! mais contra esses tipos. Passou então a carregar e validar contra
+//! `protocol/schema/v0.2/*.schema.json`.
+//!
+//! ## T011 (`specs/004-vpn-status-plugin/tasks.md`) — migração para `v0.3`
+//!
+//! Bump aditivo (`research.md` D2 da feature 004): `ActionInvokeResult` generaliza para `oneOf`/
+//! enum untagged (`Git`/`Vpn`) e `WidgetItems` ganha a variante `Vpn`. O wire já emitido por
+//! `git-local`/`uptime-kuma` continua validando sem alteração nenhuma — só os 4 `include_str!`/
+//! `$id` deste arquivo migram para `protocol/schema/v0.3/*.schema.json`, e dois exemplos novos são
+//! adicionados (`VpnStatusItem` em `WidgetGetResult`, `ActionInvokeResult::Vpn`), no mesmo padrão
+//! dos exemplos já existentes para `GitRepository`/`MonitorStatusItem`. `protocol/schema/v0.1/` e
+//! `v0.2/` permanecem intocados como registro histórico do formato que `git-local`/`uptime-kuma`
+//! (até a migração da própria constante `PROTOCOL_VERSION`, fora do escopo desta task) ainda
+//! falam.
 //!
 //! ## Por que este arquivo mora aqui e não em `tests/contract/` na raiz do workspace
 //!
@@ -40,12 +50,14 @@
 use jsonschema::{Registry, Validator};
 use serde_json::{json, Value};
 
-// `Capability`, `KnownCapability`, `RequiredConfigItem`, `MonitorStatus`, `MonitorStatusItem` e
-// `WidgetItems` (todos v0.2, já implementados em `src/messages.rs`) ainda não são reexportados na
-// raiz do crate (`src/lib.rs`, fora do escopo desta task — só este arquivo de teste é editado
-// aqui) — importados via `farol_protocol::messages` diretamente, que já os declara `pub`.
+// `Capability`, `KnownCapability`, `RequiredConfigItem`, `MonitorStatus`, `MonitorStatusItem`,
+// `WidgetItems` (v0.2) e `VpnConnectionState`/`VpnProfile`/`VpnStatusItem` (novos em v0.3, T008)
+// ainda não são reexportados na raiz do crate (`src/lib.rs`, fora do escopo desta task — só este
+// arquivo de teste é editado aqui) — importados via `farol_protocol::messages` diretamente, que já
+// os declara `pub`.
 use farol_protocol::messages::{
-    Capability, KnownCapability, MonitorStatus, MonitorStatusItem, RequiredConfigItem, WidgetItems,
+    Capability, KnownCapability, MonitorStatus, MonitorStatusItem, RequiredConfigItem,
+    VpnConnectionState, VpnProfile, VpnStatusItem, WidgetItems,
 };
 use farol_protocol::{
     ActionDeclaration, ActionInvokeParams, ActionInvokeRequest, ActionInvokeResponse,
@@ -56,11 +68,11 @@ use farol_protocol::{
 };
 
 // Conteúdo bruto dos 4 schemas normativos, embutido em tempo de compilação. Caminho relativo a
-// este arquivo: `crates/farol-protocol/tests/` -> raiz do workspace -> `protocol/schema/v0.2/`.
-const HANDSHAKE_SCHEMA: &str = include_str!("../../../protocol/schema/v0.2/handshake.schema.json");
-const WIDGET_SCHEMA: &str = include_str!("../../../protocol/schema/v0.2/widget.schema.json");
-const ACTION_SCHEMA: &str = include_str!("../../../protocol/schema/v0.2/action.schema.json");
-const ERROR_SCHEMA: &str = include_str!("../../../protocol/schema/v0.2/error.schema.json");
+// este arquivo: `crates/farol-protocol/tests/` -> raiz do workspace -> `protocol/schema/v0.3/`.
+const HANDSHAKE_SCHEMA: &str = include_str!("../../../protocol/schema/v0.3/handshake.schema.json");
+const WIDGET_SCHEMA: &str = include_str!("../../../protocol/schema/v0.3/widget.schema.json");
+const ACTION_SCHEMA: &str = include_str!("../../../protocol/schema/v0.3/action.schema.json");
+const ERROR_SCHEMA: &str = include_str!("../../../protocol/schema/v0.3/error.schema.json");
 
 /// Registra os 4 schemas juntos (por causa do `$ref` cruzado entre eles) e devolve um validador
 /// para cada um, montado sobre esse registry compartilhado.
@@ -82,25 +94,25 @@ fn load_schemas() -> Schemas {
         serde_json::from_str(ERROR_SCHEMA).expect("error.schema.json inválido");
 
     // Os 4 documentos são registrados sob suas próprias URLs `$id` para que `$ref` absolutos
-    // (ex.: `https://farol.dev/protocol/v0.2/error.schema.json`) resolvam entre eles.
+    // (ex.: `https://farol.dev/protocol/v0.3/error.schema.json`) resolvam entre eles.
     let registry = Registry::new()
         .add(
-            "https://farol.dev/protocol/v0.2/handshake.schema.json",
+            "https://farol.dev/protocol/v0.3/handshake.schema.json",
             handshake_value.clone(),
         )
         .expect("URI de handshake.schema.json inválida")
         .add(
-            "https://farol.dev/protocol/v0.2/widget.schema.json",
+            "https://farol.dev/protocol/v0.3/widget.schema.json",
             widget_value.clone(),
         )
         .expect("URI de widget.schema.json inválida")
         .add(
-            "https://farol.dev/protocol/v0.2/action.schema.json",
+            "https://farol.dev/protocol/v0.3/action.schema.json",
             action_value.clone(),
         )
         .expect("URI de action.schema.json inválida")
         .add(
-            "https://farol.dev/protocol/v0.2/error.schema.json",
+            "https://farol.dev/protocol/v0.3/error.schema.json",
             error_value.clone(),
         )
         .expect("URI de error.schema.json inválida")
@@ -454,6 +466,74 @@ fn widget_get_result_with_monitor_items_matches_schema() {
     );
 }
 
+/// Caso positivo novo (T011, feature 004): `WidgetGetResult` com `items: WidgetItems::Vpn(...)` —
+/// o novo vocabulário `VpnStatusItem` para um widget `kind: "vpn-status"` (`research.md` D2-D4,
+/// `data-model.md` §1.1-§1.4), exercitado aqui contra `widget.schema.json` v0.3 pela primeira vez
+/// neste arquivo. `state == Connected`, então (invariante de `data-model.md` §1.3)
+/// `active_profile`/`elapsed_seconds` são `Some` e `disconnect_action.enabled == true`; os dois
+/// `VpnProfile.connect_action` ficam `enabled == false` (só um perfil ativo por vez, D3/D4).
+#[test]
+fn widget_get_result_with_vpn_item_matches_schema() {
+    let schemas = load_schemas();
+    let resp = WidgetGetResponse::Success {
+        jsonrpc: "2.0".to_string(),
+        id: RequestId::Integer(5),
+        result: WidgetGetResult {
+            widget_id: "vpn-connection".to_string(),
+            items: WidgetItems::Vpn(vec![VpnStatusItem {
+                state: VpnConnectionState::Connected,
+                active_profile: Some("work-vpn".to_string()),
+                elapsed_seconds: Some(125.5),
+                available_profiles: vec![
+                    VpnProfile {
+                        name: "work-vpn".to_string(),
+                        connect_action: ActionDeclaration {
+                            id: "vpn.connect".to_string(),
+                            label: "Conectar".to_string(),
+                            target: ActionTarget {
+                                r#type: "vpn-profile".to_string(),
+                                id: "work-vpn".to_string(),
+                            },
+                            enabled: false,
+                            timeout_hint_ms: None,
+                        },
+                    },
+                    VpnProfile {
+                        name: "home-vpn".to_string(),
+                        connect_action: ActionDeclaration {
+                            id: "vpn.connect".to_string(),
+                            label: "Conectar".to_string(),
+                            target: ActionTarget {
+                                r#type: "vpn-profile".to_string(),
+                                id: "home-vpn".to_string(),
+                            },
+                            enabled: false,
+                            timeout_hint_ms: None,
+                        },
+                    },
+                ],
+                disconnect_action: ActionDeclaration {
+                    id: "vpn.disconnect".to_string(),
+                    label: "Desconectar".to_string(),
+                    target: ActionTarget {
+                        r#type: "vpn-connection".to_string(),
+                        id: "active".to_string(),
+                    },
+                    enabled: true,
+                    timeout_hint_ms: None,
+                },
+            }]),
+        },
+    };
+    let instance = serde_json::to_value(&resp).unwrap();
+    assert_valid(
+        &schemas.widget,
+        &instance,
+        "widget.schema.json",
+        "WidgetGetResult positivo (vpn-status, WidgetItems::Vpn)",
+    );
+}
+
 /// Caso positivo: `items: []` com `anyOf` (correção da definição em `widget.schema.json` v0.2).
 /// Com `oneOf`, um array vazio satisfaria *ambas* as alternativas (`WidgetItem[]` vs.
 /// `MonitorStatusItem[]`) — as duas ramas são `{"type":"array","items":{$ref ...}}` sem
@@ -569,7 +649,7 @@ fn action_invoke_response_success_matches_schema() {
     let resp = ActionInvokeResponse::Success {
         jsonrpc: "2.0".to_string(),
         id: RequestId::Integer(4),
-        result: ActionInvokeResult {
+        result: ActionInvokeResult::Git {
             repo: GitRepository {
                 id: "/home/dev/projetos/farol".to_string(),
                 name: "farol".to_string(),
@@ -585,6 +665,58 @@ fn action_invoke_response_success_matches_schema() {
         &instance,
         "action.schema.json",
         "ActionInvokeResponse::Success positivo",
+    );
+}
+
+/// Caso positivo novo (T011, feature 004): `ActionInvokeResponse::Success` com
+/// `result: ActionInvokeResult::Vpn { vpn_status }` — o resultado devolvido por `vpn.connect`/
+/// `vpn.disconnect` do plugin `openfortivpn-gui` (`research.md` D2/D4-D5, `data-model.md` §1.5),
+/// exercitado aqui contra `action.schema.json` v0.3 pela primeira vez neste arquivo. O wire
+/// `{"vpn_status": {...}}` é a segunda alternativa do `oneOf` de `ActionInvokeResult` — distinta,
+/// sem ambiguidade, da primeira (`{"repo": {...}}`, `git.fetch`) exercitada no teste acima.
+#[test]
+fn action_invoke_response_success_with_vpn_status_matches_schema() {
+    let schemas = load_schemas();
+    let resp = ActionInvokeResponse::Success {
+        jsonrpc: "2.0".to_string(),
+        id: RequestId::Integer(6),
+        result: ActionInvokeResult::Vpn {
+            vpn_status: VpnStatusItem {
+                state: VpnConnectionState::Disconnected,
+                active_profile: None,
+                elapsed_seconds: None,
+                available_profiles: vec![VpnProfile {
+                    name: "work-vpn".to_string(),
+                    connect_action: ActionDeclaration {
+                        id: "vpn.connect".to_string(),
+                        label: "Conectar".to_string(),
+                        target: ActionTarget {
+                            r#type: "vpn-profile".to_string(),
+                            id: "work-vpn".to_string(),
+                        },
+                        enabled: true,
+                        timeout_hint_ms: None,
+                    },
+                }],
+                disconnect_action: ActionDeclaration {
+                    id: "vpn.disconnect".to_string(),
+                    label: "Desconectar".to_string(),
+                    target: ActionTarget {
+                        r#type: "vpn-connection".to_string(),
+                        id: "active".to_string(),
+                    },
+                    enabled: false,
+                    timeout_hint_ms: None,
+                },
+            },
+        },
+    };
+    let instance = serde_json::to_value(&resp).unwrap();
+    assert_valid(
+        &schemas.action,
+        &instance,
+        "action.schema.json",
+        "ActionInvokeResponse::Success positivo (vpn.disconnect, ActionInvokeResult::Vpn)",
     );
 }
 

@@ -149,12 +149,21 @@ pub(crate) enum Message {
     /// Tick do timer de refresh periódico (FR-011) de um plugin — só produz
     /// efeito (envio de `widget/get`) quando aquela conexão já está `Ready`.
     RefreshTick { plugin_name: String },
-    /// Usuário clicou "Fetch" para um repositório de um plugin (T032) — só é
+    /// Usuário clicou o botão de uma `ActionDeclaration` habilitada de um
+    /// plugin (T032 originalmente só para "Fetch" de `git-local`) — só é
     /// produzida pela `view` quando `ActionDeclaration.enabled == true`
     /// (view.rs); o core nunca dispara isto por conta própria. Dispara
     /// `action/invoke` pelo worker daquele plugin (T033), sem bloquear a UI
     /// — a resposta chega depois, assíncrona, como `Message::Worker` (D5).
-    FetchRequested {
+    ///
+    /// **T019 (feature 004)**: renomeada do nome anterior, específico de
+    /// `git.fetch` — o *shape* já era genérico (`ActionTarget` livre, sem
+    /// nada específico de `git-local`), só o nome não era. Generalizado
+    /// para não precisar de uma segunda variante quase idêntica quando
+    /// `vpn.connect`/`vpn.disconnect` (feature 004, T031/T032) passarem a
+    /// disparar `action/invoke` pelo mesmo mecanismo — puramente uma
+    /// renomeação, sem mudança de comportamento para `git-local`.
+    ActionInvokeRequested {
         plugin_name: String,
         action_id: String,
         target: farol_protocol::ActionTarget,

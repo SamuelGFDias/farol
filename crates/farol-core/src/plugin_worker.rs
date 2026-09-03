@@ -117,9 +117,10 @@ pub struct PluginSpawnConfig {
 }
 
 /// Registro fixo dos plugins conhecidos por este core (T014/T015, correção
-/// C2) — `git-local` (feature 001) e `uptime-kuma` (feature 002). Um
-/// registry federado/descoberto em runtime é Fora de Escopo do `spec.md`
-/// desta feature; esta lista é deliberadamente hardcoded.
+/// C2) — `git-local` (feature 001), `uptime-kuma` (feature 002) e
+/// `openfortivpn-vpn` (T016, feature 004). Um registry federado/descoberto
+/// em runtime é Fora de Escopo do `spec.md` de cada feature; esta lista é
+/// deliberadamente hardcoded.
 ///
 /// Caminho de `args` relativo à raiz do repositório — só resolve
 /// corretamente se `farol-core` for executado com o `cwd` na raiz do repo
@@ -136,6 +137,13 @@ pub fn known_plugins() -> Vec<PluginSpawnConfig> {
             plugin_name: "uptime-kuma".to_string(),
             command: "python3".to_string(),
             args: vec!["plugins/uptime-kuma/main.py".to_string()],
+        },
+        // T016 (feature 004, `specs/004-vpn-status-plugin/research.md` D8): terceiro plugin
+        // conhecido, envolvendo a CLI `openfortivpn-gui`.
+        PluginSpawnConfig {
+            plugin_name: "openfortivpn-vpn".to_string(),
+            command: "python3".to_string(),
+            args: vec!["plugins/openfortivpn-vpn/main.py".to_string()],
         },
     ]
 }
@@ -159,8 +167,14 @@ pub const RPC_TIMEOUT_ACTION: Duration = Duration::from_secs(120);
 /// "core" da checagem de compatibilidade (D7, `ProtocolVersion::is_compatible_with`).
 ///
 /// **Correção H1 (T012)**: `"0.1"` → `"0.2"` — bump normativo de
-/// `research.md` D1 desta feature (`specs/002-uptime-kuma-plugin/research.md`).
-const CORE_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 0, minor: 2 };
+/// `research.md` D1 da feature 002 (`specs/002-uptime-kuma-plugin/research.md`).
+/// **T013 (feature 004)**: `"0.2"` → `"0.3"` — bump aditivo normativo de
+/// `research.md` D2 desta feature (`specs/004-vpn-status-plugin/research.md`,
+/// novo `kind` de widget `"vpn-status"` e `ActionInvokeResult` generalizado
+/// para `oneOf`); `git-local`/`uptime-kuma` migram a constante equivalente
+/// para `"0.3"` na mesma feature (T014/T015), para não repetir o padrão de
+/// dívida técnica da migração `0.1→0.2` (débito #4, D2).
+const CORE_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 0, minor: 3 };
 
 /// Identificação informativa deste core no handshake (`HandshakeHello.core_name`).
 const CORE_NAME: &str = "farol-core";

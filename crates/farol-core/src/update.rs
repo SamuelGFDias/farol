@@ -46,17 +46,26 @@ const DEFAULT_REFRESH_INTERVAL: Duration = Duration::from_millis(30_000);
 /// checar `slot.connection.widgets` é suficiente para essa distinção.
 const MONITOR_WIDGET_KIND: &str = "monitor-status-grid";
 
+/// `kind` do widget do plugin `openfortivpn-vpn` (feature 004,
+/// `specs/004-vpn-status-plugin/data-model.md` §1.7/`research.md` D3) — usado
+/// junto com [`MONITOR_WIDGET_KIND`] para classificar o `kind` já congelado
+/// em `slot.connection.widgets` (ver [`WidgetKind`]/[`normalize_widget_items`]).
+/// **T018**: só participa da resolução de ambiguidade de array vazio nesta
+/// subtarefa — popular `PluginConnection::vpn_widget` a partir de um sucesso
+/// ou erro pontual de `widget/get` continua sendo escopo de T024, não T018.
+const VPN_WIDGET_KIND: &str = "vpn-status";
+
 impl Farol {
     pub(crate) fn update(&mut self, message: Message) {
         match message {
             Message::Worker { plugin_name, event } => self.handle_worker_event(&plugin_name, event),
             Message::RefreshTick { plugin_name } => self.handle_refresh_tick(&plugin_name),
-            Message::FetchRequested {
+            Message::ActionInvokeRequested {
                 plugin_name,
                 action_id,
                 target,
                 timeout_hint_ms,
-            } => self.handle_fetch_requested(&plugin_name, action_id, target, timeout_hint_ms),
+            } => self.handle_action_invoke_requested(&plugin_name, action_id, target, timeout_hint_ms),
             Message::SetupFieldChanged {
                 plugin_name,
                 field_name,
@@ -289,23 +298,45 @@ impl Farol {
     /// alterar `PluginState` — mesmo mecanismo genérico de `protocol/SPEC.md`
     /// §5.2 já usado para `git-local`/`last_widget_error`. `WidgetOutcome::
     /// PluginError` não carrega o `widget_id`/`kind` que originou a chamada
-    /// (só a mensagem de erro), então `is_monitor_widget` (abaixo) decide,
-    /// pelo `kind` já congelado em `slot.connection.widgets` no handshake,
-    /// qual dos dois campos de erro atualizar — cada plugin conhecido só
-    /// declara um widget relevante (mesma suposição de
+    /// (só a mensagem de erro), então `widget_kind` (abaixo) decide, pelo
+    /// `kind` já congelado em `slot.connection.widgets` no handshake, qual
+    /// dos dois campos de erro atualizar — cada plugin conhecido só declara
+    /// um widget relevante (mesma suposição de
     /// `refresh_interval`/`handle_refresh_tick`).
+    ///
+    /// **T018 (feature 004)**: `is_monitor_widget: bool` virou
+    /// `widget_kind: WidgetKind` — um único `bool` não escala para o
+    /// terceiro `kind` (`"vpn-status"`, [`VPN_WIDGET_KIND`]) introduzido
+    /// nesta feature. O braço de erro abaixo continua distinguindo só
+    /// `Monitor` de "tudo o mais" (`Git`/`Vpn`) — o mesmo comportamento de
+    /// antes desta subtarefa para `Git`; rotear um erro de `Vpn` para
+    /// `PluginConnection::vpn_widget.last_error` é escopo de T024, não desta
+    /// subtarefa (T018 só resolve a ambiguidade de array vazio em
+    /// `normalize_widget_items`).
     fn handle_widget_outcome(&mut self, plugin_name: &str, outcome: WidgetOutcome) {
         let Some(slot) = self.slot_mut(plugin_name) else {
             return;
         };
-        let is_monitor_widget = slot
+        let widget_kind = if slot
             .connection
             .widgets
             .iter()
-            .any(|widget| widget.kind == MONITOR_WIDGET_KIND);
+            .any(|widget| widget.kind == MONITOR_WIDGET_KIND)
+        {
+            WidgetKind::Monitor
+        } else if slot
+            .connection
+            .widgets
+            .iter()
+            .any(|widget| widget.kind == VPN_WIDGET_KIND)
+        {
+            WidgetKind::Vpn
+        } else {
+            WidgetKind::Git
+        };
         match outcome {
             WidgetOutcome::Success(result) => {
-                let items = normalize_widget_items(result.items, is_monitor_widget);
+                let items = normalize_widget_items(result.items, widget_kind);
                 match merge_widget_items(&slot.connection.items, items) {
                     MergedWidgetItems::Git(items) => {
                         // T035: preserva `fetch_in_flight`/`last_error` dos
@@ -319,10 +350,14 @@ impl Farol {
                         slot.connection.monitor_widget.monitors = monitors;
                         slot.connection.monitor_widget.last_error = None;
                     }
+                    // T018: placeholder de exaustividade — popular
+                    // `PluginConnection::vpn_widget` a partir daqui é escopo
+                    // de T024 (US1), não desta subtarefa.
+                    MergedWidgetItems::Vpn(_) => {}
                 }
             }
             WidgetOutcome::PluginError(message) => {
-                if is_monitor_widget {
+                if widget_kind == WidgetKind::Monitor {
                     slot.connection.monitor_widget.last_error = Some(message);
                 } else {
                     slot.connection.last_widget_error = Some(message);
@@ -344,13 +379,22 @@ impl Farol {
     /// no `RepositoryViewModel` do repositório-alvo. Nenhuma variante muda
     /// `PluginState` — erro e timeout de ação são pontuais da chamada, não
     /// indisponibilidade do plugin (D6, `contracts/action-protocol.md`).
+    ///
+    /// **T010 (feature 004, Foundational)**: `ActionInvokeResult` deixou de
+    /// ser uma struct única (`{ repo }`) e virou `#[serde(untagged)] enum {
+    /// Git { repo }, Vpn { vpn_status } }` (`farol-protocol`) — ajuste
+    /// mecânico de compatibilidade: o braço de sucesso passa a casar
+    /// explicitamente `ActionInvokeResult::Git { repo }`, mesmo
+    /// comportamento de antes para `git.fetch`. A variante `Vpn { .. }` é só
+    /// um placeholder de exaustividade nesta subtarefa — fundi-la de verdade
+    /// em `PluginConnection::vpn_widget` é escopo de T031 (US2), não desta.
     fn handle_action_outcome(&mut self, plugin_name: &str, outcome: ActionOutcome) {
         let Some(slot) = self.slot_mut(plugin_name) else {
             return;
         };
         match outcome {
-            ActionOutcome::Success(result) => {
-                let repo_id = result.repo.id.clone();
+            ActionOutcome::Success(farol_protocol::ActionInvokeResult::Git { repo }) => {
+                let repo_id = repo.id.clone();
                 if let Some(item) = slot
                     .connection
                     .items
@@ -359,11 +403,14 @@ impl Farol {
                 {
                     // FR-018: o `GitRepository` pós-fetch substitui
                     // diretamente o anterior — sem `widget/get` adicional.
-                    item.repo = result.repo;
+                    item.repo = repo;
                     item.fetch_in_flight = false;
                     item.last_error = None;
                 }
             }
+            // T010: placeholder de exaustividade — fundir de verdade em
+            // `PluginConnection::vpn_widget` é escopo de T031 (US2).
+            ActionOutcome::Success(farol_protocol::ActionInvokeResult::Vpn { .. }) => {}
             ActionOutcome::PluginError { target, message } => {
                 set_fetch_error(&mut slot.connection.items, &target.id, message);
             }
@@ -384,7 +431,13 @@ impl Farol {
     /// de um repositório, marcando `fetch_in_flight` imediatamente para
     /// feedback de UI (a resposta chega depois, assíncrona, como
     /// `Message::Worker` — D5, nunca bloqueia `update`).
-    fn handle_fetch_requested(
+    ///
+    /// **T019 (feature 004)**: renomeado junto com a variante correspondente
+    /// de `Message` (mesmo nome anterior, específico de `git.fetch`, agora
+    /// `ActionInvokeRequested`) — mesmo comportamento, nome genérico. A
+    /// generalização por `target.r#type` para alvos de VPN é escopo de T031
+    /// (US2), não desta subtarefa.
+    fn handle_action_invoke_requested(
         &mut self,
         plugin_name: &str,
         action_id: String,
@@ -650,33 +703,74 @@ fn set_fetch_error(items: &mut [RepositoryViewModel], repo_id: &str, message: St
 enum MergedWidgetItems {
     Git(Vec<RepositoryViewModel>),
     Monitor(Vec<farol_protocol::messages::MonitorStatusItem>),
+    /// Novo em v0.3 (`farol_protocol::messages::WidgetItems::Vpn`, feature 004, T009). Repassado
+    /// sem fusão de estado de UI local — assim como `Monitor`, nenhum `VpnStatusItem` tem estado
+    /// de UI prévio a preservar. Nenhum `PluginConnection` ainda tem um campo para consumir isso
+    /// (wiring do widget de VPN é escopo de T013-T019, outro subagente) — a variante existe aqui
+    /// só para tornar este `match` exaustivo sem esconder o novo vocabulário de `WidgetItems`
+    /// atrás de um `_ =>` silencioso. `#[allow(dead_code)]`: o payload em si só passa a ser lido
+    /// quando T013-T019 conectar um campo de VPN a `PluginConnection`.
+    #[allow(dead_code)]
+    Vpn(Vec<farol_protocol::messages::VpnStatusItem>),
+}
+
+/// Classifica o `kind` de widget já congelado em `slot.connection.widgets`
+/// (T018, feature 004) — substitui o antigo `is_monitor_widget: bool` de
+/// antes desta subtarefa. Um único `bool` distinguia só "Monitor" de "não
+/// Monitor" (suficiente enquanto só existiam dois vocabulários, `Git`/
+/// `Monitor`); com o terceiro `kind` (`"vpn-status"`, [`VPN_WIDGET_KIND`])
+/// introduzido por esta feature, um `bool` deixaria de conseguir distinguir
+/// "Git" de "Vpn" no braço `_ =>` — daí o enum, que escala para N `kind`s
+/// sem essa limitação.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WidgetKind {
+    /// `kind: "status-grid"` (`git-local`, feature 001) — nenhuma constante
+    /// dedicada existe para este `kind` porque ele é o caso default (nenhum
+    /// dos dois `kind`s especiais acima match) — mesmo raciocínio já usado
+    /// pelo `is_monitor_widget: bool` original (`false` ⟹ Git).
+    Git,
+    /// `kind: "monitor-status-grid"` (`uptime-kuma`, feature 002) — ver
+    /// [`MONITOR_WIDGET_KIND`].
+    Monitor,
+    /// `kind: "vpn-status"` (`openfortivpn-vpn`, feature 004) — ver
+    /// [`VPN_WIDGET_KIND`].
+    Vpn,
 }
 
 /// Corrige a ambiguidade documentada de `farol_protocol::messages::WidgetItems`
-/// (`#[serde(untagged)]`, `crates/farol-protocol/src/messages.rs`): as duas
+/// (`#[serde(untagged)]`, `crates/farol-protocol/src/messages.rs`): as três
 /// variantes serializam como `Vec<T>` simples, então um array `items: []`
 /// desserializa sempre como a primeira variante tentada (`Git`), mesmo
-/// quando a resposta veio de um widget `monitor-status-grid` (débito #5,
-/// issue #7 — achado ao corrigir T039/T051: uma instância Uptime Kuma real
-/// sem monitores cadastrados devolve `items: []`, que
+/// quando a resposta veio de um widget `monitor-status-grid`/`vpn-status`
+/// (débito #5, issue #7 — achado ao corrigir T039/T051: uma instância Uptime
+/// Kuma real sem monitores cadastrados devolve `items: []`, que
 /// `handle_widget_outcome` roteava para `connection.items`, o campo errado,
 /// deixando `monitor_widget.last_error` da leitura anterior nunca limpo).
 ///
 /// O core já sabe, pelo `kind` que este `widget_id` declarou no handshake
-/// (`is_monitor_widget`, calculado por `handle_widget_outcome` antes de
-/// chamar esta função), qual vocabulário esperar — a correção mora aqui, no
-/// ponto de consumo, e não no formato wire (`protocol/schema/v0.2/
-/// widget.schema.json` continua um `oneOf` de dois arrays, sem tag). Um
-/// array **não vazio** nunca é ambíguo (os campos de `WidgetItem` e
-/// `MonitorStatusItem` não coincidem, então o `serde` já resolve certo) —
-/// só o caso vazio precisa de ajuda.
+/// (`widget_kind: WidgetKind`, calculado por `handle_widget_outcome` antes de
+/// chamar esta função — T018, feature 004: generalizado de um `bool`
+/// `is_monitor_widget` para escalar a um terceiro `kind`, ver [`WidgetKind`]),
+/// qual vocabulário esperar — a correção mora aqui, no ponto de consumo, e
+/// não no formato wire (`protocol/schema/v0.3/widget.schema.json` continua
+/// um `oneOf` de três arrays, sem tag). Um array **não vazio** nunca é
+/// ambíguo (os campos de `WidgetItem`/`MonitorStatusItem`/`VpnStatusItem`
+/// não coincidem, então o `serde` já resolve certo) — só o caso vazio
+/// precisa de ajuda.
 fn normalize_widget_items(
     items: farol_protocol::messages::WidgetItems,
-    is_monitor_widget: bool,
+    widget_kind: WidgetKind,
 ) -> farol_protocol::messages::WidgetItems {
-    match (items, is_monitor_widget) {
-        (farol_protocol::messages::WidgetItems::Git(items), true) if items.is_empty() => {
+    match (items, widget_kind) {
+        (farol_protocol::messages::WidgetItems::Git(items), WidgetKind::Monitor)
+            if items.is_empty() =>
+        {
             farol_protocol::messages::WidgetItems::Monitor(Vec::new())
+        }
+        (farol_protocol::messages::WidgetItems::Git(items), WidgetKind::Vpn)
+            if items.is_empty() =>
+        {
+            farol_protocol::messages::WidgetItems::Vpn(Vec::new())
         }
         (items, _) => items,
     }
@@ -727,6 +821,7 @@ fn merge_widget_items(
                 .collect(),
         ),
         farol_protocol::messages::WidgetItems::Monitor(items) => MergedWidgetItems::Monitor(items),
+        farol_protocol::messages::WidgetItems::Vpn(items) => MergedWidgetItems::Vpn(items),
     }
 }
 
@@ -1098,7 +1193,7 @@ pub(crate) mod tests {
         };
         app.handle_action_outcome(
             "git-local",
-            ActionOutcome::Success(farol_protocol::ActionInvokeResult {
+            ActionOutcome::Success(farol_protocol::ActionInvokeResult::Git {
                 repo: updated_repo.clone(),
             }),
         );
@@ -1547,7 +1642,9 @@ pub(crate) mod tests {
             .connection
             .setup_attempt = 1;
         let _ = app.subscription();
-        assert_eq!(app.plugins.len(), 2);
+        // T016 (feature 004): `known_plugins()` passou a ter três entradas
+        // (`git-local`, `uptime-kuma`, `openfortivpn-vpn`).
+        assert_eq!(app.plugins.len(), 3);
     }
 
     /// Regressão: `Farol::subscription` panicava em runtime
