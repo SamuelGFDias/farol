@@ -26,6 +26,16 @@ Features existentes:
 - `specs/002-uptime-kuma-plugin/` — protocolo v0.2 (bump deliberado, quebra `git-local` de
   propósito — débito técnico #4 rastreado como issue, migração fora de escopo desta feature),
   arquitetura multi-plugin, config/secrets geridos pelo core, plugin `uptime-kuma`.
+- `specs/003-automated-testing-infrastructure/` — harness de testes em duas camadas (ver § Testes).
+- `specs/004-vpn-status-plugin/` — em planejamento (`plan.md`/`research.md`/`data-model.md`/
+  `contracts/`/`quickstart.md` prontos, `tasks.md` ainda não gerado). Plugin `openfortivpn-vpn`,
+  envolvendo a CLI `openfortivpn-gui status|connect|disconnect --json` (contrato em
+  `../openfortivpn-gui/specs/001-add-cli-interface/contracts/`, projeto irmão fora deste repo).
+  Bump de protocolo `0.2` → `0.3` **aditivo** (novo `kind` de widget `"vpn-status"`,
+  `ActionInvokeResult` generalizado para `oneOf`) — mas como a série `0.x` exige igualdade exata de
+  versão (`ProtocolVersion::is_compatible_with`), `git-local`/`uptime-kuma` também precisam migrar
+  a constante `PROTOCOL_VERSION` para `"0.3"` dentro desta mesma feature (decisão D2 de
+  `research.md`, para não repetir o padrão de dívida técnica da migração `0.1→0.2`, débito #4).
 
 `.specify/memory/constitution.md` é normativo e versionado (SemVer próprio, atualmente v1.0.0).
 Mudança de princípio exige emenda formal (skill `speckit-constitution`) — não editar a constitution
