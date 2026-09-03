@@ -1,0 +1,168 @@
+#!/usr/bin/env python3
+"""Fixture determinística do binário `openfortivpn-gui` real (T026a,
+`specs/004-vpn-status-plugin/tasks.md`).
+
+Simula os três subcomandos descritos em `../../../openfortivpn-gui/specs/001-add-cli-interface/
+contracts/cli-commands.md`/`contracts/status-schema.json` (via `--json`), controlável por variável
+de ambiente para permitir cenários determinísticos nos testes Rust
+(`crates/farol-core/src/e2e_tests.rs`) — sem nenhuma dependência de rede real, sem abrir nenhum
+túnel VPN de verdade.
+
+O **nome deste arquivo importa**: `plugins/openfortivpn-vpn/vpn_cli.py::find_binary()` resolve
+`shutil.which("openfortivpn-gui")` contra o `PATH` — o diretório deste script (não o script em si)
+é o que precisa ser prependado ao `PATH` do processo de teste; o nome do arquivo precisa bater
+literalmente com o nome do binário real procurado.
+
+Variáveis de ambiente reconhecidas (todas opcionais):
+
+- `FAKE_OPENFORTIVPN_STATE` — `disconnected` (default) | `connecting` | `connected`.
+- `FAKE_OPENFORTIVPN_PROFILE` — perfil ativo/selecionado quando `STATE` != `disconnected`.
+- `FAKE_OPENFORTIVPN_PROFILES` — lista de perfis conhecidos, separada por vírgula (default vazio).
+- `FAKE_OPENFORTIVPN_ELAPSED` — segundos de sessão ativa (float), só usado quando `STATE ==
+  connected` (default `0`).
+- `FAKE_OPENFORTIVPN_ERROR` — quando presente (qualquer valor não vazio), força `status --json` a
+  responder um `ErrorPayload` (`error.code: "internal_error"`, `error.message` = o próprio valor da
+  variável) em vez de um `StatusPayload` de sucesso — para exercitar o caminho `-32008`/
+  `vpn_status_unavailable` do lado do plugin (`contracts/openfortivpn-cli-mapping.md`).
+
+Escopo mínimo (T026/T027, `tasks.md`): só `status --json` precisa refletir fielmente o contrato —
+`connect`/`disconnect --json` são stubs de sucesso simples, já que `handle_action_invoke` do plugin
+real ainda não os invoca nesta fase (US2, `tasks.md` T028-T029, tarefa futura).
+
+Apenas biblioteca padrão (`json`, `os`, `sys`) — mesmo espírito dos plugins de referência
+(`plugins/git-local`, `plugins/uptime-kuma`, `plugins/openfortivpn-vpn`): nenhuma dependência
+externa exigida para rodar a suíte de testes.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import sys
+
+
+def _env_profiles() -> list[str]:
+    raw = os.environ.get("FAKE_OPENFORTIVPN_PROFILES", "")
+    return [name for name in (part.strip() for part in raw.split(",")) if name]
+
+
+def _status_payload() -> dict:
+    """Monta um `StatusPayload` (`status-schema.json`) a partir das variáveis
+    `FAKE_OPENFORTIVPN_*` — reflete o estado "atual" simulado, reusado tanto por `status --json`
+    (sucesso) quanto pelo resultado pós-ação de `connect`/`disconnect --json`.
+    """
+    state = os.environ.get("FAKE_OPENFORTIVPN_STATE", "disconnected")
+    profile = os.environ.get("FAKE_OPENFORTIVPN_PROFILE") or None
+    profiles = _env_profiles()
+
+    selected_profile = profile if state != "disconnected" else None
+
+    session = None
+    if state == "connected":
+        elapsed_raw = os.environ.get("FAKE_OPENFORTIVPN_ELAPSED", "0")
+        try:
+            elapsed_seconds = float(elapsed_raw)
+        except ValueError:
+            elapsed_seconds = 0.0
+        session = {
+            "profile": selected_profile or "",
+            "iface": "ppp0",
+            "started_at": 0,
+            "elapsed_seconds": elapsed_seconds,
+        }
+
+    return {
+        "state": state,
+        "selected_profile": selected_profile,
+        "profiles": profiles,
+        "session": session,
+    }
+
+
+def _error_payload() -> dict:
+    message = os.environ.get("FAKE_OPENFORTIVPN_ERROR") or "erro interno simulado pela fixture"
+    return {"error": {"code": "internal_error", "message": message}}
+
+
+def _emit(payload: dict) -> None:
+    sys.stdout.write(json.dumps(payload) + "\n")
+    sys.stdout.flush()
+
+
+def _cmd_status(json_mode: bool) -> int:
+    if os.environ.get("FAKE_OPENFORTIVPN_ERROR"):
+        payload = _error_payload()
+    else:
+        payload = _status_payload()
+
+    if json_mode:
+        _emit(payload)
+    else:
+        # Modo texto humano não é exercitado por `vpn_cli.py` (sempre chama `--json`) — um
+        # resumo simples é suficiente para não deixar este ramo vazio.
+        print(json.dumps(payload))
+
+    # `status` sempre sai `0`, mesmo em caso de `ErrorPayload` (mesmo contrato da CLI real,
+    # `cli-commands.md`).
+    return 0
+
+
+def _cmd_connect(json_mode: bool) -> int:
+    # Stub de sucesso simples (escopo mínimo T026/T027) — sempre "conecta" ao perfil pedido,
+    # refletindo `state: connected` na resposta, sem consultar `FAKE_OPENFORTIVPN_*` além do que
+    # `_status_payload` já usa.
+    payload = _status_payload()
+    payload["state"] = "connected"
+    if len(sys.argv) > 2 and not sys.argv[2].startswith("-"):
+        payload["selected_profile"] = sys.argv[2]
+    if payload["session"] is None:
+        payload["session"] = {
+            "profile": payload["selected_profile"] or "",
+            "iface": "ppp0",
+            "started_at": 0,
+            "elapsed_seconds": 0.0,
+        }
+
+    if json_mode:
+        _emit(payload)
+    else:
+        print(json.dumps(payload))
+    return 0
+
+
+def _cmd_disconnect(json_mode: bool) -> int:
+    # Stub de sucesso simples (escopo mínimo T026/T027) — sempre "desconecta".
+    payload = _status_payload()
+    payload["state"] = "disconnected"
+    payload["selected_profile"] = None
+    payload["session"] = None
+
+    if json_mode:
+        _emit(payload)
+    else:
+        print(json.dumps(payload))
+    return 0
+
+
+def main(argv: list[str]) -> int:
+    if not argv:
+        # Sem subcomando reconhecido: a CLI real abriria a GUI — fora de escopo desta fixture
+        # (nenhum cenário de teste invoca o binário sem subcomando).
+        return 0
+
+    subcommand, rest = argv[0], argv[1:]
+    json_mode = "--json" in rest
+
+    if subcommand == "status":
+        return _cmd_status(json_mode)
+    if subcommand == "connect":
+        return _cmd_connect(json_mode)
+    if subcommand == "disconnect":
+        return _cmd_disconnect(json_mode)
+
+    print(f"[fake-openfortivpn-gui] subcomando desconhecido: {subcommand!r}", file=sys.stderr)
+    return 2
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

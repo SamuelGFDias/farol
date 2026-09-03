@@ -19,7 +19,7 @@ use farol_protocol::RemoteStatus;
 // re-exports de `crates/farol-protocol/src/lib.rs` — mesmo gap documentado em `plugin_worker.rs`,
 // fora do escopo desta subtarefa corrigir (`farol-protocol` é off-limits). Referenciados via
 // `farol_protocol::messages::*` (módulo e tipos ambos `pub`).
-use farol_protocol::messages::{Capability, KnownCapability, MonitorStatus};
+use farol_protocol::messages::{Capability, KnownCapability, MonitorStatus, VpnConnectionState};
 use iced::widget::{button, column, container, row, text, text_input, Column};
 use iced::{Element, Length};
 
@@ -31,6 +31,9 @@ const SUPPORTED_WIDGET_KIND: &str = "status-grid";
 /// `kind` de widget `monitor-status-grid` (`uptime-kuma`, T033, D4 de
 /// `specs/002-uptime-kuma-plugin/research.md`).
 const MONITOR_WIDGET_KIND: &str = "monitor-status-grid";
+/// `kind` de widget `vpn-status` (`openfortivpn-vpn`, T025, novo em v0.3 —
+/// `specs/004-vpn-status-plugin/data-model.md` §1.7/`research.md` D3).
+const VPN_WIDGET_KIND: &str = "vpn-status";
 
 impl Farol {
     pub(crate) fn view(&self) -> Element<'_, Message> {
@@ -131,6 +134,10 @@ fn view_ready<'a>(
         .widgets
         .iter()
         .any(|widget| widget.kind == MONITOR_WIDGET_KIND);
+    let renders_vpn_widget = connection
+        .widgets
+        .iter()
+        .any(|widget| widget.kind == VPN_WIDGET_KIND);
 
     if renders_status_grid {
         content = view_status_grid(plugin_name, connection, content);
@@ -138,7 +145,10 @@ fn view_ready<'a>(
     if renders_monitor_grid {
         content = view_monitor_grid(&connection.monitor_widget, content);
     }
-    if !renders_status_grid && !renders_monitor_grid {
+    if renders_vpn_widget {
+        content = view_vpn_widget(&connection.vpn_widget, content);
+    }
+    if !renders_status_grid && !renders_monitor_grid && !renders_vpn_widget {
         content = content.push(text(
             "Nenhum widget com um `kind` suportado por este core foi declarado.",
         ));
@@ -239,6 +249,64 @@ fn view_monitor_row(monitor: &farol_protocol::messages::MonitorStatusItem) -> El
     ]
     .spacing(8)
     .into()
+}
+
+/// T025: widget `vpn-status` (`openfortivpn-vpn`), somente leitura — texto
+/// de estado, perfil ativo quando conectado, e a lista de perfis
+/// disponíveis (ou indicação explícita de lista vazia, FR-003). **Sem
+/// botões nesta fase** — conectar/desconectar é escopo de T032 (US2),
+/// coerente com a própria justificativa de prioridade de US1 no `spec.md`
+/// ("entrega valor completo... mesmo sem nenhuma ação de
+/// conectar/desconectar").
+///
+/// Mesmo espírito de `view_monitor_grid` para `last_error` (`FR-017`): um
+/// erro pontual do último `widget/get` não apaga o `status` de uma leitura
+/// anterior boa — o erro é exibido em cima do que já se sabe, nunca no
+/// lugar.
+///
+/// `elapsed_seconds` deliberadamente NÃO é exibido aqui — escopo de T034
+/// (User Story 3); o campo já está populado no `Model` desde T021, só a
+/// exibição fica para depois.
+fn view_vpn_widget<'a>(
+    widget: &'a model::VpnWidgetViewModel,
+    mut content: Column<'a, Message>,
+) -> Column<'a, Message> {
+    if let Some(error) = &widget.last_error {
+        content = content.push(text(format!("Falha ao consultar VPN: {error}")));
+    }
+
+    match &widget.status {
+        Some(item) => {
+            let state_label = match item.state {
+                VpnConnectionState::Disconnected => "desconectado",
+                VpnConnectionState::Connecting => "conectando",
+                VpnConnectionState::Connected => "conectado",
+            };
+            content = content.push(text(format!("Estado: {state_label}")));
+
+            if item.state == VpnConnectionState::Connected {
+                content = content.push(text(format!(
+                    "Perfil ativo: {}",
+                    item.active_profile.as_deref().unwrap_or("—")
+                )));
+            }
+
+            if item.available_profiles.is_empty() {
+                content = content.push(text("Nenhum perfil VPN configurado."));
+            } else {
+                for profile in &item.available_profiles {
+                    content = content.push(text(profile.name.clone()));
+                }
+            }
+        }
+        None => {
+            if widget.last_error.is_none() {
+                content = content.push(text("Aguardando primeira leitura do estado da VPN..."));
+            }
+        }
+    }
+
+    content
 }
 
 /// T035 (D8): renderiza o formulário de setup (`SetupForm`, T030) — em vez

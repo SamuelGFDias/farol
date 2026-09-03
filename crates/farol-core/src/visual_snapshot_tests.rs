@@ -266,6 +266,98 @@ fn monitor_widget_error_state() -> Farol {
     app
 }
 
+/// `screen_id` `VpnWidgetConnected` (T027, `specs/004-vpn-status-plugin/tasks.md`, extensão do
+/// conjunto de `data-model.md` §3 via FR-013 de `visual-snapshot-contract.md`, mesmo mecanismo de
+/// [`monitor_widget_error_state`]) — o widget `vpn-status` (`openfortivpn-vpn`) `Ready` e populado
+/// no estado `connected`: perfil ativo, e a lista de perfis conhecidos (o próprio perfil ativo
+/// inclusive — `data-model.md` §1.3: "não há necessidade de excluir o ativo da lista, ele
+/// simplesmente aparece com `connect_action.enabled == false`").
+///
+/// Construído diretamente em memória (sem processo filho — mesma filosofia do módulo, ver
+/// docstring de topo, e de [`dashboard_ready_state`]), preenchendo `PluginConnection::vpn_widget`
+/// do slot `openfortivpn-vpn` (`known_plugins()` já registra este terceiro plugin) com um
+/// `VpnStatusItem` equivalente ao que `plugins/openfortivpn-vpn/vpn_cli.py::query_status` mapearia
+/// a partir de uma sessão `connected` real — mesmos valores simulados por
+/// `tests/fixtures/fake-openfortivpn-gui/` no cenário e2e irmão
+/// (`e2e_tests.rs::openfortivpn_vpn_reaches_ready_and_populates_the_vpn_widget`, T026), para as
+/// duas verificações (snapshot rápido aqui, ciclo de protocolo real ali) afirmarem sobre o mesmo
+/// estado de domínio.
+///
+/// `elapsed_seconds` é populado (`Some(3725.0)`, i.e. 1h 2min 5s) por fidelidade ao shape real de
+/// um `VpnStatusItem` `Connected` (`data-model.md` §1.3: obrigatório quando `Connected`) e,
+/// desde T034/US3, é renderizado por `format_elapsed` como "Conectado há: 1h 2min" — um valor de
+/// horas deliberadamente não-trivial para deixar a formatação óbvia no snapshot (em vez de um
+/// valor pequeno que só exercitaria o ramo de segundos).
+fn vpn_widget_connected_state() -> Farol {
+    use farol_protocol::messages::{
+        Capability, KnownCapability, VpnConnectionState, VpnProfile, VpnStatusItem,
+    };
+    use farol_protocol::{ActionDeclaration, ActionTarget, CapabilityManifest, ProtocolVersion};
+
+    let mut app = Farol::default();
+    let slot = app
+        .plugins
+        .iter_mut()
+        .find(|slot| slot.spawn_config.plugin_name == "openfortivpn-vpn")
+        .expect("openfortivpn-vpn é um plugin conhecido (known_plugins(), T016)");
+
+    slot.connection.state = PluginState::Ready;
+    slot.connection.identity = Some(model::PluginIdentity {
+        plugin_name: "openfortivpn-vpn".to_string(),
+        protocol_version: ProtocolVersion::new(0, 3),
+        capabilities: CapabilityManifest {
+            capabilities: vec![Capability::Known(KnownCapability::Exec)],
+        },
+    });
+    slot.connection.widgets = vec![farol_protocol::WidgetDeclaration {
+        id: "vpn-connection".to_string(),
+        kind: "vpn-status".to_string(),
+        title: "VPN".to_string(),
+        suggested_refresh_interval_ms: None,
+    }];
+
+    let connect_action = |profile: &str| ActionDeclaration {
+        id: "vpn.connect".to_string(),
+        label: format!("Conectar a {profile}"),
+        target: ActionTarget {
+            r#type: "vpn-profile".to_string(),
+            id: profile.to_string(),
+        },
+        // `state == Connected` ⟹ todo `connect_action.enabled == false` (D4, `data-model.md`
+        // §1.3), inclusive para o perfil já ativo.
+        enabled: false,
+        timeout_hint_ms: None,
+    };
+
+    slot.connection.vpn_widget.status = Some(VpnStatusItem {
+        state: VpnConnectionState::Connected,
+        active_profile: Some("escritorio".to_string()),
+        elapsed_seconds: Some(3725.0),
+        available_profiles: vec![
+            VpnProfile {
+                name: "escritorio".to_string(),
+                connect_action: connect_action("escritorio"),
+            },
+            VpnProfile {
+                name: "casa".to_string(),
+                connect_action: connect_action("casa"),
+            },
+        ],
+        disconnect_action: ActionDeclaration {
+            id: "vpn.disconnect".to_string(),
+            label: "Desconectar".to_string(),
+            target: ActionTarget {
+                r#type: "vpn-connection".to_string(),
+                id: "active".to_string(),
+            },
+            enabled: true,
+            timeout_hint_ms: None,
+        },
+    });
+
+    app
+}
+
 // ---------------------------------------------------------------------------
 // Um `insta::assert_snapshot!` por `screen_id`
 // ---------------------------------------------------------------------------
@@ -292,4 +384,10 @@ fn version_incompatible_screen_matches_snapshot() {
 fn monitor_widget_error_screen_matches_snapshot() {
     let app = monitor_widget_error_state();
     insta::assert_snapshot!("MonitorWidgetError", extract_visible_text(app.view()));
+}
+
+#[test]
+fn vpn_widget_connected_screen_matches_snapshot() {
+    let app = vpn_widget_connected_state();
+    insta::assert_snapshot!("VpnWidgetConnected", extract_visible_text(app.view()));
 }

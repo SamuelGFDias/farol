@@ -1,0 +1,19 @@
+---
+source: crates/farol-core/src/visual_snapshot_tests.rs
+expression: extract_visible_text(app.view())
+---
+git-local
+Iniciando plugin...
+uptime-kuma
+Iniciando plugin...
+openfortivpn-vpn
+Plugin: openfortivpn-vpn (protocolo 0.3)
+Capacidades declaradas: exec
+Estado: conectado
+Perfil ativo: escritorio
+Conectado há: 1h 2min
+Desconectar
+escritorio
+Conectar a escritorio
+casa
+Conectar a casa

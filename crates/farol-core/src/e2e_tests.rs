@@ -1285,6 +1285,79 @@ fn send_signal(pid: i32, signal: &str) {
 }
 
 // ---------------------------------------------------------------------------
+// T026b — fixture `fake-openfortivpn-gui` via `PATH`
+// ---------------------------------------------------------------------------
+
+/// Diretório absoluto de `tests/fixtures/fake-openfortivpn-gui/` (T026a,
+/// `specs/004-vpn-status-plugin/tasks.md`), resolvido a partir de
+/// [`repo_root`] — nunca do `cwd` do processo, mesmo raciocínio de
+/// [`HarnessFixture::spawn_config`].
+///
+/// Confirma que o script `openfortivpn-gui` (o nome do arquivo importa —
+/// `plugins/openfortivpn-vpn/vpn_cli.py::find_binary()` resolve
+/// `shutil.which("openfortivpn-gui")`) existe ali antes de qualquer cenário
+/// depender dele, com a mesma disciplina de `spawn_config` de falhar com
+/// causa óbvia em vez de um sintoma indireto mais tarde.
+fn fake_openfortivpn_gui_dir() -> PathBuf {
+    let dir = repo_root()
+        .join("tests")
+        .join("fixtures")
+        .join("fake-openfortivpn-gui");
+    assert!(
+        dir.join("openfortivpn-gui").is_file(),
+        "a fixture fake-openfortivpn-gui deveria existir em {dir:?} (T026a)"
+    );
+    dir
+}
+
+/// Prepend de um diretório ao `PATH` do processo de teste (T026b), com
+/// restauração no `Drop`.
+///
+/// `plugin_worker.rs::worker` (`Command::new(&config.command)`) resolve
+/// `"python3"` herdando o `PATH` do processo pai — não existe hoje nenhum
+/// hook de configuração para sobrescrever `PATH` por plugin individualmente.
+/// Mutar o `PATH` do processo de teste inteiro é a única forma de fazer
+/// `vpn_cli.py::find_binary()` (`shutil.which`, também herdado do processo
+/// pai no spawn do plugin) resolver o script da fixture em vez do binário
+/// real `openfortivpn-gui` (que pode nem estar instalado na máquina que roda
+/// os testes). Só é seguro dentro de [`e2e_guard`] — mesma disciplina que
+/// `HarnessFixture::new`/`with_uptime_kuma_base_url` já documentam para
+/// `XDG_CONFIG_HOME`: `set_var`/`var`/`remove_var` de `PATH` são globais ao
+/// processo, e nenhum outro teste deste módulo lê ou depende do valor de
+/// `PATH` além do que o próprio `Command::spawn` do plugin herda.
+///
+/// **Preserva o restante do `PATH` original** (prepend, nunca substituição
+/// total) — `python3` (todo plugin de referência) e `git` (fixture de
+/// `git-local`) continuam precisando resolver normalmente pelo `PATH` do
+/// sistema; só o diretório da fixture é adicionado à frente, para que
+/// `shutil.which` o encontre primeiro caso o binário real também esteja
+/// instalado.
+struct PathPrefixGuard {
+    original: Option<String>,
+}
+
+impl PathPrefixGuard {
+    fn prepend(dir: &Path) -> Self {
+        let original = std::env::var("PATH").ok();
+        let new_path = match &original {
+            Some(existing) => format!("{}:{existing}", dir.display()),
+            None => dir.display().to_string(),
+        };
+        std::env::set_var("PATH", new_path);
+        Self { original }
+    }
+}
+
+impl Drop for PathPrefixGuard {
+    fn drop(&mut self) {
+        match &self.original {
+            Some(value) => std::env::set_var("PATH", value),
+            None => std::env::remove_var("PATH"),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Cenários
 // ---------------------------------------------------------------------------
 
@@ -1333,7 +1406,7 @@ fn emulator_runs_the_real_subscription_until_a_plugin_reaches_ready() {
     assert_eq!(
         observed,
         PluginState::Ready,
-        "esperava que uptime-kuma alcançasse Ready pelo Emulator (handshake 0.2 + \
+        "esperava que uptime-kuma alcançasse Ready pelo Emulator (handshake 0.3 + \
          required_config resolvido pela fixture), obteve {observed:?}"
     );
 }
@@ -1459,7 +1532,7 @@ fn uptime_kuma_reaches_ready_and_populates_the_monitor_grid() {
     // A conexão saiu de Starting/Handshaking — e chegou a `Ready`, não a um
     // `Unavailable`: só `view_ready` renderiza esta linha.
     assert!(
-        harness.screen_shows("Plugin: uptime-kuma (protocolo 0.2)"),
+        harness.screen_shows("Plugin: uptime-kuma (protocolo 0.3)"),
         "uptime-kuma deveria estar Ready antes de qualquer ciclo de widget/get"
     );
 
@@ -1623,7 +1696,7 @@ fn setup_form_filled_via_ui_reaches_ready_with_real_data_and_persists_across_res
     harness.settle();
 
     assert!(
-        harness.screen_shows("Plugin: uptime-kuma (protocolo 0.2)"),
+        harness.screen_shows("Plugin: uptime-kuma (protocolo 0.3)"),
         "depois de confirmar a tela de setup, uptime-kuma deveria estar Ready"
     );
 
@@ -1683,7 +1756,7 @@ fn setup_form_filled_via_ui_reaches_ready_with_real_data_and_persists_across_res
     );
     restarted.settle();
     assert!(
-        restarted.screen_shows("Plugin: uptime-kuma (protocolo 0.2)"),
+        restarted.screen_shows("Plugin: uptime-kuma (protocolo 0.3)"),
         "reabrir o Farol com config/secrets já persistidos deveria ir direto a Ready, sem a tela \
          de setup"
     );
@@ -1793,7 +1866,7 @@ fn uptime_kuma_reports_metrics_unreachable_for_an_invalid_base_url_but_stays_rea
     );
     harness.settle();
     assert!(
-        harness.screen_shows("Plugin: uptime-kuma (protocolo 0.2)"),
+        harness.screen_shows("Plugin: uptime-kuma (protocolo 0.3)"),
         "required_config presente (mesmo com base_url inacessível) deveria levar a Ready, nunca a \
          NotConfigured"
     );
@@ -1857,7 +1930,7 @@ fn uptime_kuma_widget_reports_empty_items_when_instance_has_no_monitors() {
         fixture.spawn_config("uptime-kuma"),
     );
     harness.settle();
-    assert!(harness.screen_shows("Plugin: uptime-kuma (protocolo 0.2)"));
+    assert!(harness.screen_shows("Plugin: uptime-kuma (protocolo 0.3)"));
 
     wait_until(
         &mut harness,
@@ -1915,7 +1988,7 @@ fn uptime_kuma_recovers_after_instance_becomes_unreachable_without_restarting_fa
         fixture.spawn_config("uptime-kuma"),
     );
     harness.settle();
-    assert!(harness.screen_shows("Plugin: uptime-kuma (protocolo 0.2)"));
+    assert!(harness.screen_shows("Plugin: uptime-kuma (protocolo 0.3)"));
 
     // (a) widget populado antes de derrubar a instância — mesmo padrão de T006.
     let expected = expected_monitors();
@@ -1944,7 +2017,7 @@ fn uptime_kuma_recovers_after_instance_becomes_unreachable_without_restarting_fa
         );
     }
     assert!(
-        harness.screen_shows("Plugin: uptime-kuma (protocolo 0.2)"),
+        harness.screen_shows("Plugin: uptime-kuma (protocolo 0.3)"),
         "a janela/conexão continua Ready — um erro pontual de leitura nunca vira Unavailable"
     );
 
@@ -1991,7 +2064,7 @@ fn uptime_kuma_reports_metrics_parse_error_for_a_non_metrics_response_without_cr
         fixture.spawn_config("uptime-kuma"),
     );
     harness.settle();
-    assert!(harness.screen_shows("Plugin: uptime-kuma (protocolo 0.2)"));
+    assert!(harness.screen_shows("Plugin: uptime-kuma (protocolo 0.3)"));
 
     let error_text =
         "Falha ao consultar monitores: falha ao consultar /metrics da instância Uptime Kuma configurada";
@@ -2030,7 +2103,7 @@ fn uptime_kuma_process_killed_becomes_crashed_without_taking_down_the_core() {
         fixture.spawn_config("uptime-kuma"),
     );
     harness.settle();
-    assert!(harness.screen_shows("Plugin: uptime-kuma (protocolo 0.2)"));
+    assert!(harness.screen_shows("Plugin: uptime-kuma (protocolo 0.3)"));
 
     let pid = find_uptime_kuma_pid();
     send_signal(pid, "-9");
@@ -2038,7 +2111,7 @@ fn uptime_kuma_process_killed_becomes_crashed_without_taking_down_the_core() {
     wait_until_passive(
         &mut harness,
         "saída de Ready após kill -9",
-        |h| !h.screen_shows("Plugin: uptime-kuma (protocolo 0.2)"),
+        |h| !h.screen_shows("Plugin: uptime-kuma (protocolo 0.3)"),
         STATE_TIMEOUT,
     );
 
@@ -2075,7 +2148,7 @@ fn uptime_kuma_process_frozen_becomes_unresponsive_without_taking_down_the_core(
         fixture.spawn_config("uptime-kuma"),
     );
     harness.settle();
-    assert!(harness.screen_shows("Plugin: uptime-kuma (protocolo 0.2)"));
+    assert!(harness.screen_shows("Plugin: uptime-kuma (protocolo 0.3)"));
 
     let pid = find_uptime_kuma_pid();
     send_signal(pid, "-STOP");
@@ -2086,7 +2159,7 @@ fn uptime_kuma_process_frozen_becomes_unresponsive_without_taking_down_the_core(
     wait_until_passive(
         &mut harness,
         "saída de Ready após kill -STOP",
-        |h| !h.screen_shows("Plugin: uptime-kuma (protocolo 0.2)"),
+        |h| !h.screen_shows("Plugin: uptime-kuma (protocolo 0.3)"),
         STATE_TIMEOUT,
     );
 
@@ -2109,5 +2182,128 @@ fn uptime_kuma_process_frozen_becomes_unresponsive_without_taking_down_the_core(
         .arg(pid.to_string())
         .status();
     let _ = Command::new("kill").arg("-9").arg(pid.to_string()).status();
+    assert_no_lingering_children();
+}
+
+/// **T026b [US1] — `openfortivpn-vpn` alcança `Ready` e popula o widget `vpn-status`**
+/// (`specs/004-vpn-status-plugin/tasks.md` T026), mesmo padrão de
+/// [`uptime_kuma_reaches_ready_and_populates_the_monitor_grid`] (T006).
+///
+/// `openfortivpn-vpn` declara `required_config: []` (`research.md` D6,
+/// `plugins/openfortivpn-vpn/main.py::handle_handshake_hello`) — alcançar `Ready` depende só do
+/// handshake, então [`HarnessFixture::new`] (sem apontar nenhum `base_url`/`api_key` específico
+/// para este plugin — os valores que ela grava são só para `git-local`/`uptime-kuma`, ignorados
+/// por este terceiro plugin) já basta.
+///
+/// O que este cenário precisa controlar é a saída de `openfortivpn-gui status --json` — feito
+/// prependando o diretório de [`fake_openfortivpn_gui_dir`] (T026a) ao `PATH` do processo de teste
+/// via [`PathPrefixGuard`] e configurando as variáveis `FAKE_OPENFORTIVPN_*` que a fixture
+/// reconhece, para simular uma sessão `connected` com dois perfis conhecidos.
+///
+/// Diferente de `uptime-kuma` (T006), `openfortivpn-vpn` não tem uma `PollerThread` própria: cada
+/// `widget/get` invoca `openfortivpn-gui status --json` diretamente e de forma síncrona
+/// (`plugins/openfortivpn-vpn/vpn_cli.py::query_status`) — não há corrida contra nenhum relógio
+/// próprio do plugin (ao contrário do `suggested_refresh_interval_ms` de 30s de `uptime-kuma`), e
+/// o primeiro `widget/get` que o core dispara assim que a conexão fica `Ready` (`update.rs`,
+/// "fetch imediato ao ficar Ready") já traz os dados simulados. Ainda assim, o cenário usa
+/// [`wait_until`] (em vez de assumir sincronismo perfeito entre uma única chamada a
+/// `Scenario::settle` e a resposta assíncrona do worker) — mesma folga que os demais cenários
+/// deste módulo.
+#[test]
+fn openfortivpn_vpn_reaches_ready_and_populates_the_vpn_widget() {
+    let _guard = e2e_guard();
+
+    let fixture_dir = fake_openfortivpn_gui_dir();
+    let _path_guard = PathPrefixGuard::prepend(&fixture_dir);
+
+    // Variáveis reconhecidas por `tests/fixtures/fake-openfortivpn-gui/openfortivpn-gui` (T026a) —
+    // simula uma sessão `connected`, perfil `escritorio` ativo, `casa` como segundo perfil
+    // conhecido, sessão com 125s decorridos.
+    std::env::set_var("FAKE_OPENFORTIVPN_STATE", "connected");
+    std::env::set_var("FAKE_OPENFORTIVPN_PROFILE", "escritorio");
+    std::env::set_var("FAKE_OPENFORTIVPN_PROFILES", "escritorio,casa");
+    std::env::set_var("FAKE_OPENFORTIVPN_ELAPSED", "125");
+    std::env::remove_var("FAKE_OPENFORTIVPN_ERROR");
+
+    let fixture = HarnessFixture::new("openfortivpn-vpn-widget");
+
+    let mut harness = start_scenario(
+        "openfortivpn-vpn alcança Ready e popula o vpn-status",
+        fixture.spawn_config("openfortivpn-vpn"),
+    );
+    harness.settle();
+
+    // A conexão saiu de Starting/Handshaking — e chegou a `Ready` (sem tela de setup: D6, sem
+    // required_config): só `view_ready` renderiza esta linha.
+    assert!(
+        harness.screen_shows("Plugin: openfortivpn-vpn (protocolo 0.3)"),
+        "openfortivpn-vpn deveria estar Ready assim que o handshake completa (sem required_config, \
+         D6)"
+    );
+
+    // Espera o primeiro ciclo de dados chegar à tela (ver docstring: sem PollerThread própria,
+    // mas ainda assim assíncrono do ponto de vista do Emulator).
+    wait_until(
+        &mut harness,
+        "primeiro ciclo de widget/get do openfortivpn-vpn",
+        |h| h.screen_shows("Estado: conectado"),
+        STATE_TIMEOUT,
+    );
+
+    // A tela mostra os dados *derivados* de `view_vpn_widget` — estado mapeado, perfil ativo,
+    // lista de perfis disponíveis.
+    for text in ["Estado: conectado", "Perfil ativo: escritorio", "escritorio", "casa"] {
+        assert!(
+            harness.screen_shows(text),
+            "o widget vpn-status deveria renderizar {text:?}"
+        );
+    }
+    assert!(
+        !harness.screen_shows("Nenhum perfil VPN configurado."),
+        "com dois perfis simulados, a tela não pode mostrar o estado \"sem perfis\""
+    );
+    assert!(
+        !harness.screen_shows("Aguardando primeira leitura do estado da VPN..."),
+        "com um ciclo de dados já recebido, a tela não deveria mostrar o estado de espera inicial"
+    );
+
+    let app = harness.finish();
+
+    let connection = &app
+        .plugins
+        .iter()
+        .find(|slot| slot.spawn_config.plugin_name == "openfortivpn-vpn")
+        .expect("slot de openfortivpn-vpn")
+        .connection;
+
+    assert_eq!(connection.state, PluginState::Ready);
+
+    let status = connection
+        .vpn_widget
+        .status
+        .as_ref()
+        .expect("vpn_widget.status deveria estar populado após o ciclo de widget/get");
+    assert_eq!(
+        status.state,
+        farol_protocol::messages::VpnConnectionState::Connected
+    );
+    assert_eq!(status.active_profile.as_deref(), Some("escritorio"));
+    assert_eq!(status.elapsed_seconds, Some(125.0));
+    assert_eq!(
+        status
+            .available_profiles
+            .iter()
+            .map(|profile| profile.name.as_str())
+            .collect::<Vec<_>>(),
+        vec!["escritorio", "casa"],
+        "os perfis decodificados deveriam bater exatamente com FAKE_OPENFORTIVPN_PROFILES, na \
+         mesma ordem"
+    );
+    assert_eq!(
+        connection.vpn_widget.last_error, None,
+        "um ciclo de widget/get bem-sucedido MUST limpar o erro pontual anterior"
+    );
+
+    drop(app);
     assert_no_lingering_children();
 }

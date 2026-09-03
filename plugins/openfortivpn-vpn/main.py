@@ -83,12 +83,34 @@ def handle_handshake_hello(request: dict) -> dict:
 
 
 def handle_widget_get(request: dict) -> dict:
-    """`widget/get` — devolve `VpnStatusItem` a partir de `openfortivpn-gui status --json`.
+    """`widget/get` — devolve `VpnStatusItem` a partir de `openfortivpn-gui status --json` (T022).
 
-    Ainda não implementado nesta subtarefa (Setup/Foundational) — a leitura real via
-    `vpn_cli.query_status()` é escopo de T022 (US1), `specs/004-vpn-status-plugin/tasks.md`.
+    `vpn_cli.query_status()` nunca lança para os casos de erro previstos pelo contrato
+    (`contracts/openfortivpn-cli-mapping.md` § `widget/get`) — devolve um dict-marcador
+    `{"error": {"code", "reason", "detail"}}` (ver docstring de `vpn_cli.py`), que este handler
+    traduz para o envelope JSON-RPC de erro apropriado. `items` é sempre length 0 ou 1
+    (`research.md` D3, widget singleton) — aqui sempre 1 em caso de sucesso.
     """
-    raise NotImplementedError("handle_widget_get será implementado em T022 (US1)")
+    request_id = request.get("id")
+
+    status = vpn_cli.query_status()
+
+    error = status.get("error")
+    if error is not None:
+        code = error["code"]
+        if code == -32003:
+            return _error(request_id, -32003, "openfortivpn-gui não encontrado no PATH")
+        return _error(
+            request_id,
+            -32008,
+            "falha ao consultar status da VPN",
+            data={"reason": "vpn_status_unavailable", "detail": error["detail"]},
+        )
+
+    return _success(
+        request_id,
+        {"widget_id": request["params"]["widget_id"], "items": [status]},
+    )
 
 
 def handle_action_invoke(request: dict) -> dict:

@@ -350,10 +350,13 @@ impl Farol {
                         slot.connection.monitor_widget.monitors = monitors;
                         slot.connection.monitor_widget.last_error = None;
                     }
-                    // T018: placeholder de exaustividade — popular
-                    // `PluginConnection::vpn_widget` a partir daqui é escopo
-                    // de T024 (US1), não desta subtarefa.
-                    MergedWidgetItems::Vpn(_) => {}
+                    // T024 (US1): popula `PluginConnection::vpn_widget` a
+                    // partir do `VpnStatusItem` singleton (0 ou 1 item,
+                    // `research.md` D3) — mesmo padrão de `Monitor` acima.
+                    MergedWidgetItems::Vpn(items) => {
+                        slot.connection.vpn_widget.status = items.into_iter().next();
+                        slot.connection.vpn_widget.last_error = None;
+                    }
                 }
             }
             WidgetOutcome::PluginError(message) => {
