@@ -297,6 +297,16 @@ fn view_vpn_widget<'a>(
                     "Perfil ativo: {}",
                     item.active_profile.as_deref().unwrap_or("—")
                 )));
+                // T034 (US3): tempo de sessão decorrido, formatado de forma
+                // legível. `data-model.md` §1.3 garante `elapsed_seconds`
+                // presente quando `state == Connected`, mas tratamos `None`
+                // defensivamente sem quebrar a renderização.
+                content = content.push(text(format!(
+                    "Conectado há: {}",
+                    item.elapsed_seconds
+                        .map(format_elapsed)
+                        .unwrap_or_else(|| "—".to_string())
+                )));
                 content = content.push(view_vpn_disconnect_control(
                     plugin_name,
                     item,
@@ -339,6 +349,25 @@ fn view_vpn_widget<'a>(
     }
 
     content
+}
+
+/// T034: formata uma duração em segundos como texto legível de
+/// horas/minutos/segundos (ex.: `3725.0` -> `"1h 2min"`, `125.0` ->
+/// `"2min 5s"`, `45.0` -> `"45s"`). Sem formato exato exigido pela spec —
+/// só precisa ser claramente legível como duração.
+fn format_elapsed(seconds: f64) -> String {
+    let total_seconds = seconds.max(0.0).round() as u64;
+    let hours = total_seconds / 3600;
+    let minutes = (total_seconds % 3600) / 60;
+    let secs = total_seconds % 60;
+
+    if hours > 0 {
+        format!("{hours}h {minutes}min")
+    } else if minutes > 0 {
+        format!("{minutes}min {secs}s")
+    } else {
+        format!("{secs}s")
+    }
 }
 
 /// T032: uma linha por `VpnProfile` — nome + botão de conectar
