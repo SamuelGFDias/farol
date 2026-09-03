@@ -114,12 +114,45 @@ def handle_widget_get(request: dict) -> dict:
 
 
 def handle_action_invoke(request: dict) -> dict:
-    """`action/invoke` — `vpn.connect`/`vpn.disconnect` via `vpn_cli.connect`/`disconnect`.
+    """`action/invoke` — `vpn.connect`/`vpn.disconnect` via `vpn_cli.connect`/`disconnect` (T029).
 
-    Ainda não implementado nesta subtarefa (Setup/Foundational) — o dispatch real é escopo de
-    T029 (US2), `specs/004-vpn-status-plugin/tasks.md`.
+    Dispatch por `action_id`/`target.type` (`contracts/openfortivpn-cli-mapping.md` §
+    `action/invoke`). `vpn_cli.connect`/`disconnect` nunca lançam para os casos de erro previstos
+    — devolvem o mesmo estilo de dict-marcador de `query_status()` (ver docstring de `vpn_cli.py`),
+    que este handler traduz para o envelope JSON-RPC de erro (`-32009`/`vpn_action_failed`, forma
+    de `ActionInvokeResponseError`) ou de sucesso (`ActionInvokeResult::Vpn`, campo `vpn_status`).
+    Qualquer outra combinação de `action_id`/`target` é erro de uso (`-32602`) — não deveria
+    acontecer em uso normal, já que o core só invoca `target`s que o próprio plugin declarou.
     """
-    raise NotImplementedError("handle_action_invoke será implementado em T029 (US2)")
+    request_id = request.get("id")
+    params = request["params"]
+    action_id = params["action_id"]
+    target = params["target"]
+
+    if action_id == "vpn.connect" and target.get("type") == "vpn-profile":
+        status = vpn_cli.connect(target["id"])
+    elif action_id == "vpn.disconnect" and target.get("type") == "vpn-connection":
+        status = vpn_cli.disconnect()
+    else:
+        return _error(
+            request_id,
+            -32602,
+            f"action_id/target não reconhecido: {action_id!r}/{target!r}",
+        )
+
+    error = status.get("error")
+    if error is not None:
+        return _error(
+            request_id,
+            -32009,
+            error["message"],
+            data={
+                "reason": "vpn_action_failed",
+                "detail": {"cli_code": error["cli_code"], "cli_message": error["detail"]},
+            },
+        )
+
+    return _success(request_id, {"vpn_status": status})
 
 
 DISPATCH = {

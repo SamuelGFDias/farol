@@ -350,9 +350,6 @@ impl Farol {
                         slot.connection.monitor_widget.monitors = monitors;
                         slot.connection.monitor_widget.last_error = None;
                     }
-                    // T024 (US1): popula `PluginConnection::vpn_widget` a
-                    // partir do `VpnStatusItem` singleton (0 ou 1 item,
-                    // `research.md` D3) — mesmo padrão de `Monitor` acima.
                     MergedWidgetItems::Vpn(items) => {
                         slot.connection.vpn_widget.status = items.into_iter().next();
                         slot.connection.vpn_widget.last_error = None;
@@ -378,19 +375,32 @@ impl Farol {
         }
     }
 
-    /// T035: funde o resultado de uma invocação de `action/invoke` (fetch)
-    /// no `RepositoryViewModel` do repositório-alvo. Nenhuma variante muda
-    /// `PluginState` — erro e timeout de ação são pontuais da chamada, não
-    /// indisponibilidade do plugin (D6, `contracts/action-protocol.md`).
+    /// T035: funde o resultado de uma invocação de `action/invoke` no estado
+    /// de UI do alvo correspondente. Nenhuma variante muda `PluginState` —
+    /// erro e timeout de ação são pontuais da chamada, não indisponibilidade
+    /// do plugin (D6, `contracts/action-protocol.md`).
     ///
-    /// **T010 (feature 004, Foundational)**: `ActionInvokeResult` deixou de
-    /// ser uma struct única (`{ repo }`) e virou `#[serde(untagged)] enum {
-    /// Git { repo }, Vpn { vpn_status } }` (`farol-protocol`) — ajuste
-    /// mecânico de compatibilidade: o braço de sucesso passa a casar
-    /// explicitamente `ActionInvokeResult::Git { repo }`, mesmo
-    /// comportamento de antes para `git.fetch`. A variante `Vpn { .. }` é só
-    /// um placeholder de exaustividade nesta subtarefa — fundi-la de verdade
-    /// em `PluginConnection::vpn_widget` é escopo de T031 (US2), não desta.
+    /// **T031 (feature 004, US2, `research.md` D4/D7)**: generalizado por
+    /// `target.r#type` — `ActionInvokeResult` virou `oneOf`/enum untagged em
+    /// v0.3 (T010, `farol-protocol`), e a variante `Vpn { vpn_status }`
+    /// deixa de ser no-op. `target.r#type == "repo"` (`ActionOutcome::
+    /// Success(..Git{..})`, `PluginError`/`Timeout` com esse `target.r#type`)
+    /// preserva o comportamento exato de antes desta subtarefa — funde em
+    /// `RepositoryViewModel` via `set_fetch_error`. `target.r#type ==
+    /// "vpn-profile"` (`vpn.connect`) ou `"vpn-connection"` (`vpn.disconnect`)
+    /// passam a fundir em `PluginConnection::vpn_widget`: sucesso substitui
+    /// `vpn_widget.status` diretamente pelo `VpnStatusItem` retornado (mesmo
+    /// espírito do FR-018 já documentado para `git.fetch`/
+    /// `RepositoryViewModel.repo` — sem `widget/get` adicional); erro/timeout
+    /// popula `vpn_widget.last_action_error` (`set_vpn_action_error`). Em
+    /// qualquer um dos três desfechos (sucesso, erro, timeout) de uma ação de
+    /// VPN, as duas flags `connect_in_flight`/`disconnect_in_flight` são
+    /// limpas incondicionalmente — só uma podia estar `true` por vez (a UI
+    /// desabilita os botões durante `*_in_flight`, `view.rs`, D7), então
+    /// limpar as duas é tão correto quanto descobrir qual estava setada, e
+    /// mais simples. Um `target.r#type` desconhecido em `PluginError`/
+    /// `Timeout` é no-op defensivo, mesmo raciocínio de
+    /// `handle_action_invoke_requested`.
     fn handle_action_outcome(&mut self, plugin_name: &str, outcome: ActionOutcome) {
         let Some(slot) = self.slot_mut(plugin_name) else {
             return;
@@ -411,35 +421,60 @@ impl Farol {
                     item.last_error = None;
                 }
             }
-            // T010: placeholder de exaustividade — fundir de verdade em
-            // `PluginConnection::vpn_widget` é escopo de T031 (US2).
-            ActionOutcome::Success(farol_protocol::ActionInvokeResult::Vpn { .. }) => {}
-            ActionOutcome::PluginError { target, message } => {
-                set_fetch_error(&mut slot.connection.items, &target.id, message);
+            ActionOutcome::Success(farol_protocol::ActionInvokeResult::Vpn { vpn_status }) => {
+                slot.connection.vpn_widget.status = Some(vpn_status);
+                slot.connection.vpn_widget.connect_in_flight = false;
+                slot.connection.vpn_widget.disconnect_in_flight = false;
+                slot.connection.vpn_widget.last_action_error = None;
             }
+            ActionOutcome::PluginError { target, message } => match target.r#type.as_str() {
+                "repo" => set_fetch_error(&mut slot.connection.items, &target.id, message),
+                "vpn-profile" | "vpn-connection" => {
+                    set_vpn_action_error(&mut slot.connection.vpn_widget, message)
+                }
+                _ => {}
+            },
             ActionOutcome::Timeout { target } => {
-                set_fetch_error(
-                    &mut slot.connection.items,
-                    &target.id,
-                    format!(
-                        "ação não respondeu dentro do orçamento de {:?} (RPC_TIMEOUT_ACTION/timeout_hint_ms)",
-                        plugin_worker::RPC_TIMEOUT_ACTION
-                    ),
+                let message = format!(
+                    "ação não respondeu dentro do orçamento de {:?} (RPC_TIMEOUT_ACTION/timeout_hint_ms)",
+                    plugin_worker::RPC_TIMEOUT_ACTION
                 );
+                match target.r#type.as_str() {
+                    "repo" => set_fetch_error(&mut slot.connection.items, &target.id, message),
+                    "vpn-profile" | "vpn-connection" => {
+                        set_vpn_action_error(&mut slot.connection.vpn_widget, message)
+                    }
+                    _ => {}
+                }
             }
         }
     }
 
-    /// T033/T036: dispara `action/invoke` pelo worker para a ação de fetch
-    /// de um repositório, marcando `fetch_in_flight` imediatamente para
-    /// feedback de UI (a resposta chega depois, assíncrona, como
-    /// `Message::Worker` — D5, nunca bloqueia `update`).
+    /// T033/T036: dispara `action/invoke` pelo worker, marcando estado de UI
+    /// "em andamento" imediatamente para feedback (a resposta chega depois,
+    /// assíncrona, como `Message::Worker` — D5, nunca bloqueia `update`).
     ///
     /// **T019 (feature 004)**: renomeado junto com a variante correspondente
     /// de `Message` (mesmo nome anterior, específico de `git.fetch`, agora
-    /// `ActionInvokeRequested`) — mesmo comportamento, nome genérico. A
-    /// generalização por `target.r#type` para alvos de VPN é escopo de T031
-    /// (US2), não desta subtarefa.
+    /// `ActionInvokeRequested`) — mesmo comportamento, nome genérico.
+    ///
+    /// **T031 (feature 004, US2, `research.md` D4/D7)**: generalizado por
+    /// `target.r#type` (não `action_id` — `target.r#type` já discrimina git
+    /// de VPN sem precisar de um segundo `match` de string por `action_id`,
+    /// mesmo raciocínio de [`WidgetKind`] para `kind` de widget).
+    /// `target.r#type == "repo"` preserva o comportamento exato de antes
+    /// desta subtarefa: reentrância verificada procurando `target.id` em
+    /// `slot.connection.items`, `fetch_in_flight` marcado no mesmo item.
+    /// `"vpn-profile"` (ação `vpn.connect`) e `"vpn-connection"` (ação
+    /// `vpn.disconnect`) usam, em vez disso, os campos de UI local dedicados
+    /// de `VpnWidgetViewModel` (`connect_in_flight`/`disconnect_in_flight`,
+    /// D7) — mesma defesa contra reentrância (não reenviar enquanto a
+    /// invocação anterior ainda está pendente), só o lugar onde o estado "em
+    /// andamento" mora é que difere por tipo de alvo, já que um alvo de VPN
+    /// não é um item de `slot.connection.items` (essa lista só existe para
+    /// `git-local`). Um `target.r#type` desconhecido é no-op defensivo — não
+    /// deveria acontecer, já que o core só invoca `target`s ecoados de uma
+    /// `ActionDeclaration` que o próprio plugin declarou.
     fn handle_action_invoke_requested(
         &mut self,
         plugin_name: &str,
@@ -459,37 +494,74 @@ impl Farol {
             return;
         }
 
-        let already_in_flight = slot
-            .connection
-            .items
-            .iter()
-            .any(|item| item.repo.id == target.id && item.fetch_in_flight);
-        if already_in_flight {
-            // Defesa contra reentrância: já há uma invocação pendente para
-            // este repositório (o botão também já estaria desabilitado
-            // nesse estado — ver `view_fetch_control`).
-            return;
-        }
+        match target.r#type.as_str() {
+            "repo" => {
+                let already_in_flight = slot
+                    .connection
+                    .items
+                    .iter()
+                    .any(|item| item.repo.id == target.id && item.fetch_in_flight);
+                if already_in_flight {
+                    // Defesa contra reentrância: já há uma invocação pendente
+                    // para este repositório (o botão também já estaria
+                    // desabilitado nesse estado — ver `view_fetch_control`).
+                    return;
+                }
 
-        // Só marca `fetch_in_flight` depois de garantir que o canal do
-        // worker existe — senão o campo ficaria travado em `true` para
-        // sempre (nenhuma resposta viria para limpá-lo).
-        let Some(sender) = slot.worker_sender.as_mut() else {
-            return;
-        };
-        let _ = sender.try_send(WorkerInput::InvokeAction {
-            action_id,
-            target: target.clone(),
-            timeout_hint_ms,
-        });
+                // Só marca `fetch_in_flight` depois de garantir que o canal
+                // do worker existe — senão o campo ficaria travado em `true`
+                // para sempre (nenhuma resposta viria para limpá-lo).
+                let Some(sender) = slot.worker_sender.as_mut() else {
+                    return;
+                };
+                let _ = sender.try_send(WorkerInput::InvokeAction {
+                    action_id,
+                    target: target.clone(),
+                    timeout_hint_ms,
+                });
 
-        if let Some(item) = slot
-            .connection
-            .items
-            .iter_mut()
-            .find(|item| item.repo.id == target.id)
-        {
-            item.fetch_in_flight = true;
+                if let Some(item) = slot
+                    .connection
+                    .items
+                    .iter_mut()
+                    .find(|item| item.repo.id == target.id)
+                {
+                    item.fetch_in_flight = true;
+                }
+            }
+            "vpn-profile" => {
+                if slot.connection.vpn_widget.connect_in_flight {
+                    // Mesma defesa contra reentrância do braço `"repo"`
+                    // acima, agora contra `connect_in_flight`.
+                    return;
+                }
+                let Some(sender) = slot.worker_sender.as_mut() else {
+                    return;
+                };
+                let _ = sender.try_send(WorkerInput::InvokeAction {
+                    action_id,
+                    target,
+                    timeout_hint_ms,
+                });
+                slot.connection.vpn_widget.connect_in_flight = true;
+            }
+            "vpn-connection" => {
+                if slot.connection.vpn_widget.disconnect_in_flight {
+                    return;
+                }
+                let Some(sender) = slot.worker_sender.as_mut() else {
+                    return;
+                };
+                let _ = sender.try_send(WorkerInput::InvokeAction {
+                    action_id,
+                    target,
+                    timeout_hint_ms,
+                });
+                slot.connection.vpn_widget.disconnect_in_flight = true;
+            }
+            _ => {
+                // No-op defensivo — ver docstring da função.
+            }
         }
     }
 
@@ -692,6 +764,22 @@ fn set_fetch_error(items: &mut [RepositoryViewModel], repo_id: &str, message: St
         item.fetch_in_flight = false;
         item.last_error = Some(message);
     }
+}
+
+/// T031 (feature 004, US2): análogo de [`set_fetch_error`] acima, mas para o
+/// widget de VPN — marca o erro da última invocação de `vpn.connect`/
+/// `vpn.disconnect` (`PluginError`/`Timeout` de `handle_action_outcome`),
+/// limpando incondicionalmente as duas flags de "em andamento"
+/// (`connect_in_flight`/`disconnect_in_flight`, `research.md` D7): a ação
+/// terminou, com falha — mesma disciplina do braço de sucesso em
+/// `handle_action_outcome`, que também limpa as duas. Só uma das duas podia
+/// estar `true` por vez (a UI desabilita os botões durante `*_in_flight`,
+/// `view.rs`), então limpar as duas é tão correto quanto descobrir qual
+/// estava setada, e mais simples.
+fn set_vpn_action_error(vpn_widget: &mut model::VpnWidgetViewModel, message: String) {
+    vpn_widget.last_action_error = Some(message);
+    vpn_widget.connect_in_flight = false;
+    vpn_widget.disconnect_in_flight = false;
 }
 
 /// Resultado de [`merge_widget_items`] — união discriminada pelo mesmo
@@ -1265,6 +1353,185 @@ pub(crate) mod tests {
         let slot = app.slot_mut("git-local").unwrap();
         assert!(!slot.connection.items[0].fetch_in_flight);
         assert!(slot.connection.items[0].last_error.is_some());
+    }
+
+    /// T031 (feature 004, US2): constrói um `Farol` de teste com a entrada
+    /// `openfortivpn-vpn` já `Ready`, com o widget `vpn-status` declarado —
+    /// análogo de `farol_with_monitor_widget` acima, para os testes de
+    /// `handle_action_invoke_requested`/`handle_action_outcome` generalizados
+    /// por `target.r#type` nesta subtarefa.
+    fn farol_with_vpn_widget() -> Farol {
+        let mut app = Farol::default();
+        let slot = app
+            .slot_mut("openfortivpn-vpn")
+            .expect("openfortivpn-vpn é um plugin conhecido");
+        slot.connection.state = PluginState::Ready;
+        slot.connection.identity = Some(PluginIdentity {
+            plugin_name: "openfortivpn-vpn".to_string(),
+            protocol_version: ProtocolVersion::new(0, 3),
+            capabilities: CapabilityManifest {
+                capabilities: vec![Capability::Known(KnownCapability::Exec)],
+            },
+        });
+        slot.connection.widgets = vec![farol_protocol::WidgetDeclaration {
+            id: "vpn-connection".to_string(),
+            kind: VPN_WIDGET_KIND.to_string(),
+            title: "VPN".to_string(),
+            suggested_refresh_interval_ms: None,
+        }];
+        app
+    }
+
+    fn sample_vpn_status_item(
+        state: farol_protocol::messages::VpnConnectionState,
+    ) -> farol_protocol::messages::VpnStatusItem {
+        farol_protocol::messages::VpnStatusItem {
+            state,
+            active_profile: Some("escritorio".to_string()),
+            elapsed_seconds: None,
+            available_profiles: vec![],
+            disconnect_action: farol_protocol::ActionDeclaration {
+                id: "vpn.disconnect".to_string(),
+                label: "Desconectar".to_string(),
+                target: farol_protocol::ActionTarget {
+                    r#type: "vpn-connection".to_string(),
+                    id: "active".to_string(),
+                },
+                enabled: true,
+                timeout_hint_ms: None,
+            },
+        }
+    }
+
+    /// T031: sucesso de `action/invoke` (`vpn.connect`/`vpn.disconnect`)
+    /// substitui `vpn_widget.status` diretamente pelo `VpnStatusItem`
+    /// retornado (mesmo espírito do FR-018 já testado para `git.fetch` em
+    /// `action_success_outcome_updates_repo_clears_error_and_flight_flag`),
+    /// limpa as duas flags `connect_in_flight`/`disconnect_in_flight` e
+    /// `last_action_error`.
+    #[test]
+    fn action_success_outcome_updates_vpn_status_clears_error_and_flight_flags() {
+        let mut app = farol_with_vpn_widget();
+        {
+            let slot = app.slot_mut("openfortivpn-vpn").unwrap();
+            slot.connection.vpn_widget.connect_in_flight = true;
+            slot.connection.vpn_widget.last_action_error = Some("erro antigo".to_string());
+        }
+
+        let updated_status =
+            sample_vpn_status_item(farol_protocol::messages::VpnConnectionState::Connected);
+        app.handle_action_outcome(
+            "openfortivpn-vpn",
+            ActionOutcome::Success(farol_protocol::ActionInvokeResult::Vpn {
+                vpn_status: updated_status.clone(),
+            }),
+        );
+
+        let slot = app.slot_mut("openfortivpn-vpn").unwrap();
+        assert_eq!(slot.connection.vpn_widget.status, Some(updated_status));
+        assert!(!slot.connection.vpn_widget.connect_in_flight);
+        assert!(!slot.connection.vpn_widget.disconnect_in_flight);
+        assert!(slot.connection.vpn_widget.last_action_error.is_none());
+    }
+
+    /// T031: erro pontual de `action/invoke` para um `target.r#type ==
+    /// "vpn-profile"` (`vpn.connect`) popula `vpn_widget.last_action_error`
+    /// (em vez de `set_fetch_error`/`connection.items`, que não faz sentido
+    /// para um alvo de VPN) e limpa as duas flags `*_in_flight` — mesma
+    /// disciplina do braço de sucesso, "a ação terminou, com falha".
+    #[test]
+    fn action_plugin_error_outcome_for_vpn_target_sets_last_action_error_and_clears_flight_flags() {
+        let mut app = farol_with_vpn_widget();
+        {
+            let slot = app.slot_mut("openfortivpn-vpn").unwrap();
+            slot.connection.vpn_widget.connect_in_flight = true;
+            slot.connection.vpn_widget.status = Some(sample_vpn_status_item(
+                farol_protocol::messages::VpnConnectionState::Disconnected,
+            ));
+        }
+
+        app.handle_action_outcome(
+            "openfortivpn-vpn",
+            ActionOutcome::PluginError {
+                target: farol_protocol::ActionTarget {
+                    r#type: "vpn-profile".to_string(),
+                    id: "escritorio".to_string(),
+                },
+                message: "perfil já conectado".to_string(),
+            },
+        );
+
+        let slot = app.slot_mut("openfortivpn-vpn").unwrap();
+        assert_eq!(
+            slot.connection.vpn_widget.last_action_error.as_deref(),
+            Some("perfil já conectado")
+        );
+        assert!(!slot.connection.vpn_widget.connect_in_flight);
+        assert!(!slot.connection.vpn_widget.disconnect_in_flight);
+        // `status` (última leitura conhecida) MUST ser preservado — um erro
+        // pontual de ação não apaga o último estado bom conhecido, mesmo
+        // princípio já aplicado a `RepositoryViewModel.repo`.
+        assert!(slot.connection.vpn_widget.status.is_some());
+    }
+
+    /// T031: `handle_action_invoke_requested` para `target.r#type ==
+    /// "vpn-profile"` marca `connect_in_flight` e envia `InvokeAction` pelo
+    /// worker — mesmo padrão de `handshake_ready_outcome_immediately_
+    /// requests_first_widget` para o caminho de `"repo"`.
+    #[test]
+    fn action_invoke_requested_for_vpn_profile_marks_connect_in_flight_and_sends_invoke() {
+        let mut app = farol_with_vpn_widget();
+        let (sender, mut receiver) = iced::futures::channel::mpsc::channel::<WorkerInput>(16);
+        app.slot_mut("openfortivpn-vpn").unwrap().worker_sender = Some(sender);
+
+        app.handle_action_invoke_requested(
+            "openfortivpn-vpn",
+            "vpn.connect".to_string(),
+            farol_protocol::ActionTarget {
+                r#type: "vpn-profile".to_string(),
+                id: "escritorio".to_string(),
+            },
+            None,
+        );
+
+        let slot = app.slot_mut("openfortivpn-vpn").unwrap();
+        assert!(slot.connection.vpn_widget.connect_in_flight);
+        match receiver.try_recv() {
+            Ok(WorkerInput::InvokeAction { action_id, .. }) => {
+                assert_eq!(action_id, "vpn.connect");
+            }
+            other => panic!("esperava Ok(InvokeAction{{vpn.connect}}), obteve {other:?}"),
+        }
+    }
+
+    /// T031: reentrância — com `connect_in_flight` já `true`, uma segunda
+    /// `handle_action_invoke_requested` para o mesmo `target.r#type ==
+    /// "vpn-profile"` não envia nada ao worker (defesa contra reentrância,
+    /// mesmo padrão já testado para `"repo"` só implicitamente via
+    /// `already_in_flight` — aqui explícito para o caminho de VPN
+    /// generalizado nesta subtarefa).
+    #[test]
+    fn action_invoke_requested_for_vpn_profile_already_in_flight_is_noop() {
+        let mut app = farol_with_vpn_widget();
+        let (sender, mut receiver) = iced::futures::channel::mpsc::channel::<WorkerInput>(16);
+        app.slot_mut("openfortivpn-vpn").unwrap().worker_sender = Some(sender);
+        app.slot_mut("openfortivpn-vpn")
+            .unwrap()
+            .connection
+            .vpn_widget
+            .connect_in_flight = true;
+
+        app.handle_action_invoke_requested(
+            "openfortivpn-vpn",
+            "vpn.connect".to_string(),
+            farol_protocol::ActionTarget {
+                r#type: "vpn-profile".to_string(),
+                id: "escritorio".to_string(),
+            },
+            None,
+        );
+
+        assert!(receiver.try_recv().is_err());
     }
 
     #[test]

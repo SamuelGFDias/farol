@@ -146,7 +146,7 @@ fn view_ready<'a>(
         content = view_monitor_grid(&connection.monitor_widget, content);
     }
     if renders_vpn_widget {
-        content = view_vpn_widget(&connection.vpn_widget, content);
+        content = view_vpn_widget(plugin_name, &connection.vpn_widget, content);
     }
     if !renders_status_grid && !renders_monitor_grid && !renders_vpn_widget {
         content = content.push(text(
@@ -251,29 +251,37 @@ fn view_monitor_row(monitor: &farol_protocol::messages::MonitorStatusItem) -> El
     .into()
 }
 
-/// T025: widget `vpn-status` (`openfortivpn-vpn`), somente leitura — texto
-/// de estado, perfil ativo quando conectado, e a lista de perfis
-/// disponíveis (ou indicação explícita de lista vazia, FR-003). **Sem
-/// botões nesta fase** — conectar/desconectar é escopo de T032 (US2),
-/// coerente com a própria justificativa de prioridade de US1 no `spec.md`
-/// ("entrega valor completo... mesmo sem nenhuma ação de
-/// conectar/desconectar").
+/// T025/T032: widget `vpn-status` (`openfortivpn-vpn`). T032 (US2) estende a
+/// renderização somente-leitura de T025 com controles de ação: um botão de
+/// "conectar" por perfil disponível (`VpnProfile::connect_action`) e um
+/// botão de "desconectar" quando `state == Connected`
+/// (`VpnStatusItem::disconnect_action`) — mesmo padrão de
+/// `view_fetch_control`/`Message::ActionInvokeRequested` já usado por
+/// `git.fetch`: o core nunca decide `enabled` por conta própria, só
+/// desabilita adicionalmente enquanto uma invocação já está em andamento
+/// (`connect_in_flight`/`disconnect_in_flight`, D7 de `research.md`) para
+/// evitar reentrância pela UI antes da resposta anterior chegar.
 ///
 /// Mesmo espírito de `view_monitor_grid` para `last_error` (`FR-017`): um
 /// erro pontual do último `widget/get` não apaga o `status` de uma leitura
 /// anterior boa — o erro é exibido em cima do que já se sabe, nunca no
-/// lugar.
+/// lugar. `last_action_error` (erro da última `vpn.connect`/
+/// `vpn.disconnect`) segue a mesma regra, exibido sem esconder `status`/
+/// lista de perfis já mostrados.
 ///
 /// `elapsed_seconds` deliberadamente NÃO é exibido aqui — escopo de T034
 /// (User Story 3); o campo já está populado no `Model` desde T021, só a
 /// exibição fica para depois.
 fn view_vpn_widget<'a>(
+    plugin_name: &'a str,
     widget: &'a model::VpnWidgetViewModel,
     mut content: Column<'a, Message>,
 ) -> Column<'a, Message> {
     if let Some(error) = &widget.last_error {
         content = content.push(text(format!("Falha ao consultar VPN: {error}")));
     }
+
+    let action_in_flight = widget.connect_in_flight || widget.disconnect_in_flight;
 
     match &widget.status {
         Some(item) => {
@@ -289,13 +297,22 @@ fn view_vpn_widget<'a>(
                     "Perfil ativo: {}",
                     item.active_profile.as_deref().unwrap_or("—")
                 )));
+                content = content.push(view_vpn_disconnect_control(
+                    plugin_name,
+                    item,
+                    action_in_flight,
+                ));
             }
 
             if item.available_profiles.is_empty() {
                 content = content.push(text("Nenhum perfil VPN configurado."));
             } else {
                 for profile in &item.available_profiles {
-                    content = content.push(text(profile.name.clone()));
+                    content = content.push(view_vpn_profile_row(
+                        plugin_name,
+                        profile,
+                        action_in_flight,
+                    ));
                 }
             }
         }
@@ -306,7 +323,72 @@ fn view_vpn_widget<'a>(
         }
     }
 
+    // D7 de `research.md`: feedback textual de "em andamento" enquanto a
+    // resposta de `action/invoke` ainda não chegou — os botões já ficam
+    // desabilitados (`action_in_flight` acima), mas um texto explícito
+    // deixa claro qual ação está pendente.
+    if widget.connect_in_flight {
+        content = content.push(text("Conectando..."));
+    }
+    if widget.disconnect_in_flight {
+        content = content.push(text("Desconectando..."));
+    }
+
+    if let Some(error) = &widget.last_action_error {
+        content = content.push(text(format!("Falha na última ação: {error}")));
+    }
+
     content
+}
+
+/// T032: uma linha por `VpnProfile` — nome + botão de conectar
+/// (`connect_action.label`), habilitado quando `connect_action.enabled ==
+/// true` e nenhuma ação (`connect`/`disconnect`) já está em andamento.
+/// Mesmo padrão exato de `view_fetch_control` para construir
+/// `Message::ActionInvokeRequested`.
+fn view_vpn_profile_row<'a>(
+    plugin_name: &'a str,
+    profile: &'a farol_protocol::messages::VpnProfile,
+    action_in_flight: bool,
+) -> Element<'a, Message> {
+    let action = &profile.connect_action;
+    let on_press = (action.enabled && !action_in_flight).then(|| Message::ActionInvokeRequested {
+        plugin_name: plugin_name.to_string(),
+        action_id: action.id.clone(),
+        target: action.target.clone(),
+        timeout_hint_ms: action.timeout_hint_ms,
+    });
+
+    row![
+        text(profile.name.clone()).width(Length::FillPortion(2)),
+        button(text(action.label.clone()))
+            .width(Length::FillPortion(1))
+            .on_press_maybe(on_press),
+    ]
+    .spacing(8)
+    .into()
+}
+
+/// T032: botão de desconectar (`VpnStatusItem::disconnect_action`),
+/// exibido só quando `state == Connected` (chamador já garante isso) —
+/// habilitado quando `disconnect_action.enabled == true` e nenhuma ação já
+/// está em andamento.
+fn view_vpn_disconnect_control<'a>(
+    plugin_name: &'a str,
+    item: &'a farol_protocol::messages::VpnStatusItem,
+    action_in_flight: bool,
+) -> Element<'a, Message> {
+    let action = &item.disconnect_action;
+    let on_press = (action.enabled && !action_in_flight).then(|| Message::ActionInvokeRequested {
+        plugin_name: plugin_name.to_string(),
+        action_id: action.id.clone(),
+        target: action.target.clone(),
+        timeout_hint_ms: action.timeout_hint_ms,
+    });
+
+    button(text(action.label.clone()))
+        .on_press_maybe(on_press)
+        .into()
 }
 
 /// T035 (D8): renderiza o formulário de setup (`SetupForm`, T030) — em vez

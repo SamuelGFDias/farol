@@ -1,8 +1,7 @@
 """Wrapper síncrono sobre o binário `openfortivpn-gui` (subprocess) — traduz
 `status`/`connect`/`disconnect --json` para o vocabulário do protocolo Farol.
 
-Implementado na task T021 (US1) de specs/004-vpn-status-plugin/tasks.md. `connect`/`disconnect`
-(T028, US2) ainda são stubs `NotImplementedError` nesta fase.
+Implementado nas tasks T021 (US1) e T028 (US2) de specs/004-vpn-status-plugin/tasks.md.
 
 Interface interna entre este módulo e `main.py` (decisão local deste plugin, não faz parte do
 protocolo Farol): `query_status()` nunca lança para os casos de erro previstos no contrato
@@ -12,6 +11,15 @@ disso devolve um dict-marcador `{"error": {"code": <-32003|-32008>, "reason": <s
 JSON-RPC de erro apropriado (mensagem PT-BR fixa por `code`, `data` construído a partir de
 `reason`/`detail`). Em caso de sucesso, devolve o `VpnStatusItem` já pronto (mesma forma de
 `data-model.md` §1.3), pronto para entrar em `items` sem transformação adicional.
+
+`connect(profile)`/`disconnect()` seguem o mesmo padrão de nunca lançar (§ `action/invoke` do
+mesmo contrato): em caso de falha de domínio devolvem um dict-marcador
+`{"error": {"code": -32009, "reason": "vpn_action_failed", "cli_code": <str>, "message": <PT-BR>,
+"detail": <str>}}` — `message` já é a tradução PT-BR da tabela do contrato (FR-007, ver
+`_ACTION_ERROR_MESSAGES`), `detail` carrega o `error.message` bruto da CLI (ou uma descrição da
+falha de infraestrutura, quando não há `ErrorPayload` — ex. timeout/JSON inválido, tratados como
+`cli_code: "internal_error"`). Em caso de sucesso, devolve o `VpnStatusItem` já pronto, igual a
+`query_status()`.
 """
 
 from __future__ import annotations
@@ -21,14 +29,45 @@ import shutil
 import subprocess
 
 STATUS_TIMEOUT_SECONDS = 10
+ACTION_TIMEOUT_SECONDS = 30
 
 _ERROR_EXEC_UNAVAILABLE = -32003
 _ERROR_VPN_STATUS_UNAVAILABLE = -32008
+_ERROR_VPN_ACTION_FAILED = -32009
+
+# Tabela de tradução `error.code` (CLI) → mensagem PT-BR (FR-007), exata de
+# `contracts/openfortivpn-cli-mapping.md` § "Tabela de tradução".
+_ACTION_ERROR_MESSAGES = {
+    "profile_not_found": "Perfil não encontrado — pode ter sido removido ou renomeado.",
+    "already_connected": "Já existe uma conexão VPN ativa.",
+    "not_connected": "Não há conexão VPN ativa para desconectar.",
+    "connect_timeout": "A conexão não confirmou dentro do tempo esperado.",
+    "sudo_denied": "Permissão de sistema negada para abrir/fechar o túnel VPN.",
+    "internal_error": "Erro interno ao consultar/operar a VPN.",
+}
 
 
 def _error_marker(code: int, reason: str, detail: str) -> dict:
     """Monta o dict-marcador de erro interno descrito no docstring do módulo."""
     return {"error": {"code": code, "reason": reason, "detail": detail}}
+
+
+def _action_error_marker(cli_code: str, cli_message: str) -> dict:
+    """Monta o dict-marcador de erro `-32009`/`vpn_action_failed` para `connect`/`disconnect`.
+
+    `message` é sempre a tradução PT-BR da tabela do contrato (FR-007) — nunca o `error.message`
+    bruto da CLI como única informação; o bruto vai em `detail` para diagnóstico.
+    """
+    message = _ACTION_ERROR_MESSAGES.get(cli_code, _ACTION_ERROR_MESSAGES["internal_error"])
+    return {
+        "error": {
+            "code": _ERROR_VPN_ACTION_FAILED,
+            "reason": "vpn_action_failed",
+            "cli_code": cli_code,
+            "message": message,
+            "detail": cli_message,
+        }
+    }
 
 
 def find_binary() -> str | None:
@@ -141,17 +180,76 @@ def query_status() -> dict:
     return _build_vpn_status_item(payload)
 
 
-def connect(profile: str) -> dict:
-    """Conecta a um perfil VPN — `openfortivpn-gui connect <perfil> --json`.
+def _run_action(args: list[str]) -> dict:
+    """Executa `connect`/`disconnect` e traduz o resultado — implementado em T028.
 
-    Ainda não implementado nesta subtarefa (US1) — escopo de T028 (US2).
+    Mesma estrutura de erro de `query_status()`: `find_binary()` ausente devolve o mesmo marcador
+    `-32003`; qualquer outra falha (JSON inválido, timeout, `OSError`) é tratada como
+    `cli_code: "internal_error"` (não há como distinguir a causa real sem um `ErrorPayload` da
+    própria CLI, então cai na tradução PT-BR genérica da tabela do contrato).
     """
-    raise NotImplementedError("connect será implementado em T028 (US2)")
+    binary = find_binary()
+    if binary is None:
+        return _error_marker(
+            _ERROR_EXEC_UNAVAILABLE,
+            "exec_unavailable",
+            "openfortivpn-gui não encontrado no PATH",
+        )
+
+    try:
+        result = subprocess.run(
+            ["openfortivpn-gui", *args],
+            capture_output=True,
+            text=True,
+            timeout=ACTION_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired as exc:
+        return _action_error_marker(
+            "internal_error",
+            f"openfortivpn-gui {' '.join(args)} excedeu o timeout de "
+            f"{ACTION_TIMEOUT_SECONDS}s: {exc!r}",
+        )
+    except OSError as exc:
+        return _action_error_marker(
+            "internal_error",
+            f"falha ao executar openfortivpn-gui: {exc!r}",
+        )
+
+    raw_output = (result.stdout or "") + (result.stderr or "")
+
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return _action_error_marker(
+            "internal_error",
+            f"saída de openfortivpn-gui {' '.join(args)} não é JSON válido: {raw_output!r}",
+        )
+
+    if not isinstance(payload, dict):
+        return _action_error_marker(
+            "internal_error",
+            f"saída de openfortivpn-gui {' '.join(args)} não é um objeto JSON: {raw_output!r}",
+        )
+
+    error = payload.get("error")
+    if error is not None:
+        return _action_error_marker(error.get("code", "internal_error"), error.get("message", ""))
+
+    if "state" not in payload:
+        return _action_error_marker(
+            "internal_error",
+            "saída de openfortivpn-gui não corresponde a StatusPayload nem ErrorPayload: "
+            f"{raw_output!r}",
+        )
+
+    return _build_vpn_status_item(payload)
+
+
+def connect(profile: str) -> dict:
+    """Conecta a um perfil VPN — `openfortivpn-gui connect <perfil> --json` (T028)."""
+    return _run_action(["connect", profile, "--json"])
 
 
 def disconnect() -> dict:
-    """Desconecta a VPN — `openfortivpn-gui disconnect --json`.
-
-    Ainda não implementado nesta subtarefa (US1) — escopo de T028 (US2).
-    """
-    raise NotImplementedError("disconnect será implementado em T028 (US2)")
+    """Desconecta a VPN — `openfortivpn-gui disconnect --json` (T028)."""
+    return _run_action(["disconnect", "--json"])
