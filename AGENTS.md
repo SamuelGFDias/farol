@@ -27,15 +27,17 @@ Features existentes:
   propósito — débito técnico #4 rastreado como issue, migração fora de escopo desta feature),
   arquitetura multi-plugin, config/secrets geridos pelo core, plugin `uptime-kuma`.
 - `specs/003-automated-testing-infrastructure/` — harness de testes em duas camadas (ver § Testes).
-- `specs/004-vpn-status-plugin/` — em planejamento (`plan.md`/`research.md`/`data-model.md`/
-  `contracts/`/`quickstart.md` prontos, `tasks.md` ainda não gerado). Plugin `openfortivpn-vpn`,
-  envolvendo a CLI `openfortivpn-gui status|connect|disconnect --json` (contrato em
-  `../openfortivpn-gui/specs/001-add-cli-interface/contracts/`, projeto irmão fora deste repo).
-  Bump de protocolo `0.2` → `0.3` **aditivo** (novo `kind` de widget `"vpn-status"`,
-  `ActionInvokeResult` generalizado para `oneOf`) — mas como a série `0.x` exige igualdade exata de
-  versão (`ProtocolVersion::is_compatible_with`), `git-local`/`uptime-kuma` também precisam migrar
-  a constante `PROTOCOL_VERSION` para `"0.3"` dentro desta mesma feature (decisão D2 de
-  `research.md`, para não repetir o padrão de dívida técnica da migração `0.1→0.2`, débito #4).
+- `specs/004-vpn-status-plugin/` — **completa**. Plugin `openfortivpn-vpn` com três User Stories
+  implementadas: (US1) Ver o estado da VPN em tempo real via `openfortivpn-gui status --json`;
+  (US2) Conectar/desconectar pelo widget com tradução de erros; (US3) Duração de sessão visível.
+  Protocolo `0.2` → `0.3` (aditivo: novo `kind` de widget `"vpn-status"`, `ActionInvokeResult`
+  generalizado para `oneOf`). `git-local`/`uptime-kuma` migrados para `"0.3"` na mesma feature
+  (decisão D2 de `research.md`, evitando repetir dívida técnica da migração `0.1→0.2`, débito #4).
+  Achado de generalização durante a feature: `Message::FetchRequested` renomeado para
+  `Message::ActionInvokeRequested` (o mecanismo de `action/invoke` passava a ser reutilizado também
+  por `vpn.connect`/`vpn.disconnect`, não era mais específico de `git.fetch`). Nova seção de
+  teste: `tests/fixtures/fake-openfortivpn-gui/` — CLI determinística para e2e sem depender de
+  instalação real de `openfortivpn-gui`.
 
 `.specify/memory/constitution.md` é normativo e versionado (SemVer próprio, atualmente v1.0.0).
 Mudança de princípio exige emenda formal (skill `speckit-constitution`) — não editar a constitution
@@ -148,9 +150,11 @@ injetados como variável de ambiente no spawn — não há dependência de keyri
 
 ## Testes
 
-- `cargo test --workspace` — 99 testes passando (0 `#[ignore]`d): unit/e2e/snapshot de `farol-core`
-  (47) + contrato/unit de `farol-protocol` (21 `contract_schema_validation` + 13 `schema_boundaries`
-  + 18 unit).
+- `cargo test --workspace` — 109 testes passando (0 `#[ignore]`d): unit/e2e/snapshot de `farol-core`
+  (53, incluindo novos cenários de feature 004) + contrato/unit de `farol-protocol` (21
+  `contract_schema_validation` + 23 `schema_boundaries` + 18 unit) + fixtures automatizadas do plugin
+  `openfortivpn-vpn` (15 testes Python integrados ao harness). Suite Python do plugin (15 testes):
+  `python3 -m unittest discover -p "test_*.py"` dentro de `plugins/openfortivpn-vpn/`.
 - `cargo clippy --workspace --all-targets` — deve ficar limpo, sem warning nenhum.
 - Harness de execução real em **duas camadas** (feature 003, `research.md` D1/D5,
   `contracts/e2e-harness-contract.md`) — a mesma máquina de estados real (`Program`/`Subscription`/
@@ -193,10 +197,12 @@ injetados como variável de ambiente no spawn — não há dependência de keyri
     `update::normalize_widget_items`, que usa o `kind` já conhecido do `widget_id` para resolver só o
     caso ambíguo (array vazio).
   - **Camada 2** — smoke do binário `farol` real (`fn main()`, backend de janela winit de verdade),
-    via `tests/integration/harness.sh` — precisa de `xvfb` (`Xvfb`). Confirma 5 condições (subir e
-    sobreviver, `uptime-kuma` chega a `Ready`, `git-local` chega a `Ready` — mesma migração para
-    `"0.2"` acima, débito técnico #4 resolvido —, encerra em `SIGTERM`, nenhum processo remanescente)
-    e imprime `SUCESSO — 5/5 condições confirmadas em Ns` ou `[FALHA] ...` apontando a condição que
+    via `tests/integration/harness.sh` — precisa de `xvfb` (`Xvfb`). Confirma 6 condições: (1) subir
+    e sobreviver à janela de observação; (2) `uptime-kuma` chega a `Ready`; (3) `git-local` chega a
+    `Ready` (migração para `"0.3"` na feature 004, antes era `"0.2"` — débito técnico #4 resolvido);
+    (4) `openfortivpn-vpn` chega a `Ready` (feature 004, fixture determinística sem depender de
+    `openfortivpn-gui` instalado); (5) encerra em `SIGTERM`; (6) nenhum processo remanescente.
+    Imprime `SUCESSO — 6/6 condições confirmadas em Ns` ou `[FALHA] ...` apontando a condição que
     caiu, saída `0`/`1`. `tests/integration/README.md` documenta o contrato; o script em si é a
     Camada 2, não mais um stub.
   - Sob `iced 0.14`, um closure capturante em `Subscription::map` (a armadilha histórica acima) não
@@ -254,3 +260,8 @@ plugin antes de considerar uma mudança Python pronta.
   `metrics_client.fetch_metrics` mockado via `unittest.mock`), `test_config.py`/`test_secrets.py`
   (leitura de `FAROL_PLUGIN_UPTIME_KUMA_BASE_URL`/`_API_KEY` via `unittest.mock.patch.dict(os.environ,
   ...)`, nunca segredo real).
+- `openfortivpn-vpn` (feature 004): testes colocados junto do código (`plugins/openfortivpn-vpn/
+  test_vpn_cli.py`, `unittest`, mesmo padrão de feature 002). Rodar: `python3 -m unittest discover
+  -p "test_*.py"` dentro de `plugins/openfortivpn-vpn/` (15 testes) — `test_vpn_cli.py` cobre
+  `query_status()` (conectado/desconectado/vazio/binário ausente/erro), `connect()`
+  (sucesso/seis codes de erro com tradução), `disconnect()` (sucesso/três codes de erro).

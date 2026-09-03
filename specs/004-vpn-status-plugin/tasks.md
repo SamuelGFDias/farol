@@ -61,9 +61,9 @@ tests/integration/harness.sh        # Camada 2 — nova condição para openfort
 **Purpose**: Esqueleto de arquivos do novo plugin e do novo diretório de schema — sem lógica de
 protocolo nem de negócio ainda.
 
-- [ ] T001 [P] Criar esqueleto de `plugins/openfortivpn-vpn/` (`main.py`, `vpn_cli.py` — stubs,
+- [X] T001 [P] Criar esqueleto de `plugins/openfortivpn-vpn/` (`main.py`, `vpn_cli.py` — stubs,
   apenas stdlib) e `pyproject.toml` com config `ruff`, mesmo padrão de `plugins/uptime-kuma/`
-- [ ] T002 [P] Criar `protocol/schema/v0.3/` copiando os 4 arquivos de `protocol/schema/v0.2/`
+- [X] T002 [P] Criar `protocol/schema/v0.3/` copiando os 4 arquivos de `protocol/schema/v0.2/`
   como ponto de partida (ainda idênticos a `v0.2/`, prontos para edição nas Fases seguintes)
 
 ---
@@ -77,60 +77,60 @@ descoberta nesta feature — tudo que TODAS as user stories dependem.
 
 ### Protocolo
 
-- [ ] T003 Em `protocol/schema/v0.3/widget.schema.json`: adicionar `$defs.VpnConnectionState`,
+- [X] T003 Em `protocol/schema/v0.3/widget.schema.json`: adicionar `$defs.VpnConnectionState`,
   `$defs.VpnProfile`, `$defs.VpnStatusItem`, e a terceira opção de `WidgetGetResult.items`
   (`contracts/protocol-delta-v0.3.md` § widget.schema.json)
-- [ ] T004 Em `protocol/schema/v0.3/action.schema.json`: `ActionInvokeResult` vira `oneOf`
+- [X] T004 Em `protocol/schema/v0.3/action.schema.json`: `ActionInvokeResult` vira `oneOf`
   (`repo` | `vpn_status`) (`contracts/protocol-delta-v0.3.md` § action.schema.json)
-- [ ] T005 Em `protocol/schema/v0.3/error.schema.json`: estender o catálogo textual com `-32008`/
+- [X] T005 Em `protocol/schema/v0.3/error.schema.json`: estender o catálogo textual com `-32008`/
   `vpn_status_unavailable` e `-32009`/`vpn_action_failed` (`contracts/protocol-delta-v0.3.md` §
   error.schema.json) — `data.reason` já é string aberta, sem mudança de forma
-- [ ] T006 [P] Em `protocol/schema/v0.3/handshake.schema.json`: só o comentário de topo
+- [X] T006 [P] Em `protocol/schema/v0.3/handshake.schema.json`: só o comentário de topo
   (`description`) muda, citando `"0.3"` e o novo `kind` — sem mudança de forma
   (`contracts/protocol-delta-v0.3.md` § handshake.schema.json)
-- [ ] T007 Atualizar `protocol/SPEC.md`: versão atual `"0.3"`, registrar `kind: "vpn-status"` ao
+- [X] T007 Atualizar `protocol/SPEC.md`: versão atual `"0.3"`, registrar `kind: "vpn-status"` ao
   lado de `status-grid`/`monitor-status-grid`, e as duas linhas novas da tabela de erro
   (`contracts/protocol-delta-v0.3.md` § protocol/SPEC.md)
 
 ### `farol-protocol` (Rust)
 
-- [ ] T008 [P] Em `crates/farol-protocol/src/messages.rs`: adicionar `VpnConnectionState`
+- [X] T008 [P] Em `crates/farol-protocol/src/messages.rs`: adicionar `VpnConnectionState`
   (enum `Disconnected`/`Connecting`/`Connected`), `VpnProfile` (`name` + `connect_action`),
   `VpnStatusItem` (`state`/`active_profile`/`elapsed_seconds`/`available_profiles`/
   `disconnect_action`) — `data-model.md` §1.1-§1.3
-- [ ] T009 Em `crates/farol-protocol/src/messages.rs`: `WidgetItems` ganha variante
+- [X] T009 Em `crates/farol-protocol/src/messages.rs`: `WidgetItems` ganha variante
   `Vpn(Vec<VpnStatusItem>)` (depende de T008) — `data-model.md` §1.4
-- [ ] T010 Em `crates/farol-protocol/src/messages.rs`: `ActionInvokeResult` deixa de ser struct
+- [X] T010 Em `crates/farol-protocol/src/messages.rs`: `ActionInvokeResult` deixa de ser struct
   única (`{ repo: GitRepository }`) e vira `#[serde(untagged)] enum { Git { repo }, Vpn {
   vpn_status } }` (depende de T008) — `data-model.md` §1.5; atualizar todos os pontos de
   construção/leitura existentes (`plugin_worker.rs`, testes de `git-local`) para o novo shape
   `ActionInvokeResult::Git { repo }`
-- [ ] T011 [P] Em `crates/farol-protocol/tests/contract_schema_validation.rs`: apontar os 4
+- [X] T011 [P] Em `crates/farol-protocol/tests/contract_schema_validation.rs`: apontar os 4
   `include_str!`/`$id` de `v0.2` para `v0.3`, e adicionar exemplos válidos de
   `VpnStatusItem`/`ActionInvokeResult::Vpn` (mesmo padrão dos exemplos já existentes de
   `GitRepository`/`MonitorStatusItem`)
-- [ ] T012 [P] Em `crates/farol-protocol/tests/schema_boundaries.rs`: apontar os 4 `include_str!`
+- [X] T012 [P] Em `crates/farol-protocol/tests/schema_boundaries.rs`: apontar os 4 `include_str!`
   para `v0.3`, e adicionar caso de fronteira para `VpnStatusItem.elapsed_seconds` (`minimum: 0`) —
   mesmo padrão de `widget_monitor_status_item_response_time_ms_minimum_boundaries` (issue #5,
   débito já corrigido para `response_time_ms`; não repetir a lacuna para o campo novo)
 
 ### `farol-core` (Rust)
 
-- [ ] T013 Em `crates/farol-core/src/plugin_worker.rs`: `PROTOCOL_VERSION` `"0.2"` → `"0.3"`
-- [ ] T014 [P] Em `plugins/git-local/main.py`: `PROTOCOL_VERSION` `"0.2"` → `"0.3"` (mudança
+- [X] T013 Em `crates/farol-core/src/plugin_worker.rs`: `PROTOCOL_VERSION` `"0.2"` → `"0.3"`
+- [X] T014 [P] Em `plugins/git-local/main.py`: `PROTOCOL_VERSION` `"0.2"` → `"0.3"` (mudança
   mecânica de uma linha — nenhum campo novo usado por este plugin, `research.md` D2)
-- [ ] T015 [P] Em `plugins/uptime-kuma/main.py`: idem T014
-- [ ] T016 Em `crates/farol-core/src/plugin_worker.rs::known_plugins()`: adicionar
+- [X] T015 [P] Em `plugins/uptime-kuma/main.py`: idem T014
+- [X] T016 Em `crates/farol-core/src/plugin_worker.rs::known_plugins()`: adicionar
   `PluginSpawnConfig { plugin_name: "openfortivpn-vpn", command: "python3", args:
   ["plugins/openfortivpn-vpn/main.py"] }`
-- [ ] T017 Em `crates/farol-core/src/model.rs`: adicionar `VpnWidgetViewModel` (`status`/
+- [X] T017 Em `crates/farol-core/src/model.rs`: adicionar `VpnWidgetViewModel` (`status`/
   `last_error`/`connect_in_flight`/`disconnect_in_flight`/`last_action_error`, todos com
   `Default`) e `PluginConnection::vpn_widget: VpnWidgetViewModel` — `data-model.md` §2.1
-- [ ] T018 Em `crates/farol-core/src/update.rs`: `normalize_widget_items` reconhece o `kind`
+- [X] T018 Em `crates/farol-core/src/update.rs`: `normalize_widget_items` reconhece o `kind`
   `"vpn-status"` (mesma correção já aplicada para `"status-grid"`/`"monitor-status-grid"`, débito
   #5) — necessário mesmo com só uma variante possível de item, para consistência com o mecanismo
   existente
-- [ ] T019 Em `crates/farol-core/src/main.rs`/`update.rs`/`view.rs`: renomear
+- [X] T019 Em `crates/farol-core/src/main.rs`/`update.rs`/`view.rs`: renomear
   `Message::FetchRequested` → `Message::ActionInvokeRequested` (campos idênticos —
   `plugin_name`/`action_id`/`target`/`timeout_hint_ms`) e todos os pontos de disparo/consumo do
   botão "Fetch" de `git-local`. **Achado desta feature**: o nome atual é específico de
@@ -141,7 +141,7 @@ descoberta nesta feature — tudo que TODAS as user stories dependem.
 
 ### Plugin `openfortivpn-vpn` — handshake
 
-- [ ] T020 [P] Em `plugins/openfortivpn-vpn/main.py`: `handle_handshake_hello` — declara o widget
+- [X] T020 [P] Em `plugins/openfortivpn-vpn/main.py`: `handle_handshake_hello` — declara o widget
   `vpn-status` (`id: "vpn-connection"`, `kind: "vpn-status"`, `title: "VPN"`),
   `capabilities: [{"kind": "exec"}]`, `required_config: []`, `actions: []` (descobertas só em
   `widget/get`, mesmo padrão de `git-local`)
@@ -163,27 +163,27 @@ interação (`quickstart.md` Cenários 1-2).
 
 ### Implementation for User Story 1
 
-- [ ] T021 [US1] Em `plugins/openfortivpn-vpn/vpn_cli.py`: `find_binary()` (via `shutil.which`) e
+- [X] T021 [US1] Em `plugins/openfortivpn-vpn/vpn_cli.py`: `find_binary()` (via `shutil.which`) e
   `query_status()` — invoca `openfortivpn-gui status --json`, mapeia `StatusPayload` para o shape
   de `VpnStatusItem` completo (`data-model.md` §3), incluindo `connect_action`/`disconnect_action`
   com `enabled` correto (`research.md` D4); erros mapeados para `-32003`/`exec_unavailable` (binário
   ausente) ou `-32008`/`vpn_status_unavailable` (`contracts/openfortivpn-cli-mapping.md`)
-- [ ] T022 [US1] Em `plugins/openfortivpn-vpn/main.py`: `handle_widget_get` para o `widget_id`
+- [X] T022 [US1] Em `plugins/openfortivpn-vpn/main.py`: `handle_widget_get` para o `widget_id`
   `"vpn-connection"`, delegando a `vpn_cli.query_status()`
-- [ ] T023 [US1] [P] Em `plugins/openfortivpn-vpn/test_vpn_cli.py`: testes de `query_status` —
+- [X] T023 [US1] [P] Em `plugins/openfortivpn-vpn/test_vpn_cli.py`: testes de `query_status` —
   conectado, desconectado, `profiles: []`, binário ausente (`-32003`), `internal_error`/saída
   inválida (`-32008`) — mesmo padrão colocado-junto-do-código de `plugins/uptime-kuma/test_*.py`
   (D7 de `research.md` da feature 002)
-- [ ] T024 [US1] Em `crates/farol-core/src/update.rs`: `handle_widget_outcome` roteia
+- [X] T024 [US1] Em `crates/farol-core/src/update.rs`: `handle_widget_outcome` roteia
   `WidgetItems::Vpn` para `PluginConnection::vpn_widget` (`status`/`last_error`), mesmo padrão já
   usado para `monitor_widget`
-- [ ] T025 [US1] Em `crates/farol-core/src/view.rs`: renderização somente leitura do widget
+- [X] T025 [US1] Em `crates/farol-core/src/view.rs`: renderização somente leitura do widget
   `vpn-status` — texto de estado, perfil ativo quando conectado, lista de perfis disponíveis
   (ou indicação explícita de lista vazia, FR-003), mensagem de erro quando `last_error` presente.
   **Sem botões nesta fase** (conectar/desconectar é US2) — coerente com a própria justificativa de
   prioridade de US1 no `spec.md` ("entrega valor completo... mesmo sem nenhuma ação de
   conectar/desconectar")
-- [ ] T026 [US1] [P] Criar `tests/fixtures/fake-openfortivpn-gui/` — script executável (Python)
+- [X] T026 [US1] [P] Criar `tests/fixtures/fake-openfortivpn-gui/` — script executável (Python)
   simulando o contrato da CLI real (`status`/`connect`/`disconnect --json`,
   `contracts/openfortivpn-cli-mapping.md`) controlável por variável de ambiente (ex.:
   `FAKE_OPENFORTIVPN_STATE`, `FAKE_OPENFORTIVPN_ERROR`), sem abrir nenhum túnel de verdade; e
@@ -191,7 +191,7 @@ interação (`quickstart.md` Cenários 1-2).
   and_populates_the_vpn_widget` (mesmo padrão de
   `uptime_kuma_reaches_ready_and_populates_the_monitor_grid`), prepend do diretório da fixture ao
   `PATH` do processo filho
-- [ ] T027 [US1] [P] Em `crates/farol-core/src/visual_snapshot_tests.rs`: novo snapshot cobrindo o
+- [X] T027 [US1] [P] Em `crates/farol-core/src/visual_snapshot_tests.rs`: novo snapshot cobrindo o
   widget `vpn-status` populado (estado desconectado com perfis, e estado conectado), mesmo padrão
   de `dashboard_ready_state`
 
@@ -210,30 +210,30 @@ confirmar transição para "conectado"; a partir de "conectado", desconectar e c
 
 ### Implementation for User Story 2
 
-- [ ] T028 [US2] [P] Em `plugins/openfortivpn-vpn/vpn_cli.py`: `connect(profile)` e `disconnect()`
+- [X] T028 [US2] [P] Em `plugins/openfortivpn-vpn/vpn_cli.py`: `connect(profile)` e `disconnect()`
   — invocam `openfortivpn-gui connect <perfil> --json`/`disconnect --json`; sucesso mapeia para
   `VpnStatusItem`; falha mapeia `ErrorPayload.error.code` para `-32009`/`vpn_action_failed` com
   `data.detail = {cli_code, cli_message}` e `message` traduzido (tabela de
   `contracts/openfortivpn-cli-mapping.md`)
-- [ ] T029 [US2] Em `plugins/openfortivpn-vpn/main.py`: `handle_action_invoke` — dispatch por
+- [X] T029 [US2] Em `plugins/openfortivpn-vpn/main.py`: `handle_action_invoke` — dispatch por
   `action_id` (`"vpn.connect"` com `target.type == "vpn-profile"`, `"vpn.disconnect"` com
   `target.type == "vpn-connection"`), delegando a `vpn_cli.connect`/`vpn_cli.disconnect`
-- [ ] T030 [US2] [P] Em `plugins/openfortivpn-vpn/test_vpn_cli.py`: testes de `connect`/
+- [X] T030 [US2] [P] Em `plugins/openfortivpn-vpn/test_vpn_cli.py`: testes de `connect`/
   `disconnect` — sucesso, e cada um dos seis `error.code` possíveis
   (`profile_not_found`/`already_connected`/`not_connected`/`connect_timeout`/`sudo_denied`/
   `internal_error`) com a mensagem traduzida esperada
-- [ ] T031 [US2] Em `crates/farol-core/src/update.rs`: tratar a resposta de
+- [X] T031 [US2] Em `crates/farol-core/src/update.rs`: tratar a resposta de
   `Message::ActionInvokeRequested`/`Message::Worker` para `vpn.connect`/`vpn.disconnect` —
   sucesso substitui `vpn_widget.status` diretamente pelo `VpnStatusItem` retornado (sem `widget/get`
   extra, mesmo padrão de `git.fetch` → `RepositoryViewModel.repo`); seta/limpa
   `connect_in_flight`/`disconnect_in_flight` ao disparar/receber resposta; erro popula
   `vpn_widget.last_action_error` sem derrubar a conexão (FR-007)
-- [ ] T032 [US2] Em `crates/farol-core/src/view.rs`: um botão por `VpnProfile` disponível
+- [X] T032 [US2] Em `crates/farol-core/src/view.rs`: um botão por `VpnProfile` disponível
   (`enabled = connect_action.enabled`) disparando `Message::ActionInvokeRequested` com o
   `connect_action` correspondente (seletor de perfil, FR-008 — nenhum campo de protocolo novo
   necessário, `research.md` D4); botão de desconectar análogo; exibir "conectando"/"desconectando"
   durante `*_in_flight` (D7) e `last_action_error` quando presente
-- [ ] T033 [US2] [P] Em `crates/farol-core/src/e2e_tests.rs`: cenários usando a fixture de T026 —
+- [X] T033 [US2] [P] Em `crates/farol-core/src/e2e_tests.rs`: cenários usando a fixture de T026 —
   `vpn.connect` bem-sucedido leva o widget a `"connected"` com o perfil correto; um `error.code`
   simulado (ex.: `already_connected`) resulta em mensagem traduzida visível sem derrubar o core
   (mesmo padrão dos cenários T036-T042 da feature 002)
@@ -251,10 +251,10 @@ que o widget mostra a duração decorrida sem nenhuma ação adicional (`quickst
 
 ### Implementation for User Story 3
 
-- [ ] T034 [US3] Em `crates/farol-core/src/view.rs`: exibir `elapsed_seconds` formatado (ex.: "há
+- [X] T034 [US3] Em `crates/farol-core/src/view.rs`: exibir `elapsed_seconds` formatado (ex.: "há
   1h 23min") quando `state == Connected` — o campo já é populado desde T021 (US1); esta task só
   adiciona a renderização
-- [ ] T035 [US3] [P] Em `crates/farol-core/src/visual_snapshot_tests.rs`: snapshot cobrindo a
+- [X] T035 [US3] [P] Em `crates/farol-core/src/visual_snapshot_tests.rs`: snapshot cobrindo a
   exibição do tempo de sessão no estado conectado
 
 **Checkpoint**: as três user stories funcionam, cada uma de forma independente.
@@ -265,19 +265,19 @@ que o widget mostra a duração decorrida sem nenhuma ação adicional (`quickst
 
 **Purpose**: Verificação final, regressão (SC-004) e higiene documental.
 
-- [ ] T036 [P] Rodar `ruff check` dentro de `plugins/openfortivpn-vpn/` — deve ficar limpo
-- [ ] T037 [P] Rodar `cargo clippy --workspace --all-targets` — deve ficar limpo, sem warning novo
-- [ ] T038 Rodar `cargo test --workspace` — confirmar toda a suíte passando, incluindo os cenários
+- [X] T036 [P] Rodar `ruff check` dentro de `plugins/openfortivpn-vpn/` — deve ficar limpo
+- [X] T037 [P] Rodar `cargo clippy --workspace --all-targets` — deve ficar limpo, sem warning novo
+- [X] T038 Rodar `cargo test --workspace` — confirmar toda a suíte passando, incluindo os cenários
   novos de T011/T012/T026/T027/T033/T035, e que `git-local`/`uptime-kuma` continuam chegando a
   `Ready` sob `"0.3"` (SC-004)
-- [ ] T039 Estender `tests/integration/harness.sh` (Camada 2) com uma quinta/sexta condição
+- [X] T039 Estender `tests/integration/harness.sh` (Camada 2) com uma quinta/sexta condição
   confirmando que `openfortivpn-vpn` também chega a `Ready` sob Xvfb, reusando a fixture de T026
-- [ ] T040 Validar manualmente os 7 cenários de `quickstart.md` (ou confirmar que cada um já tem
+- [X] T040 Validar manualmente os 7 cenários de `quickstart.md` (ou confirmar que cada um já tem
   equivalente automatizado registrado nas tasks acima, mesmo padrão da nota de
   `specs/002-uptime-kuma-plugin/quickstart.md`)
-- [ ] T041 Atualizar `README.md` se o roadmap/status do produto mudar de forma material (regra de
+- [X] T041 Atualizar `README.md` se o roadmap/status do produto mudar de forma material (regra de
   governance da constitution — `.specify/memory/constitution.md` § Governance)
-- [ ] T042 Atualizar `AGENTS.md` marcando a feature 004 como completa, com o resumo final (plugin
+- [X] T042 Atualizar `AGENTS.md` marcando a feature 004 como completa, com o resumo final (plugin
   `openfortivpn-vpn`, protocolo `"0.3"`, migração de `git-local`/`uptime-kuma`), mesmo padrão das
   features 001-003
 

@@ -7,6 +7,53 @@ estiver implementada (`/speckit-tasks` + `/speckit-implement` — não cobertos 
 contém código de implementação — apenas comandos e resultados esperados, referenciando `contracts/`
 e `data-model.md`. Segue o mesmo padrão de `specs/002-uptime-kuma-plugin/quickstart.md`.
 
+**Nota (sessão de automação, 2026-09-03)**: a feature está totalmente implementada (User Stories 1,
+2 e 3 completas — `cargo test --workspace`: 109 testes, 0 falhas; `python3 -m unittest` do plugin:
+15 testes, 0 falhas). A maioria dos 7 Cenários abaixo já tem equivalente automatizado permanente,
+que não precisa ser reproduzido à mão para validar a feature:
+
+- **Cenário 2** (já conectado por fora do Farol, com perfil e duração de sessão populados) e
+  **Cenário 5** (duração da sessão visível, `elapsed_seconds`): cobertos por
+  `crates/farol-core/src/e2e_tests.rs::openfortivpn_vpn_reaches_ready_and_populates_the_vpn_widget`
+  (T026b) — `Emulator` real, processo Python real, fixture `tests/fixtures/fake-openfortivpn-gui/`
+  simulando `status --json` com estado `connected`, perfil ativo, dois perfis conhecidos e 125s de
+  sessão — e por `crates/farol-core/src/visual_snapshot_tests.rs::vpn_widget_connected_screen_
+  matches_snapshot` (T027), que fixa a tela renderizada desse mesmo estado (perfil ativo, botão de
+  desconectar, duração formatada).
+- **Cenário 4** (tradução de erro de ação para PT-BR): coberto por
+  `plugins/openfortivpn-vpn/test_vpn_cli.py`, que exercita os 6 `error.code`/`data.detail.cli_code`
+  de `contracts/openfortivpn-cli-mapping.md` (perfil não encontrado, já conectado, timeout, sudo
+  negado em connect/disconnect, erro interno em disconnect) na tradução feita por
+  `vpn_cli.py::query_status`/`connect`/`disconnect`, nível da CLI wrapper.
+- **Cenário 6** (`openfortivpn-gui` ausente do `PATH`): coberto por
+  `plugins/openfortivpn-vpn/test_vpn_cli.py::test_binary_missing_returns_exec_unavailable_marker`
+  — confirma que a ausência do binário produz o marcador `exec_unavailable` (`-32003`), distinto de
+  "desconectado", no nível da CLI wrapper. **Não** há um teste equivalente em `e2e_tests.rs` que
+  exercite esse caminho através do app `farol-core` real (`PATH` reduzido + widget renderizado) —
+  o único teste e2e do plugin (T026b, acima) simula apenas o caminho feliz (`status`
+  `connected`), então a exibição desse erro específico na tela do Farol depende de validação
+  manual completa deste Cenário, ou de uma extensão futura de `e2e_tests.rs`.
+- **Cenário 7** (regressão `git-local`/`uptime-kuma` continuam chegando a `Ready`): coberto pelos
+  testes e2e já existentes dessas duas features (`git_local_reaches_ready...`,
+  `uptime_kuma_reaches_ready_and_populates_the_monitor_grid`, em `e2e_tests.rs`), agora rodando sob
+  protocolo `"0.3"`, mais a quinta/sexta condição de `tests/integration/harness.sh` (Camada 2,
+  T039) confirmando `openfortivpn-vpn` chegando a `Ready` sob Xvfb.
+
+Os Cenários que **dependem de validação manual completa**, sem equivalente automatizado permanente
+no app real:
+- **Cenário 1** (ver estado desconectado ao abrir, sem nenhuma conexão ativa): o único teste e2e do
+  plugin (T026b) simula estado `connected`, não `disconnected` — o caminho "populado, mas
+  desconectado, com lista de perfis" não tem cobertura automatizada equivalente no nível do app.
+- **Cenário 3** (conectar e desconectar pelo próprio widget, via `vpn.connect`/`vpn.disconnect`):
+  nenhum teste e2e invoca essas ações através do `Emulator` contra um subprocess real (a fixture
+  `tests/fixtures/fake-openfortivpn-gui/` cobre o *protocolo* JSON-RPC do plugin, não o fluxo
+  completo de clique → `action/invoke` → estado "conectando" → conclusão, e muito menos a
+  integração real com uma instalação verdadeira de `openfortivpn-gui`). Exige uma instalação real
+  do `openfortivpn-gui` com ao menos um perfil VPN configurado para validação manual completa —
+  este é o Cenário que mais depende de execução manual ponta a ponta.
+- **Cenário 6**, na parte específica de exibição na UI do Farol (ver acima — a tradução do erro em
+  si está coberta por `test_vpn_cli.py`, mas não sua renderização na tela real).
+
 ## Pré-requisitos
 
 - Rust estável e `cargo`, `farol-core`/`farol-protocol` já falando `protocol_version = "0.3"`
