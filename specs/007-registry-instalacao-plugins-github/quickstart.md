@@ -110,13 +110,46 @@ cargo run -p farol-core
 **Esperado** (Acceptance Scenario 1 de US3): o plugin copiado do template chega a `Ready` — prova
 que o template sozinho já satisfaz o contrato mínimo do protocolo.
 
-## Automação equivalente (a preencher durante `/speckit-implement`)
+## Automação equivalente
 
-Como nas features anteriores, os Cenários acima ganham equivalentes automatizados: testes de
-unidade de `parse_manifest`/`discover_installed_plugins` (fixtures em diretório temporário, sem
-dependência de rede), testes de integração do fluxo de instalação contra um servidor HTTP local
-sintético (D8 de `research.md`, mesmo padrão de `MetricsFixtureServer` da feature 002) cobrindo
-sucesso e cada falha de Edge Case, e um cenário `e2e_tests.rs`/`Emulator` confirmando que um plugin
-descoberto chega a `Ready` pela máquina de estados real — só o Cenário 3 (rede real contra o GitHub)
-permanece validável apenas manualmente, mesma ressalva já registrada nos quickstarts das features
-004/006 para os casos que dependem de rede/serviço externo genuíno.
+Como nas features anteriores, os Cenários acima ganharam equivalentes automatizados. Nomes reais dos
+testes escritos durante a implementação (`crates/farol-core/src/`):
+
+- **Cenário 1** (plugin de terceiro descoberto, SC-001) — `plugin_worker::tests::
+  discover_returns_one_config_for_one_valid_plugin` (unidade, `discover_installed_plugins()` sobre
+  um diretório temporário, sem rede) e `e2e_tests::discovered_plugin_reaches_ready_through_the_real_
+  state_machine` (o plugin descoberto chega a `Ready` pela mesma máquina de estados real,
+  `iced_test::Emulator`).
+- **Cenário 2** (manifesto malformado não derruba o Farol, SC-004/FR-004) —
+  `plugin_manifest::tests::invalid_toml_is_invalid_toml_error` (`parse_manifest` sozinho) e
+  `plugin_worker::tests::discover_skips_a_malformed_manifest_without_blocking_the_valid_one`
+  (confirma que um manifesto quebrado não impede a descoberta dos demais).
+- **Cenário 3** (`farol install` contra release real, SC-003) — automatizado hermeticamente contra um
+  servidor HTTP local sintético (D8, `install.rs`) em `install::tests::
+  install_succeeds_and_publishes_the_plugin` (fluxo completo: release → download → extração →
+  publicação atômica) e `install::tests::reinstalling_over_a_previous_install_replaces_it_cleanly`
+  (FR-008). O cenário contra o GitHub real permanece validável apenas manualmente, mesma ressalva já
+  registrada nos quickstarts das features 004/006 para os casos que dependem de rede/serviço externo
+  genuíno.
+- **Cenário 4** (falhas de instalação traduzidas, Edge Cases/FR-010) — `install::tests::
+  install_without_release_returns_no_release`, `install::tests::
+  install_with_failing_tarball_download_returns_download_failed`, `install::tests::
+  install_with_missing_manifest_returns_manifest_invalid` e `install::tests::
+  install_with_malformed_manifest_returns_manifest_invalid` (uma falha distinta por causa, cada uma
+  contra o mesmo servidor de fixture).
+- **Cenário 5** (colisão de nome com plugin de referência) — `install::tests::
+  install_with_name_colliding_with_a_reference_plugin_returns_name_collision` (checado também na
+  instalação, D7) e, do lado da descoberta, `plugin_worker::tests::
+  all_plugins_filters_a_discovered_plugin_colliding_with_a_reference_plugin` +
+  `plugin_worker::tests::all_plugins_keeps_only_the_first_of_two_colliding_discovered_plugins` (D6,
+  cobrindo também a colisão entre dois plugins descobertos entre si) e
+  `plugin_worker::tests::discover_does_not_filter_colliding_names_between_two_discovered_plugins`
+  (confirma que a filtragem de colisão entre descobertos acontece em `all_plugins()`, não em
+  `discover_installed_plugins()`).
+- **Cenário 6** (template completa handshake, US3) — `e2e_tests::
+  emulator_takes_plugin_template_through_a_real_handshake_to_ready` (spawna
+  `templates/plugin-template/main.py` diretamente e confirma `Ready` pela máquina de estados real).
+
+Suíte completa (`plugin_manifest::tests`, 10 testes; `plugin_worker::tests`, 6 testes;
+`install::tests`, 7 testes; mais os 2 cenários `e2e_tests.rs` acima — 25 no total) roda com
+`cargo test --package farol-core`, incluída em `cargo test --workspace` (ver `AGENTS.md` § Testes).

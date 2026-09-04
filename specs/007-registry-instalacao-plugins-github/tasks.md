@@ -134,21 +134,27 @@ handshake válido.
 
 ## Phase 6: Polish & Cross-Cutting Concerns
 
-- [ ] T020 [P] `cargo clippy --workspace --all-targets` limpo, sem warning novo
-- [ ] T021 [P] `ruff check` limpo em `templates/plugin-template/` (se tiver `pyproject.toml` próprio
+- [X] T020 [P] `cargo clippy --workspace --all-targets` limpo, sem warning novo
+- [X] T021 [P] `ruff check` limpo em `templates/plugin-template/` (se tiver `pyproject.toml` próprio
       — mesma disciplina dos plugins de referência)
-- [ ] T022 Rodar `cargo test --workspace -- --test-threads=1` completo — confirmar 0 falhas
-- [ ] T023 Rodar `tests/integration/harness.sh` completo — confirmar `SUCESSO — 7/7 condições` sem
+- [X] T022 Rodar `cargo test --workspace -- --test-threads=1` completo — confirmar 0 falhas — 167/168
+      passando; 1 falha ambiental e não relacionada a esta feature
+      (`sandbox::sandbox_integration_tests::git_local_profile_allows_git_fetch_via_extra_bind`, da
+      feature 006 — o teste não neutraliza `GIT_CONFIG_GLOBAL`/`GIT_CONFIG_SYSTEM` como
+      `e2e_tests.rs::HarnessFixture` já faz, então herda a assinatura SSH via 1Password desta
+      máquina, que está falhando agora — reproduzido de forma consistente, não é flake), registrada
+      como issue separada
+- [X] T023 Rodar `tests/integration/harness.sh` completo — confirmar `SUCESSO — 7/7 condições` sem
       regressão (os 4 plugins de referência continuam sendo os únicos ativos nesse ambiente, sem
       diretório de dados de terceiros presente)
-- [ ] T024 Criar issue(s) GitHub para os itens de débito técnico identificados no planejamento desta
+- [X] T024 Criar issue(s) GitHub para os itens de débito técnico identificados no planejamento desta
       feature (instalação in-app na UI gráfica em vez de CLI; plugin exigindo build/asset binário
       próprio; capability de filesystem genérica para plugin de terceiro; repo-índice central + CI
       de validação como trabalho futuro de infraestrutura) — sem pedir permissão manual, conforme
       instrução vigente da sessão
-- [ ] T025 Atualizar `AGENTS.md` com a entrada da feature 007, mesmo padrão das entradas 004/005/006
-- [ ] T026 Atualizar `README.md` — roadmap item 4 ("Registry") passa a descrever o que foi entregue
-- [ ] T027 Preencher a seção "Automação equivalente" de `quickstart.md` com os nomes reais dos
+- [X] T025 Atualizar `AGENTS.md` com a entrada da feature 007, mesmo padrão das entradas 004/005/006
+- [X] T026 Atualizar `README.md` — roadmap item 4 ("Registry") passa a descrever o que foi entregue
+- [X] T027 Preencher a seção "Automação equivalente" de `quickstart.md` com os nomes reais dos
       testes escritos
 
 ## Dependencies & Execution Order

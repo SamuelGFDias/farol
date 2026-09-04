@@ -107,6 +107,48 @@ Features existentes:
   do `ruff` pré-existentes em `openfortivpn-vpn`/`uptime-kuma` — débito **da feature 005**, achado só
   durante a verificação final desta feature, não introduzido por ela).
 
+- `specs/007-registry-instalacao-plugins-github/` — **completa**. Registry de instalação de plugins
+  de terceiros via GitHub (Princípio VII, Registry Federado sem Infra Própria), com três User Stories
+  implementadas: (US1) descoberta dinâmica — o core escaneia `$XDG_DATA_HOME/farol/plugins/` a cada
+  início (`plugin_worker::discover_installed_plugins()`), lê o manifesto de cada plugin instalado e o
+  spawna pela mesma máquina de estados dos 4 plugins de referência, sem recompilar o core; (US2)
+  `farol install <owner>/<repo>` (`install::run`), subcommand de CLI tratada em `main()` antes de
+  montar a `iced::application` — baixa a release/tag mais recente via `curl` contra a API do GitHub,
+  extrai o tarball de código-fonte com `tar --strip-components=1`, valida o manifesto e publica com
+  rename atômico em `installed_plugin_dir(nome)` (sem cliente HTTP Rust novo, disciplina de
+  minimalismo de dependência das features 001-006); (US3) `templates/plugin-template/` — esqueleto
+  mínimo (`farol-plugin.toml` de exemplo + `main.py` respondendo só `handshake/hello`, zero widgets)
+  para quem for escrever um plugin novo sem precisar ler os 4 de referência inteiros. Novo manifesto
+  `farol-plugin.toml` (módulo `plugin_manifest.rs`, `parse_manifest`): TOML plano espelhando
+  `sandbox::SandboxProfile` diretamente (`plugin_name`/`command`/`args` + `[capabilities]` com
+  `network`/`exec` booleanos, em vez da forma aninhada lista-de-enum do `CapabilityManifest` do
+  protocolo) — campo desconhecido é ignorado na desserialização (mesma tolerância já praticada pelo
+  protocolo JSON-RPC). Novo diretório de dados `$XDG_DATA_HOME/farol/plugins/<nome>/`
+  (`plugin_manifest::farol_data_base_dir()`/`installed_plugin_dir()`), distinto do
+  `$XDG_CONFIG_HOME/farol` já usado por `config_store`/`secrets_store` desde a feature 002 —
+  separação deliberada entre configuração do usuário (pequena, editável à mão) e código-fonte
+  instalado de terceiro (maior, gerado por download). `PluginSpawnConfig` ganha `code_root: PathBuf`:
+  generaliza o bind de filesystem do sandbox (feature 006) de "sempre a raiz do repo Farol" para
+  "por-plugin" — os 4 de referência continuam apontando pra raiz do repo (mesmo comportamento de
+  antes), um plugin descoberto aponta para o próprio `installed_plugin_dir`, então nunca enxerga,
+  dentro do sandbox, o código de outro plugin nem do core. Filtragem de colisão de nome
+  (`plugin_worker::all_plugins()`): um `plugin_name` descoberto que colida com um dos 4 de referência
+  é descartado com aviso (`eprintln!`) — o de referência sempre vence; entre dois descobertos
+  colidindo entre si, mantém o primeiro pela ordem de `std::fs::read_dir` (caso patológico, não
+  otimizado). A fonte de verdade do `SandboxProfile` de um plugin instalado é sempre o manifesto lido
+  do disco na descoberta — nunca o `CapabilityManifest` que o processo declara no handshake em
+  runtime (mesma disciplina de D1 da feature 006, generalizada). Testes automatizados herméticos
+  (sem rede externa): fluxo de instalação validado contra um servidor HTTP local sintético
+  (`install.rs`, mesmo padrão de `MetricsFixtureServer` da feature 002), com `base_url` da API do
+  GitHub configurável via `FAROL_GITHUB_API_BASE` só para teste. Quatro issues de débito técnico
+  abertas nesta feature: #15 (instalação inteiramente dentro da UI gráfica do iced — MVP é só a
+  subcommand de CLI); #16 (plugin que exija passo de build ou asset binário próprio — MVP cobre só
+  extração direta de código-fonte interpretado); #17 (capability de filesystem genérica declarável
+  por um plugin de terceiro, equivalente aos casos especiais nomeados `scan_root`/socket Docker da
+  feature 006 — plugin instalado via registry só recebe `network`/`exec` nesta fase); #18 (criar e
+  publicar de verdade um repositório-índice GitHub central com CI de validação de PRs — decisão de
+  infraestrutura externa fora de modo silencioso, ver `spec.md`/Clarifications).
+
 `.specify/memory/constitution.md` é normativo e versionado (SemVer próprio, atualmente v1.0.0).
 Mudança de princípio exige emenda formal (skill `speckit-constitution`) — não editar a constitution
 diretamente fora desse processo.
@@ -218,13 +260,32 @@ injetados como variável de ambiente no spawn — não há dependência de keyri
 
 ## Testes
 
-- `cargo test --workspace` — 143 testes passando (0 `#[ignore]`d): unit/e2e/snapshot/sandbox de
-  `farol-core` (82, incluindo novos cenários de features 004–005 e os 15 novos testes de sandbox da
+- `cargo test --workspace` — 168 testes passando (0 `#[ignore]`d): unit/e2e/snapshot/sandbox/registry
+  de `farol-core` (107, incluindo novos cenários de features 004–005, os 15 testes de sandbox da
   feature 006 — 7 em `sandbox_unit_tests`, construção pura do `Vec<String>` de argumentos do `bwrap`
   a partir de um `SandboxProfile`, sem spawnar nada de verdade; 8 em `sandbox_integration_tests`,
   spawn real de `bwrap`/`python3`/`docker ps` cobrindo rede negada/concedida, exec negado, o bind do
   `scan_root` de `git-local` e do socket Docker, e a confirmação de que `secrets.toml` é inacessível
-  de dentro do sandbox — ambos os módulos dentro de `crates/farol-core/src/sandbox.rs`) + contrato/
+  de dentro do sandbox — ambos os módulos dentro de `crates/farol-core/src/sandbox.rs` — e os 25
+  novos testes da feature 007: 7 em `install::tests` (`install_succeeds_and_publishes_the_plugin`,
+  `install_without_release_returns_no_release`,
+  `install_with_failing_tarball_download_returns_download_failed`,
+  `install_with_missing_manifest_returns_manifest_invalid`,
+  `install_with_malformed_manifest_returns_manifest_invalid`,
+  `install_with_name_colliding_with_a_reference_plugin_returns_name_collision`,
+  `reinstalling_over_a_previous_install_replaces_it_cleanly`, todos contra o servidor HTTP local
+  sintético de `install.rs`); 10 em `plugin_manifest::tests` cobrindo `parse_manifest` (arquivo
+  ausente, TOML inválido, cada campo obrigatório ausente, nome vazio, lista de args vazia,
+  capabilities ausentes default `false`, campo desconhecido ignorado, manifesto válido completo); 6
+  em `plugin_worker::tests` cobrindo `discover_installed_plugins()`/`all_plugins()`
+  (`discover_returns_empty_when_no_plugins_directory_exists`,
+  `discover_returns_one_config_for_one_valid_plugin`,
+  `discover_skips_a_malformed_manifest_without_blocking_the_valid_one`,
+  `discover_does_not_filter_colliding_names_between_two_discovered_plugins`,
+  `all_plugins_filters_a_discovered_plugin_colliding_with_a_reference_plugin`,
+  `all_plugins_keeps_only_the_first_of_two_colliding_discovered_plugins`); 2 em `e2e_tests.rs`
+  (`emulator_takes_plugin_template_through_a_real_handshake_to_ready`,
+  `discovered_plugin_reaches_ready_through_the_real_state_machine`)) + contrato/
   unit de `farol-protocol` (25 `contract_schema_validation` + 18 `schema_boundaries` + 18 unit) +
   fixtures automatizadas do plugin `openfortivpn-vpn` (15 testes Python integrados ao harness) e
   `docker-containers` (23 testes Python).
