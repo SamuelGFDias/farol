@@ -137,28 +137,29 @@ o arquivo `secrets.toml` não é localizável de dentro do sandbox por nenhum ca
 
 ## Phase 6: Polish & Cross-Cutting Concerns
 
-- [ ] T024 [P] `cargo clippy --workspace --all-targets` limpo, sem warning novo introduzido por
+- [X] T024 [P] `cargo clippy --workspace --all-targets` limpo, sem warning novo introduzido por
       `sandbox.rs`/`plugin_worker.rs`
-- [ ] T025 [P] `ruff check` limpo em `plugins/git-local/` e `plugins/openfortivpn-vpn/` (arquivos
-      tocados em T011/T012)
-- [ ] T026 Rodar `cargo test --workspace -- --test-threads=1` completo — confirmar 0 falhas
+- [X] T025 [P] `ruff check` limpo em `plugins/git-local/` e `plugins/openfortivpn-vpn/` (arquivos
+      tocados em T011/T012) — `git-local` limpo; `openfortivpn-vpn` tem 1 `E501` pré-existente
+      (commit `0927fe61`, feature 005, não introduzido por T012), registrado como issue #14
+- [X] T026 Rodar `cargo test --workspace -- --test-threads=1` completo — confirmar 0 falhas
       (mitiga a flakiness de SIGSEGV já documentada em `AGENTS.md` para execução paralela)
-- [ ] T027 Rodar `tests/integration/harness.sh` completo — confirmar `SUCESSO — 7/7 condições` e
+- [X] T027 Rodar `tests/integration/harness.sh` completo — confirmar `SUCESSO — 7/7 condições` e
       registrar o tempo observado, comparando com o baseline de ~9s da feature 005 (SC-006)
-- [ ] T028 Criar issue GitHub rastreando o débito técnico de `research.md` D3 (mediação de `exec`
+- [X] T028 Criar issue GitHub rastreando o débito técnico de `research.md` D3 (mediação de `exec`
       só por visibilidade de filesystem, não por `seccomp` real — caminho residual de um plugin
       hostil autoproduzindo um executável em `tmpfs` gravável) — sem pedir permissão manual,
       conforme instrução vigente da sessão
-- [ ] T029 Criar issue GitHub rastreando o débito técnico de `spec.md` FR-010 (capability `network`
+- [X] T029 Criar issue GitHub rastreando o débito técnico de `spec.md` FR-010 (capability `network`
       tratada como liga/desliga nesta fase, não allowlist real por `allowed_hosts`) — sem pedir
       permissão manual, conforme instrução vigente da sessão
-- [ ] T030 Atualizar `AGENTS.md` com a entrada da feature 006, mesmo padrão das entradas 004/005 —
+- [X] T030 Atualizar `AGENTS.md` com a entrada da feature 006, mesmo padrão das entradas 004/005 —
       cobrir: módulo `sandbox.rs`, decisão D1 (fonte de verdade estática, não handshake), os dois
       débitos técnicos registrados como issues (T028/T029), e a correção de manifesto de
       `git-local`/`openfortivpn-vpn` (D7)
-- [ ] T031 Atualizar `README.md` — roadmap item 3 ("Sandbox e permissões") passa de "não iniciado"
+- [X] T031 Atualizar `README.md` — roadmap item 3 ("Sandbox e permissões") passa de "não iniciado"
       para descrever o que foi entregue nesta feature, mesmo padrão do item 2 (Docker) já atualizado
-- [ ] T032 Preencher a seção "Automação equivalente" de `quickstart.md` com os nomes reais dos
+- [X] T032 Preencher a seção "Automação equivalente" de `quickstart.md` com os nomes reais dos
       testes escritos nas tasks anteriores, mesmo padrão das features 002-005
 
 ## Dependencies & Execution Order

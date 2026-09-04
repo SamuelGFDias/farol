@@ -57,6 +57,56 @@ Features existentes:
   registrado durante a implementação (fora de escopo): issue #11 (erro de `widget/get` do widget
   VPN nunca alcança a UI, rastreado como débito de feature 004).
 
+- `specs/006-sandbox-permissoes-bubblewrap/` — **completa**. Isolamento real de processo via
+  `bwrap` (bubblewrap) para os 4 plugins de referência, com três User Stories implementadas: (US1)
+  rede negada por padrão a todo plugin (`--unshare-all` sem `--share-net`) — só liberada para quem
+  declara a capability `network`; (US2) capability `exec` mediada por visibilidade seletiva de
+  filesystem (sem `exec`, `/usr/bin`/`/bin`/`/usr/local/bin` não são bindados, só o interpretador e
+  suas libs) mais dois casos especiais de acesso a filesystem além do próprio código do plugin,
+  nomeados em vez de virarem capability genérica nova: `git-local`/`scan_root` (bind read-write do
+  diretório configurado, mesmo default/caminho de config que o plugin já lê) e
+  `docker-containers`/socket Docker (bind do socket Unix `/var/run/docker.sock` ou equivalente
+  rootless); (US3) segredos nunca vazam por bind — `~/.config/farol` nunca entra na lista de binds
+  de nenhum plugin, então `secrets.toml`/`config.toml` de qualquer plugin (inclusive o próprio) são
+  inexistentes do ponto de vista do processo sandboxed, confirmado tentando localizá-los de dentro do
+  sandbox. Decisão central, D1 de `research.md`: a fonte de verdade do perfil de sandbox de cada
+  plugin é o registro estático `known_plugins()` (novo campo de `PluginSpawnConfig`), decidido **antes**
+  do spawn — não o `CapabilityManifest` que o próprio plugin declara no `handshake/hello`, por dois
+  motivos: (a) ordem lógica — o manifesto só chega depois que o processo já foi spawnado e o sandbox
+  já precisa estar em vigor (chicken-and-egg); (b) autorrelato do próprio processo sobre seu isolamento
+  não é fronteira de segurança real (um plugin malicioso declararia o que quisesse). O
+  `CapabilityManifest` do handshake continua existindo/exibido na UI como antes, só deixa de ser,
+  sozinho, quem decide o sandbox. Novo módulo `crates/farol-core/src/sandbox.rs`: constrói o
+  `Vec<String>` de argumentos do `bwrap` a partir de um `SandboxProfile` (rede on/off, exec on/off,
+  binds extras). Correção de manifesto nesta feature (D7): `git-local` e `openfortivpn-vpn` passam a
+  declarar `network` também — achado do planejamento, não scope creep: `git.fetch` contra um remote
+  real e `vpn.connect` contra um servidor real sempre dependeram de rede, o manifesto nunca refletiu
+  isso porque nunca tinha sido de fato aplicado antes desta feature. Três bugs reais encontrados e
+  corrigidos durante a implementação: (1) o `repo_root` bindado read-only pelo sandbox precisava vir
+  de `env!("CARGO_MANIFEST_DIR")` em tempo de compilação, não de `std::env::current_dir()` em
+  runtime — o `cwd` do processo do Farol já muda depois que o `--chdir` do próprio `bwrap` entra em
+  jogo; (2) `find_uptime_kuma_pid` (usado pelos testes de `Crashed`/`Unresponsive`) precisou passar a
+  caminhar descendentes **transitivos**, não só filhos diretos, porque a árvore de processos sob
+  `bwrap` ganhou uma camada a mais (`bwrap` → processo intermediário → `python3` real); (3) ordem dos
+  argumentos do `bwrap` — os mounts sintéticos genéricos (`--proc`/`--dev`/`--tmpfs /tmp`) MUST vir
+  logo depois das flags de namespace e **antes de qualquer bind de caminho real** (interpretador,
+  DNS/TLS, `/usr/bin`, raiz do repo, `extra_binds`), não só antes de `extra_binds` como a primeira
+  versão do contrato prescrevia — um bind posicionado antes desses mounts genéricos fica invisível se
+  o caminho bindado estiver aninhado sob um deles (ex.: um `scan_root` de teste ou o shim de
+  interpretador do `harness.sh`, ambos sob `/tmp`, somem depois que `--tmpfs /tmp` monta por cima).
+  Escape-hatch só de teste (D14): variável de ambiente `FAROL_SANDBOX_TEST_EXTRA_BIND`, lida por
+  `worker()`, adiciona um bind extra gravável só quando setada — usada exclusivamente por
+  `tests/integration/harness.sh` para o shim que grava a transcrição JSON-RPC sob `/tmp` (a `/tmp`
+  privada por sandbox é uma propriedade de segurança desejada, não algo a generalizar); nenhum código
+  de produção (nenhum dos 4 plugins, nenhuma entrada de `known_plugins()`) depende dela. Quatro
+  issues de débito técnico abertas nesta feature: #12 (mediação de `exec` é só por visibilidade de
+  filesystem, não por um filtro `seccomp` real contra a syscall `execve` — um plugin hostil poderia em
+  teoria escrever um payload num `tmpfs` gravável e executá-lo por caminho absoluto sem depender de
+  `$PATH`); #13 (capability `network` tratada como liga/desliga pelo sandbox, sem allowlist real por
+  host apesar de `allowed_hosts` já existir no tipo Rust e ser exibido na UI); #14 (duas linhas E501
+  do `ruff` pré-existentes em `openfortivpn-vpn`/`uptime-kuma` — débito **da feature 005**, achado só
+  durante a verificação final desta feature, não introduzido por ela).
+
 `.specify/memory/constitution.md` é normativo e versionado (SemVer próprio, atualmente v1.0.0).
 Mudança de princípio exige emenda formal (skill `speckit-constitution`) — não editar a constitution
 diretamente fora desse processo.
@@ -168,10 +218,16 @@ injetados como variável de ambiente no spawn — não há dependência de keyri
 
 ## Testes
 
-- `cargo test --workspace` — 128 testes passando (0 `#[ignore]`d): unit/e2e/snapshot de `farol-core`
-  (67, incluindo novos cenários de features 004–005) + contrato/unit de `farol-protocol` (25
-  `contract_schema_validation` + 18 `schema_boundaries` + 18 unit) + fixtures automatizadas do plugin
-  `openfortivpn-vpn` (15 testes Python integrados ao harness) e `docker-containers` (23 testes Python).
+- `cargo test --workspace` — 143 testes passando (0 `#[ignore]`d): unit/e2e/snapshot/sandbox de
+  `farol-core` (82, incluindo novos cenários de features 004–005 e os 15 novos testes de sandbox da
+  feature 006 — 7 em `sandbox_unit_tests`, construção pura do `Vec<String>` de argumentos do `bwrap`
+  a partir de um `SandboxProfile`, sem spawnar nada de verdade; 8 em `sandbox_integration_tests`,
+  spawn real de `bwrap`/`python3`/`docker ps` cobrindo rede negada/concedida, exec negado, o bind do
+  `scan_root` de `git-local` e do socket Docker, e a confirmação de que `secrets.toml` é inacessível
+  de dentro do sandbox — ambos os módulos dentro de `crates/farol-core/src/sandbox.rs`) + contrato/
+  unit de `farol-protocol` (25 `contract_schema_validation` + 18 `schema_boundaries` + 18 unit) +
+  fixtures automatizadas do plugin `openfortivpn-vpn` (15 testes Python integrados ao harness) e
+  `docker-containers` (23 testes Python).
   Suites Python: `python3 -m unittest discover -p "test_*.py"` dentro de `plugins/openfortivpn-vpn/`
   (15 testes) ou `plugins/docker-containers/` (23 testes).
 - `cargo clippy --workspace --all-targets` — deve ficar limpo, sem warning nenhum.
@@ -224,7 +280,13 @@ injetados como variável de ambiente no spawn — não há dependência de keyri
     determinística sem depender de Docker instalado/rodando na máquina de CI); (6) encerra em
     `SIGTERM`; (7) nenhum processo remanescente. Imprime `SUCESSO — 7/7 condições confirmadas em Ns`
     ou `[FALHA] ...` apontando a condição que caiu, saída `0`/`1`. `tests/integration/README.md`
-    documenta o contrato; o script em si é a Camada 2, não mais um stub.
+    documenta o contrato; o script em si é a Camada 2, não mais um stub. Desde a feature 006, os 4
+    plugins não sobem mais como subprocess direto do processo do Farol — rodam dentro de `bwrap`
+    (`crates/farol-core/src/sandbox.rs`), e o script exporta o escape-hatch só de teste
+    `FAROL_SANDBOX_TEST_EXTRA_BIND` (D14 de `specs/006-sandbox-permissoes-bubblewrap/research.md`)
+    apontando para o diretório de trabalho onde grava a transcrição JSON-RPC, senão o shim de teste
+    (sob `/tmp`, coberto pela `--tmpfs /tmp` privada do sandbox) fica invisível de dentro do processo
+    sandboxed.
   - Sob `iced 0.14`, um closure capturante em `Subscription::map` (a armadilha histórica acima) não
     chega a rodar — vira erro `E0080` de compilação, apanhado por `cargo test`/`cargo clippy
     --all-targets` (código de teste) ou já no primeiro passo do `harness.sh` (código de produção).
