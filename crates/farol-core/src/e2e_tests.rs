@@ -1406,7 +1406,7 @@ fn emulator_runs_the_real_subscription_until_a_plugin_reaches_ready() {
     assert_eq!(
         observed,
         PluginState::Ready,
-        "esperava que uptime-kuma alcançasse Ready pelo Emulator (handshake 0.3 + \
+        "esperava que uptime-kuma alcançasse Ready pelo Emulator (handshake 0.4 + \
          required_config resolvido pela fixture), obteve {observed:?}"
     );
 }
@@ -1532,7 +1532,7 @@ fn uptime_kuma_reaches_ready_and_populates_the_monitor_grid() {
     // A conexão saiu de Starting/Handshaking — e chegou a `Ready`, não a um
     // `Unavailable`: só `view_ready` renderiza esta linha.
     assert!(
-        harness.screen_shows("Plugin: uptime-kuma (protocolo 0.3)"),
+        harness.screen_shows("Plugin: uptime-kuma (protocolo 0.4)"),
         "uptime-kuma deveria estar Ready antes de qualquer ciclo de widget/get"
     );
 
@@ -1696,7 +1696,7 @@ fn setup_form_filled_via_ui_reaches_ready_with_real_data_and_persists_across_res
     harness.settle();
 
     assert!(
-        harness.screen_shows("Plugin: uptime-kuma (protocolo 0.3)"),
+        harness.screen_shows("Plugin: uptime-kuma (protocolo 0.4)"),
         "depois de confirmar a tela de setup, uptime-kuma deveria estar Ready"
     );
 
@@ -1756,7 +1756,7 @@ fn setup_form_filled_via_ui_reaches_ready_with_real_data_and_persists_across_res
     );
     restarted.settle();
     assert!(
-        restarted.screen_shows("Plugin: uptime-kuma (protocolo 0.3)"),
+        restarted.screen_shows("Plugin: uptime-kuma (protocolo 0.4)"),
         "reabrir o Farol com config/secrets já persistidos deveria ir direto a Ready, sem a tela \
          de setup"
     );
@@ -1866,7 +1866,7 @@ fn uptime_kuma_reports_metrics_unreachable_for_an_invalid_base_url_but_stays_rea
     );
     harness.settle();
     assert!(
-        harness.screen_shows("Plugin: uptime-kuma (protocolo 0.3)"),
+        harness.screen_shows("Plugin: uptime-kuma (protocolo 0.4)"),
         "required_config presente (mesmo com base_url inacessível) deveria levar a Ready, nunca a \
          NotConfigured"
     );
@@ -1930,7 +1930,7 @@ fn uptime_kuma_widget_reports_empty_items_when_instance_has_no_monitors() {
         fixture.spawn_config("uptime-kuma"),
     );
     harness.settle();
-    assert!(harness.screen_shows("Plugin: uptime-kuma (protocolo 0.3)"));
+    assert!(harness.screen_shows("Plugin: uptime-kuma (protocolo 0.4)"));
 
     wait_until(
         &mut harness,
@@ -1988,7 +1988,7 @@ fn uptime_kuma_recovers_after_instance_becomes_unreachable_without_restarting_fa
         fixture.spawn_config("uptime-kuma"),
     );
     harness.settle();
-    assert!(harness.screen_shows("Plugin: uptime-kuma (protocolo 0.3)"));
+    assert!(harness.screen_shows("Plugin: uptime-kuma (protocolo 0.4)"));
 
     // (a) widget populado antes de derrubar a instância — mesmo padrão de T006.
     let expected = expected_monitors();
@@ -2017,7 +2017,7 @@ fn uptime_kuma_recovers_after_instance_becomes_unreachable_without_restarting_fa
         );
     }
     assert!(
-        harness.screen_shows("Plugin: uptime-kuma (protocolo 0.3)"),
+        harness.screen_shows("Plugin: uptime-kuma (protocolo 0.4)"),
         "a janela/conexão continua Ready — um erro pontual de leitura nunca vira Unavailable"
     );
 
@@ -2064,7 +2064,7 @@ fn uptime_kuma_reports_metrics_parse_error_for_a_non_metrics_response_without_cr
         fixture.spawn_config("uptime-kuma"),
     );
     harness.settle();
-    assert!(harness.screen_shows("Plugin: uptime-kuma (protocolo 0.3)"));
+    assert!(harness.screen_shows("Plugin: uptime-kuma (protocolo 0.4)"));
 
     let error_text =
         "Falha ao consultar monitores: falha ao consultar /metrics da instância Uptime Kuma configurada";
@@ -2103,7 +2103,7 @@ fn uptime_kuma_process_killed_becomes_crashed_without_taking_down_the_core() {
         fixture.spawn_config("uptime-kuma"),
     );
     harness.settle();
-    assert!(harness.screen_shows("Plugin: uptime-kuma (protocolo 0.3)"));
+    assert!(harness.screen_shows("Plugin: uptime-kuma (protocolo 0.4)"));
 
     let pid = find_uptime_kuma_pid();
     send_signal(pid, "-9");
@@ -2111,7 +2111,7 @@ fn uptime_kuma_process_killed_becomes_crashed_without_taking_down_the_core() {
     wait_until_passive(
         &mut harness,
         "saída de Ready após kill -9",
-        |h| !h.screen_shows("Plugin: uptime-kuma (protocolo 0.3)"),
+        |h| !h.screen_shows("Plugin: uptime-kuma (protocolo 0.4)"),
         STATE_TIMEOUT,
     );
 
@@ -2148,7 +2148,7 @@ fn uptime_kuma_process_frozen_becomes_unresponsive_without_taking_down_the_core(
         fixture.spawn_config("uptime-kuma"),
     );
     harness.settle();
-    assert!(harness.screen_shows("Plugin: uptime-kuma (protocolo 0.3)"));
+    assert!(harness.screen_shows("Plugin: uptime-kuma (protocolo 0.4)"));
 
     let pid = find_uptime_kuma_pid();
     send_signal(pid, "-STOP");
@@ -2159,7 +2159,7 @@ fn uptime_kuma_process_frozen_becomes_unresponsive_without_taking_down_the_core(
     wait_until_passive(
         &mut harness,
         "saída de Ready após kill -STOP",
-        |h| !h.screen_shows("Plugin: uptime-kuma (protocolo 0.3)"),
+        |h| !h.screen_shows("Plugin: uptime-kuma (protocolo 0.4)"),
         STATE_TIMEOUT,
     );
 
@@ -2236,7 +2236,7 @@ fn openfortivpn_vpn_reaches_ready_and_populates_the_vpn_widget() {
     // A conexão saiu de Starting/Handshaking — e chegou a `Ready` (sem tela de setup: D6, sem
     // required_config): só `view_ready` renderiza esta linha.
     assert!(
-        harness.screen_shows("Plugin: openfortivpn-vpn (protocolo 0.3)"),
+        harness.screen_shows("Plugin: openfortivpn-vpn (protocolo 0.4)"),
         "openfortivpn-vpn deveria estar Ready assim que o handshake completa (sem required_config, \
          D6)"
     );
@@ -2252,7 +2252,12 @@ fn openfortivpn_vpn_reaches_ready_and_populates_the_vpn_widget() {
 
     // A tela mostra os dados *derivados* de `view_vpn_widget` — estado mapeado, perfil ativo,
     // lista de perfis disponíveis.
-    for text in ["Estado: conectado", "Perfil ativo: escritorio", "escritorio", "casa"] {
+    for text in [
+        "Estado: conectado",
+        "Perfil ativo: escritorio",
+        "escritorio",
+        "casa",
+    ] {
         assert!(
             harness.screen_shows(text),
             "o widget vpn-status deveria renderizar {text:?}"

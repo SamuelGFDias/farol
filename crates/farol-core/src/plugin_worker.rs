@@ -117,9 +117,9 @@ pub struct PluginSpawnConfig {
 }
 
 /// Registro fixo dos plugins conhecidos por este core (T014/T015, correção
-/// C2) — `git-local` (feature 001), `uptime-kuma` (feature 002) e
-/// `openfortivpn-vpn` (T016, feature 004). Um registry federado/descoberto
-/// em runtime é Fora de Escopo do `spec.md` de cada feature; esta lista é
+/// C2) — `git-local` (feature 001), `uptime-kuma` (feature 002),
+/// `openfortivpn-vpn` (T016, feature 004) e `docker-containers` (T017, feature 005). Um registry
+/// federado/descoberto em runtime é Fora de Escopo do `spec.md` de cada feature; esta lista é
 /// deliberadamente hardcoded.
 ///
 /// Caminho de `args` relativo à raiz do repositório — só resolve
@@ -144,6 +144,13 @@ pub fn known_plugins() -> Vec<PluginSpawnConfig> {
             plugin_name: "openfortivpn-vpn".to_string(),
             command: "python3".to_string(),
             args: vec!["plugins/openfortivpn-vpn/main.py".to_string()],
+        },
+        // T017 (feature 005, `specs/005-docker-containers-plugin/research.md` D8): quarto plugin
+        // conhecido, envolvendo a CLI `docker`.
+        PluginSpawnConfig {
+            plugin_name: "docker-containers".to_string(),
+            command: "python3".to_string(),
+            args: vec!["plugins/docker-containers/main.py".to_string()],
         },
     ]
 }
@@ -174,7 +181,13 @@ pub const RPC_TIMEOUT_ACTION: Duration = Duration::from_secs(120);
 /// para `oneOf`); `git-local`/`uptime-kuma` migram a constante equivalente
 /// para `"0.3"` na mesma feature (T014/T015), para não repetir o padrão de
 /// dívida técnica da migração `0.1→0.2` (débito #4, D2).
-const CORE_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 0, minor: 3 };
+/// **T013 (feature 005)**: `"0.3"` → `"0.4"` — bump aditivo normativo de
+/// `research.md` D2 desta feature (`specs/005-docker-containers-plugin/research.md`,
+/// novo `kind` de widget `"container-status-grid"` e `ActionInvokeResult` com terceira opção
+/// `Container`); os quatro plugins conhecidos (`git-local`/`uptime-kuma`/`openfortivpn-vpn`/
+/// `docker-containers`) migram a constante equivalente para `"0.4"` na mesma feature (T014-T016),
+/// mesmo raciocínio de não repetir a dívida técnica da migração `0.1→0.2`.
+const CORE_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 0, minor: 4 };
 
 /// Identificação informativa deste core no handshake (`HandshakeHello.core_name`).
 const CORE_NAME: &str = "farol-core";

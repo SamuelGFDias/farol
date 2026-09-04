@@ -1,10 +1,10 @@
-# Farol Plugin Protocol — Especificação v0.3
+# Farol Plugin Protocol — Especificação v0.4
 
-**Status**: Normativo. **Versão do protocolo descrita neste documento**: `0.3`.
+**Status**: Normativo. **Versão do protocolo descrita neste documento**: `0.4`.
 
 Este documento é a fonte da verdade, agnóstica de linguagem, do protocolo de comunicação entre o
 core do Farol (`farol-core`) e um processo filho de plugin. Junto com os JSON Schemas em
-`protocol/schema/v0.3/*.schema.json`, ele é suficiente, por si só, para implementar um plugin
+`protocol/schema/v0.4/*.schema.json`, ele é suficiente, por si só, para implementar um plugin
 compatível em qualquer linguagem — nenhum outro artefato do repositório (incluindo qualquer crate
 Rust) é normativo sobre o formato das mensagens. Um binding de linguagem específica (ex.: o crate
 Rust `farol-protocol`, usado pelo core) é uma implementação *desta* especificação, nunca a origem
@@ -14,16 +14,19 @@ para acompanhar.
 `protocol/schema/v0.1/*.schema.json` permanece intocado como registro histórico do formato `"0.1"` —
 nenhum plugin de referência deste repositório fala mais essa versão. O plugin `git-local` foi migrado
 de `"0.1"` para `"0.2"` na feature 002 (débito técnico #4, issue fechada, ver
-`contracts/framing-and-versioning-delta.md`) e depois para `"0.3"` na feature 004 (descrita no
-parágrafo seguinte).
+`contracts/framing-and-versioning-delta.md`), depois para `"0.3"` na feature 004, e depois para
+`"0.4"` na feature 005 (descrita no parágrafo seguinte).
 
 `protocol/schema/v0.2/*.schema.json` permanece igualmente intocado como registro histórico do
-formato `"0.2"` (feature 002), pelo mesmo tratamento dado a `v0.1` acima. A versão vigente do
-protocolo, a partir desta revisão (feature 004), é `"0.3"` — um core em `"0.3"` recusa, pela mesma
-regra de igualdade exata (§6.4), qualquer plugin que ainda declare `"0.2"` ou `"0.1"` (ver
-`contracts/protocol-delta-v0.3.md` da feature 004; research.md D2 documenta a decisão de migrar
-`git-local` e `uptime-kuma` para `"0.3"` dentro da própria feature 004, em vez de deixá-los como
-dívida técnica).
+formato `"0.2"` (feature 002), pelo mesmo tratamento dado a `v0.1` acima. `protocol/schema/v0.3/*.schema.json`
+permanece intocado do mesmo jeito como registro histórico do formato `"0.3"` (feature 004) — nenhum
+plugin de referência deste repositório fala mais essa versão. A versão vigente do protocolo, a partir
+desta revisão (feature 005), é `"0.4"` — um core em `"0.4"` recusa, pela mesma regra de igualdade
+exata (§6.4), qualquer plugin que ainda declare `"0.3"`, `"0.2"` ou `"0.1"` (ver
+`contracts/protocol-delta-v0.4.md` da feature 005; research.md D2 documenta a decisão de migrar
+`git-local`, `uptime-kuma` e `openfortivpn-vpn` para `"0.4"` dentro da própria feature 005, em vez de
+deixá-los como dívida técnica — o mesmo raciocínio já aplicado por `contracts/protocol-delta-v0.3.md`
+da feature 004).
 
 ## 1. Convenções
 
@@ -55,7 +58,7 @@ regras específicas do Farol por cima dele.
   (ou `null` apenas no caso — não exercitado por esta versão do protocolo — de a requisição nem ter
   sido parseável) e `error`, um objeto no formato definido em §6.
 - Notificações JSON-RPC (mensagem sem `id`, sem resposta esperada) não são usadas nesta versão do
-  protocolo (v0.3) — nem pelo core, nem pelo plugin. O plugin MUST NOT enviar mensagens não
+  protocolo (v0.4) — nem pelo core, nem pelo plugin. O plugin MUST NOT enviar mensagens não
   solicitadas; toda leitura de estado é iniciada pelo core (modelo de *polling*, ver `widget/get` em
   §5.2).
 - O core é sempre quem envia a primeira requisição de uma conexão (§4). O plugin MUST NOT enviar
@@ -129,15 +132,15 @@ Duas mensagens consecutivas no stream de stdout do plugin, exatamente como apare
 ```
 
 Exemplo histórico, preservado tal como registrado (`git-local` em `"0.2"`, feature 001/002). A
-versão atual falada pelo core, a partir desta revisão, é `"0.3"` (research.md D2 da feature 004) —
+versão atual falada pelo core, a partir desta revisão, é `"0.4"` (research.md D2 da feature 005) —
 o literal `protocol_version":"0.2"` acima ilustra apenas o formato byte a byte do framing NDJSON,
 não é normativo sobre qual versão o core efetivamente propõe hoje (ver §6.2 para o exemplo vigente).
 
 ## 5. Métodos RPC
 
-Esta versão (`0.3`) do protocolo define exatamente três métodos. Cada um tem seu request/response
+Esta versão (`0.4`) do protocolo define exatamente três métodos. Cada um tem seu request/response
 totalmente especificado, campo a campo, no JSON Schema correspondente em
-`protocol/schema/v0.3/` — este documento descreve o papel de cada método, sua sequência de uso e
+`protocol/schema/v0.4/` — este documento descreve o papel de cada método, sua sequência de uso e
 seu orçamento de timeout; os schemas são a fonte normativa da forma exata de cada mensagem.
 
 | Método | Quem inicia | Quando | Orçamento de timeout | Schema |
@@ -200,14 +203,15 @@ Response de sucesso (resumo):
 #### 5.2.1 `kind`s de widget conhecidos
 
 O vocabulário de `WidgetDeclaration.kind` é aberto (§10), mas esta versão do protocolo reconhece
-três valores, cada um determinando a forma exata de `items` na resposta de `widget/get` (forma
+quatro valores, cada um determinando a forma exata de `items` na resposta de `widget/get` (forma
 normativa completa em `widget.schema.json`):
 
 | `kind` | O que reporta em `widget/get` | Plugin de referência |
 |---|---|---|
 | `status-grid` | `items`: `WidgetItem[]` — um item por repositório Git encontrado, cada um emparelhando um `GitRepository` (caminho, estado sujo/limpo, status do remoto) com sua `fetch_action` correspondente. Lista de N itens independentes, uma linha por repositório. | `git-local` |
 | `monitor-status-grid` | `items`: `MonitorStatusItem[]` — um item por monitor Uptime Kuma, cada um com nome, status (`up`/`down`/`pending`/`maintenance`) e tempo de resposta. Nunca carrega `ActionDeclaration` (este plugin nunca declara ações, FR-004 da feature 002). Lista de N itens independentes, uma linha por monitor. | `uptime-kuma` |
-| `vpn-status` (novo em v0.3) | `items`: `VpnStatusItem[]`, mas sempre um **singleton** — array de comprimento zero ou um, nunca uma lista de N itens independentes como os dois `kind`s acima (research.md D3 da feature 004, já que há no máximo uma sessão VPN ativa por vez). O único item, quando presente, carrega `state` (`disconnected`/`connecting`/`connected`), `active_profile`, `elapsed_seconds`, a lista `available_profiles` (cada perfil emparelhado com seu próprio `connect_action`) e um `disconnect_action` único para a sessão ativa. | `openfortivpn-gui` |
+| `vpn-status` | `items`: `VpnStatusItem[]`, mas sempre um **singleton** — array de comprimento zero ou um, nunca uma lista de N itens independentes como os demais `kind`s desta tabela (research.md D3 da feature 004, já que há no máximo uma sessão VPN ativa por vez). O único item, quando presente, carrega `state` (`disconnected`/`connecting`/`connected`), `active_profile`, `elapsed_seconds`, a lista `available_profiles` (cada perfil emparelhado com seu próprio `connect_action`) e um `disconnect_action` único para a sessão ativa. | `openfortivpn-gui` |
+| `container-status-grid` (novo em v0.4) | `items`: `ContainerStatusItem[]` — um item por container Docker local (incluindo os não-executando), cada um emparelhando identidade (`id`/`name`/`image`), estado (`state`, vocabulário fechado + `unknown`) e **três** `ActionDeclaration` (`start`/`stop`/`restart`) cujo `enabled` o plugin decide a partir do estado. Lista de N itens independentes, uma linha por container — estruturalmente igual a `status-grid`/`monitor-status-grid`, e diferente do singleton `vpn-status`. | `docker-containers` |
 
 - Se o plugin responder com um erro JSON-RPC (§7) para uma chamada pontual de `widget/get`, o core
   MUST manter os últimos `items` conhecidos daquele widget e sinalizar o erro pontualmente — uma
@@ -292,7 +296,7 @@ core                                     plugin (processo filho)
   "id": 1,
   "method": "handshake/hello",
   "params": {
-    "protocol_version": "0.3",
+    "protocol_version": "0.4",
     "core_name": "farol-core"
   }
 }
@@ -333,10 +337,11 @@ core                                     plugin (processo filho)
 ```
 
 Exemplo histórico, preservado tal como registrado quando o plugin `uptime-kuma` (feature 002) ainda
-declarava `"0.2"`. A versão atual falada pelo core, a partir desta revisão, é `"0.3"` — pela mesma
+declarava `"0.2"`. A versão atual falada pelo core, a partir desta revisão, é `"0.4"` — pela mesma
 regra de igualdade exata (§6.4), um plugin que hoje respondesse com este literal exato seria
-recusado por incompatibilidade de versão (research.md D2 da feature 004 documenta a migração de
-`git-local`/`uptime-kuma` para `"0.3"` dentro da própria feature 004).
+recusado por incompatibilidade de versão (research.md D2 da feature 005 documenta a migração de
+`git-local`/`uptime-kuma`/`openfortivpn-vpn` para `"0.4"` dentro da própria feature 005, seguindo o
+mesmo precedente já registrado por research.md D2 da feature 004 para a migração `"0.2"` → `"0.3"`).
 
 - `protocol_version`: a versão de protocolo que o plugin fala (§6.4).
 - `plugin_name`: identidade do plugin.
@@ -444,10 +449,10 @@ explícita do plugin, entregue no handshake ou em uma atualização subsequente.
   a conexão para um estado terminal de "indisponível por versão incompatível" e MUST exibir uma
   mensagem legível citando ambas as versões declaradas, por exemplo:
   `"plugin 'git-local' declara protocolo 0.2; este core suporta 0.1 — versões incompatíveis"`.
-- Esta especificação (v0.3) fixa `protocol_version = "0.3"` como o único valor válido esperado de
+- Esta especificação (v0.4) fixa `protocol_version = "0.4"` como o único valor válido esperado de
   ambos os lados enquanto esta for a versão vigente do protocolo. Um plugin que ainda declare
-  `"0.1"` ou `"0.2"` é, por essa mesma regra de igualdade exata, rejeitado por um core em `"0.3"` —
-  consequência deliberada, não um defeito (ver nota no topo de §1).
+  `"0.1"`, `"0.2"` ou `"0.3"` é, por essa mesma regra de igualdade exata, rejeitado por um core em
+  `"0.4"` — consequência deliberada, não um defeito (ver nota no topo de §1).
 
 ## 7. Orçamentos de timeout
 
@@ -488,7 +493,11 @@ condições de rede lentas ou operações grandes.
   orçamento a aplicar especificamente àquela ação. Quando presente, o core MUST respeitar essa
   sugestão em vez do default de 120s. Este é o mesmo padrão "plugin sugere, core respeita, default
   na ausência" já usado por `WidgetDeclaration.suggested_refresh_interval_ms` (§6.3) — ele evita que
-  o core precise adivinhar o custo de ações de plugins que não conhece de antemão.
+  o core precise adivinhar o custo de ações de plugins que não conhece de antemão. Exemplo já
+  existente na prática (novo em v0.4): as três ações de container do plugin `docker-containers`
+  declaram `timeout_hint_ms` explicitamente (`20000`/`35000`/`45000` para start/stop/restart)
+  porque o período de graça default de `docker stop` (10s) torna o default de 120s do core
+  inadequadamente frouxo.
 
 Consequência do estouro: **diferente do orçamento de controle**, estourar `RPC_TIMEOUT_ACTION`
 MUST NOT, por si só, marcar a conexão como indisponível. Uma ação genuinamente lenta (rede ruim, alvo
@@ -549,11 +558,17 @@ protocolo define os seguintes:
 | `-32007` | `metrics_parse_error` | resposta de `widget/get` | A resposta obtida da fonte de dados remota do plugin não é reconhecível no formato esperado (ex.: corpo que não é `/metrics` Prometheus válido, ou valor de campo fora do vocabulário conhecido) — tratado como falha da resposta inteira daquela tentativa. |
 | `-32008` | `vpn_status_unavailable` | resposta de `widget/get` | `openfortivpn-gui status --json` está presente no `PATH`, mas devolveu `ErrorPayload`/`internal_error`, ou sua saída não é interpretável como JSON válido no formato esperado. `data.detail` MAY carregar a mensagem bruta da CLI. Distinto de `-32003`/`exec_unavailable`, reaproveitado sem mudança por este plugin para o caso do binário `openfortivpn-gui` estar ausente do `PATH`. |
 | `-32009` | `vpn_action_failed` | resposta de `action/invoke` | A invocação subjacente de `connect`/`disconnect` da CLI falhou — qualquer um dos seis códigos de erro possíveis da CLI (`profile_not_found`, `already_connected`, `not_connected`, `connect_timeout`, `sudo_denied`, `internal_error`). Um único código de domínio cobre as seis causas, seguindo o precedente já estabelecido por `-32001`/`fetch_failed` (git-local) — a causa específica viaja em `data`, não em códigos/motivos distintos. `data.detail` = `{cli_code, cli_message}`, o código e a mensagem brutos da CLI; `message` do `ErrorObject` já carrega a tradução legível (FR-007 do plugin). |
+| `-32010` | `docker_unavailable` | resposta de `widget/get` | O binário `docker` está presente no `PATH`, mas a consulta de estado não pôde ser satisfeita. `data.detail.condition` (REQUIRED) ∈ `{daemon_unreachable, permission_denied, timeout, cli_error}` (FR-010b/c, FR-014); `data.detail.raw` MAY carregar stderr truncado. `message` do `ErrorObject` MUST ser a tradução legível e **distinta por condição** exigida por FR-010 — três remédios diferentes para o usuário (instalar, subir o serviço, entrar no grupo) exigem três mensagens diferentes. |
+| `-32011` | `container_action_failed` | resposta de `action/invoke` | A invocação de `docker start\|stop\|restart` falhou. `data.detail.docker_condition` (REQUIRED) ∈ `{no_such_container, container_gone, permission_denied, daemon_unreachable, timeout, cli_error}`; `data.detail.raw` MAY carregar stderr truncado. Um único código de domínio cobre todas as causas, seguindo o precedente de `-32001`/`fetch_failed` (git-local) e `-32009`/`vpn_action_failed` (openfortivpn-gui) — a causa específica vai em `data`, não em códigos distintos. |
 
 Esta tabela é normativa para os plugins de referência `git-local` (`-32000`–`-32004`),
-`uptime-kuma` (`-32005`–`-32007`) e `openfortivpn-gui` (`-32008`–`-32009`). Um plugin futuro MAY reservar outros valores de `reason` dentro
-da mesma faixa de `code` (`-32000`–`-32099`), desde que documentados na seção específica desse
-plugin (fora do escopo desta versão do documento formalizar um mecanismo de registro central de
+`uptime-kuma` (`-32005`–`-32007`), `openfortivpn-gui` (`-32008`–`-32009`) e `docker-containers`
+(`-32010`–`-32011`). Para o binário `docker` ausente do `PATH`, nenhum código novo é usado: o plugin
+`docker-containers` reaproveita `-32003`/`exec_unavailable`, exatamente como `git-local` faz para
+`git` e `openfortivpn-gui` para `openfortivpn-gui`. Um plugin futuro MAY reservar outros valores de
+`reason` dentro da mesma faixa de `code` (`-32000`–`-32099`), desde que documentados na seção
+específica desse plugin (fora do escopo desta versão do documento formalizar um mecanismo de
+registro central de
 `reason`s — apenas a faixa de `code` está reservada aqui para evitar colisão futura).
 
 **Papel de `not_configured` (`-32005`): salvaguarda, não caminho primário.** O caminho **primário**
@@ -623,20 +638,21 @@ decisão opera (§7, §8), não a arquitetura interna de nenhum lado.
 ## 11. Relação com os JSON Schemas
 
 Este documento e os quatro arquivos abaixo, em conjunto, são a especificação completa e normativa
-do protocolo v0.3. Nenhum deles é suficiente isoladamente: este documento descreve a sequência,
-o transporte, o framing, o versionamento e os orçamentos de timeout; os schemas descrevem, campo a
-campo, a forma exata de cada mensagem.
+do protocolo v0.4 — a versão corrente. Nenhum deles é suficiente isoladamente: este documento
+descreve a sequência, o transporte, o framing, o versionamento e os orçamentos de timeout; os
+schemas descrevem, campo a campo, a forma exata de cada mensagem.
 
 | Arquivo | Cobre |
 |---|---|
-| `protocol/schema/v0.3/handshake.schema.json` | Request/response de `handshake/hello` (§6) — inclui `WidgetDeclaration`, `ActionDeclaration`, `ActionTarget`, `CapabilityManifest`, `RequiredConfigItem`. |
-| `protocol/schema/v0.3/widget.schema.json` | Request/response de `widget/get` (§5.2). |
-| `protocol/schema/v0.3/action.schema.json` | Request/response de `action/invoke` (§5.3). |
-| `protocol/schema/v0.3/error.schema.json` | O objeto de erro JSON-RPC (§8) usado por qualquer resposta de erro de qualquer um dos três métodos. |
+| `protocol/schema/v0.4/handshake.schema.json` | Request/response de `handshake/hello` (§6) — inclui `WidgetDeclaration`, `ActionDeclaration`, `ActionTarget`, `CapabilityManifest`, `RequiredConfigItem`. |
+| `protocol/schema/v0.4/widget.schema.json` | Request/response de `widget/get` (§5.2). |
+| `protocol/schema/v0.4/action.schema.json` | Request/response de `action/invoke` (§5.3). |
+| `protocol/schema/v0.4/error.schema.json` | O objeto de erro JSON-RPC (§8) usado por qualquer resposta de erro de qualquer um dos três métodos. |
 
-`protocol/schema/v0.1/*.schema.json` e `protocol/schema/v0.2/*.schema.json` permanecem como
-registro histórico dos formatos `"0.1"` e `"0.2"` (§1) — não são normativos para a versão vigente
-do protocolo descrita por este documento.
+`protocol/schema/v0.1/*.schema.json`, `protocol/schema/v0.2/*.schema.json` e
+`protocol/schema/v0.3/*.schema.json` permanecem congelados como registro histórico dos formatos
+`"0.1"`, `"0.2"` e `"0.3"` (§1) — não são normativos para a versão vigente do protocolo descrita por
+este documento.
 
 Os quatro arquivos são JSON Schema Draft 2020-12 e são desenhados para serem carregados **em
 conjunto** por um validador — cada um declara um `$id` estável, e os três primeiros referenciam

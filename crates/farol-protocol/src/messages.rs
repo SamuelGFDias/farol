@@ -389,12 +389,77 @@ pub struct VpnStatusItem {
     pub disconnect_action: ActionDeclaration,
 }
 
+/// Estado de um container Docker, mapeado 1:1 do campo `State` de `docker ps --format
+/// '{{json .}}'` (novo em v0.4, `research.md` D1/D3, `data-model.md` §1.2). As sete primeiras
+/// variantes são o vocabulário publicado pelo Docker. `Unknown` **nunca** é emitido pelo Docker:
+/// é produzido pelo plugin `docker-containers` ao encontrar um valor de `State` fora desse
+/// vocabulário (FR-012) — desvio deliberado do precedente de [`MonitorStatus`], que invalida a
+/// leitura inteira quando um valor bruto foge do vocabulário conhecido: aqui o raio de dano é uma
+/// linha (um item), não o documento (o `widget/get` inteiro).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ContainerState {
+    Created,
+    Restarting,
+    Running,
+    Removing,
+    Paused,
+    Exited,
+    Dead,
+    /// Valor de `State` que o plugin não reconheceu (FR-012, `research.md` D3.1/D1).
+    Unknown,
+}
+
+/// Um container reportado por `widget/get` para um widget declarado com
+/// `kind: "container-status-grid"` (novo em v0.4, `research.md` D1-D4/D6/D12, `data-model.md`
+/// §1.3), pelo plugin de referência `docker-containers`. Diferente de [`VpnStatusItem`],
+/// `WidgetGetResult.items` para este `kind` é uma lista de N itens independentes, um por container
+/// Docker local (inclusive não-rodando, FR-011) — não um singleton, mesma forma de
+/// [`WidgetItem`]/[`MonitorStatusItem`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ContainerStatusItem {
+    /// ID completo do container (64 hex minúsculos, de `docker ps --no-trunc`). Identidade
+    /// estável para FR-013 e chave de casamento do merge de UI. NUNCA o nome.
+    pub id: String,
+    /// Nome exibido. Primeiro nome quando a CLI reporta vários (`research.md` D1); nunca vazio.
+    pub name: String,
+    /// Imagem de origem: tag quando existe, identificador da imagem quando não (`research.md`
+    /// D1). Nunca vazio.
+    pub image: String,
+    pub state: ContainerState,
+    /// Texto humano auxiliar da CLI (ex.: `"Up 38 hours (healthy)"`). Puramente informativo — o
+    /// core MUST NOT derivar estado dele (`research.md` D1). `None` serializa como `null`
+    /// explícito — campo obrigatório e nullable, nunca ausente, mesmo espírito de
+    /// `MonitorStatusItem::response_time_ms`/`VpnStatusItem::elapsed_seconds`.
+    ///
+    /// Deliberadamente **não** se chama `status`: um campo `status` de string livre aproximaria
+    /// estruturalmente este tipo de [`MonitorStatusItem`] na desambiguação `#[serde(untagged)]`
+    /// de [`WidgetItems`], que hoje só funciona por disjunção incidental de campos obrigatórios
+    /// (`research.md` D12, issue #9).
+    pub status_text: Option<String>,
+    /// `id: "docker.container.start"`, `target: {type: "docker-container", id: <este id>}`,
+    /// `enabled` conforme a matriz de FR-008 (`data-model.md` §1.3 invariante 5);
+    /// `timeout_hint_ms` MUST ser `20000` (`research.md` D6).
+    pub start_action: ActionDeclaration,
+    /// `id: "docker.container.stop"`, idem; `timeout_hint_ms` MUST ser `35000`.
+    pub stop_action: ActionDeclaration,
+    /// `id: "docker.container.restart"`, idem; `timeout_hint_ms` MUST ser `45000`.
+    pub restart_action: ActionDeclaration,
+}
+
 /// União discriminada pelo `kind` do widget que originou a resposta de `widget/get` — `Git`
 /// (`Vec<WidgetItem>`) para `kind: "status-grid"`, `Monitor` (`Vec<MonitorStatusItem>`) para
-/// `kind: "monitor-status-grid"`, ou `Vpn` (`Vec<VpnStatusItem>`, novo em v0.3, sempre length 0 ou
-/// 1 — `research.md` D3) para `kind: "vpn-status"`. Nunca mista: cada resposta contém só um dos
-/// vocabulários (`data-model.md` §1.4, correção C3; `protocol/schema/v0.3/widget.schema.json`
-/// `WidgetGetResult.items`, um `anyOf` de três arrays).
+/// `kind: "monitor-status-grid"`, `Vpn` (`Vec<VpnStatusItem>`, novo em v0.3, sempre length 0 ou
+/// 1 — `research.md` D3) para `kind: "vpn-status"`, ou `Container` (`Vec<ContainerStatusItem>`,
+/// novo em v0.4, `data-model.md` §1.5) para `kind: "container-status-grid"`. Nunca mista: cada
+/// resposta contém só um dos vocabulários (`data-model.md` §1.4, correção C3;
+/// `protocol/schema/v0.4/widget.schema.json` `WidgetGetResult.items`, um `anyOf` de quatro
+/// arrays).
+///
+/// A análise de disjunção que garante que a quarta variante (`Container`) não colide
+/// estruturalmente com nenhuma das três anteriores está em `research.md` D12 (feature 005) — é
+/// pré-requisito de revisão de qualquer quinta variante futura, não uma garantia automática deste
+/// tipo.
 ///
 /// `#[serde(untagged)]` faz `items` serializar, no wire, como o array simples já fixado pelo
 /// schema JSON — sem tag/envelope extra. Decisão de desenho (item de C3 marcado como "decisão de
@@ -413,7 +478,8 @@ pub struct VpnStatusItem {
 /// o campo errado de `PluginConnection` — achado ao automatizar T039/T051
 /// (`specs/002-uptime-kuma-plugin/tasks.md`). `Vpn` (novo em v0.3) reconhece mais um `kind`
 /// (`"vpn-status"`) sob a mesma correção existente, sem mudança de abordagem
-/// (`data-model.md` §1.4).
+/// (`data-model.md` §1.4). `Container` (novo em v0.4) permanece sujeita à mesma ambiguidade de
+/// array vazio — corrigida do lado do consumidor, não deste tipo (`research.md` D12, feature 005).
 ///
 /// **Nota de derive**: `WidgetItems` deixou de derivar `Eq` em v0.3 — `VpnStatusItem` carrega
 /// `elapsed_seconds: Option<f64>` (`f64` não implementa `Eq`, só `PartialEq`), então nenhum tipo
@@ -425,6 +491,9 @@ pub enum WidgetItems {
     Git(Vec<WidgetItem>),
     Monitor(Vec<MonitorStatusItem>),
     Vpn(Vec<VpnStatusItem>),
+    /// Novo em v0.4 (`research.md` D3, `data-model.md` §1.5). Lista de N itens independentes, um
+    /// por container Docker local — não um singleton, mesma forma de `Git`/`Monitor`.
+    Container(Vec<ContainerStatusItem>),
 }
 
 /// Params do request `widget/get`.
@@ -462,11 +531,13 @@ impl WidgetGetRequest {
 pub struct WidgetGetResult {
     /// Ecoa o `widget_id` do request.
     pub widget_id: String,
-    /// `Vec<WidgetItem>`, `Vec<MonitorStatusItem>` ou `Vec<VpnStatusItem>`, conforme o `kind` que
-    /// este `widget_id` declarou no handshake (correção C3, `data-model.md` §1.4). MAY ser vazia
-    /// para qualquer `kind` — um `scan_root` configurado sem repositórios embaixo, uma instância
-    /// Uptime Kuma sem monitores cadastrados, ou um plugin de VPN momentaneamente incapaz de
-    /// representar o status como item singleton, são todos estados válidos, não erros.
+    /// `Vec<WidgetItem>`, `Vec<MonitorStatusItem>`, `Vec<VpnStatusItem>` ou
+    /// `Vec<ContainerStatusItem>` (novo em v0.4), conforme o `kind` que este `widget_id` declarou
+    /// no handshake (correção C3, `data-model.md` §1.4). MAY ser vazia para qualquer `kind` — um
+    /// `scan_root` configurado sem repositórios embaixo, uma instância Uptime Kuma sem monitores
+    /// cadastrados, um plugin de VPN momentaneamente incapaz de representar o status como item
+    /// singleton, ou uma máquina sem nenhum container Docker (FR-011, caso normal e comum), são
+    /// todos estados válidos, não erros.
     pub items: WidgetItems,
 }
 
@@ -527,15 +598,21 @@ impl ActionInvokeRequest {
 /// (novo em v0.3, `research.md` D2/D4-D5, `data-model.md` §1.5). Até v0.2 (`protocol/schema/v0.2/
 /// action.schema.json`, congelado), era uma struct única carregando só `repo`; generalizado aqui
 /// para `oneOf`/enum untagged porque o resultado pós-ação passa a variar por plugin: `Git` para
-/// `git.fetch` do plugin `git-local` (estado pós-fetch do repositório), `Vpn` (novo) para
-/// `vpn.connect`/`vpn.disconnect` do plugin `openfortivpn-gui` (estado pós-ação da conexão VPN). Em
-/// ambos os casos o core substitui os dados do widget correspondente diretamente por este valor,
-/// sem um `widget/get` adicional (`protocol/SPEC.md` FR-018 / `data-model.md` §4/§1.5).
+/// `git.fetch` do plugin `git-local` (estado pós-fetch do repositório), `Vpn` para
+/// `vpn.connect`/`vpn.disconnect` do plugin `openfortivpn-gui` (estado pós-ação da conexão VPN), e
+/// `Container` (novo em v0.4, `research.md` D4/D11, `data-model.md` §1.6) para
+/// `docker.container.start`/`stop`/`restart` do plugin `docker-containers` (`ContainerStatusItem`
+/// **inteiro** pós-ação, não só o novo `state` — `enabled` das três `ActionDeclaration` do item
+/// muda com o estado, e o core MUST NOT recalculá-lo por conta própria, `protocol/SPEC.md` §5.3).
+/// Em todos os casos o core substitui os dados do widget correspondente diretamente por este
+/// valor, sem um `widget/get` adicional (`protocol/SPEC.md` FR-018 / `data-model.md` §4/§1.5).
 ///
 /// `#[serde(untagged)]` faz cada variante serializar como o objeto de propriedade única já fixado
-/// pelo schema JSON (`{"repo": {...}}` ou `{"vpn_status": {...}}`) — sem tag/envelope extra. O wire
-/// já emitido por `git-local` (`{"repo": {...}}`) continua validando sem alteração, contra a
-/// primeira variante tentada.
+/// pelo schema JSON (`{"repo": {...}}`, `{"vpn_status": {...}}` ou `{"container": {...}}`) — sem
+/// tag/envelope extra. O wire já emitido por `git-local` (`{"repo": {...}}`) e por
+/// `openfortivpn-gui` (`{"vpn_status": {...}}`) continua validando sem alteração — as três chaves
+/// de topo são disjuntas, então a desambiguação untagged aqui é estrutural e sólida, ao contrário
+/// de [`WidgetItems`] (`research.md` D12).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(untagged)]
 pub enum ActionInvokeResult {
@@ -545,6 +622,18 @@ pub enum ActionInvokeResult {
     /// Novo em v0.3. Estado pós-ação da conexão VPN, devolvido por `vpn.connect`/`vpn.disconnect`.
     Vpn {
         vpn_status: VpnStatusItem,
+    },
+    /// Novo em v0.4 (`research.md` D4/D11). Estado pós-ação do container, devolvido por
+    /// `docker.container.start`/`stop`/`restart` — o item inteiro, não só `state` (ver doc acima).
+    ///
+    /// `container` é `Box`ado (e a caixa se propaga por `ActionInvokeResponse::Success::result`,
+    /// `ActionOutcome::Success`, `WorkerEvent::ActionInvokeCompleted` e `Message::Worker::event`)
+    /// só para conter o tamanho do enum: `ContainerStatusItem` carrega três `ActionDeclaration`
+    /// inteiras (`start`/`stop`/`restart`), o que deixava as demais variantes/enums desproporcionais
+    /// (`clippy::large_enum_variant`). Sem impacto de wire — `#[serde(untagged)]` serializa
+    /// `Box<T>` de forma transparente.
+    Container {
+        container: Box<ContainerStatusItem>,
     },
 }
 

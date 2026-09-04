@@ -176,6 +176,15 @@ pub struct PluginConnection {
     /// qualquer conexão cujo widget declarado não seja `"vpn-status"` —
     /// mesma regra já aplicada a `monitor_widget`.
     pub vpn_widget: VpnWidgetViewModel,
+    /// T018 (`specs/005-docker-containers-plugin/data-model.md` §2.3) — análogo de
+    /// `monitor_widget`/`vpn_widget` acima, mas para o widget `container-status-grid` do plugin
+    /// `docker-containers`. Populado por `update::handle_widget_outcome`/`handle_action_outcome` a
+    /// partir das variantes `farol_protocol::messages::WidgetItems::Container`/
+    /// `ActionInvokeResult::Container` (T024/T031, fora do escopo de T013/T017-T019). Continua com
+    /// o `Default` vazio (`DockerWidgetViewModel::default()`) para qualquer conexão cujo widget
+    /// declarado não seja `"container-status-grid"` — mesma regra já aplicada a `monitor_widget`/
+    /// `vpn_widget`.
+    pub docker_widget: DockerWidgetViewModel,
     /// T030 (D8) — formulário de setup ativo para esta conexão, presente
     /// se e somente se `state == Unavailable{reason: NotConfigured, ..}`
     /// (`update::handle_handshake_outcome` constrói/limpa este campo junto
@@ -298,6 +307,72 @@ pub struct VpnWidgetViewModel {
     pub last_action_error: Option<String>,
 }
 
+/// Qual das três ações de container está em andamento para um
+/// [`ContainerViewModel`] (`specs/005-docker-containers-plugin/data-model.md` §2.1, T018) — tipo
+/// **só de UI**, não trafega no protocolo (o protocolo carrega o `action.id` como string).
+/// Existe para que `ContainerViewModel::action_in_flight` diga *qual* operação está em curso,
+/// permitindo o rótulo correto na tela ("parando…", "reiniciando…") — generaliza os dois `bool`
+/// independentes de `VpnWidgetViewModel` (`connect_in_flight`/`disconnect_in_flight`) para três
+/// ações mutuamente exclusivas por container, expressas como um único `Option<ContainerActionKind>`
+/// em vez de três `bool`s (FR-017: só uma ação por container pode estar em andamento por vez).
+///
+/// Todas as três variantes são construídas e utilizadas ativamente em `update::handle_action_invoke_requested`
+/// (T031/T034, feature 005 completa) para marcar qual operação (`Start`/`Stop`/`Restart`) está em andamento
+/// para um container durante uma invocação de ação.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ContainerActionKind {
+    Start,
+    Stop,
+    Restart,
+}
+
+/// Container exibido na UI, somando `farol_protocol::messages::ContainerStatusItem` (dado bruto
+/// como o plugin `docker-containers` o enviou) com estado de UI local que não vem do protocolo
+/// (`specs/005-docker-containers-plugin/data-model.md` §2.2, T018) — mesmo espírito de
+/// `RepositoryViewModel` para `git-local`.
+///
+/// **Invariante de UI derivada de FR-017** (aplicada por `update.rs`, fora do escopo desta
+/// subtarefa): enquanto `action_in_flight.is_some()`, o core MUST NOT permitir invocar nenhuma das
+/// três ações **deste** item, mesmo que o `ActionDeclaration` mais recente as declare
+/// `enabled: true` — restrição *adicional* do core sobre o que já está habilitado, não o core
+/// decidindo `enabled` por conta própria (o plugin continua sendo o único a decidir isso).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ContainerViewModel {
+    /// Último `ContainerStatusItem` recebido para este container.
+    pub item: farol_protocol::messages::ContainerStatusItem,
+    /// `Some` enquanto um `action/invoke` deste container está pendente — estado de UI local, não
+    /// de protocolo. Generaliza o `bool` `RepositoryViewModel::fetch_in_flight` para "qual das três
+    /// ações" (`ContainerActionKind` acima).
+    pub action_in_flight: Option<ContainerActionKind>,
+    /// Erro da última ação **deste** container (mensagem já traduzida, FR-009), limpo no próximo
+    /// sucesso — mesmo padrão de `RepositoryViewModel::last_error`. Por container, não do widget
+    /// inteiro (diferente de `DockerWidgetViewModel::last_error`, que é sobre `widget/get`).
+    pub last_action_error: Option<String>,
+}
+
+/// Estado de UI do widget `container-status-grid` do plugin `docker-containers`
+/// (`specs/005-docker-containers-plugin/data-model.md` §2.3, T018) — análogo, para este widget, de
+/// `monitor_widget`/`vpn_widget` acima.
+///
+/// **Wiring desta subtarefa (T013/T017-T019)**: só o tipo é introduzido aqui e o campo
+/// `PluginConnection::docker_widget` é adicionado com `Default` vazio — popular
+/// `containers`/`last_error`/`loaded` a partir de um `widget/get` bem-sucedido e tratar
+/// `action_in_flight`/`ActionInvokeResult::Container` a partir de `action/invoke` são escopo de
+/// T024/T031 de `specs/005-docker-containers-plugin/tasks.md`, tasks futuras, fora desta subtarefa.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct DockerWidgetViewModel {
+    /// Containers na ordem em que o plugin os enviou (já ordenada, `research.md` D10) — o core NÃO
+    /// reordena.
+    pub containers: Vec<ContainerViewModel>,
+    /// Erro pontual do último `widget/get` (`docker_unavailable`/`exec_unavailable`), preservando
+    /// `containers` da leitura anterior (FR-006) — mesmo padrão de `MonitorWidgetViewModel::last_error`.
+    pub last_error: Option<String>,
+    /// `true` depois do primeiro `widget/get` bem-sucedido. Distingue "ainda não li nada" (não
+    /// mostrar "nenhum container") de "li com sucesso e não há nenhum" (FR-011, mostrar a indicação
+    /// explícita) — `containers.is_empty()` sozinho é ambíguo.
+    pub loaded: bool,
+}
+
 /// Estado de UI do formulário de setup de um plugin
 /// (`specs/002-uptime-kuma-plugin/data-model.md` §3.2, T030, D8) —
 /// consumido pela `view` quando `PluginState::Unavailable{reason:
@@ -356,6 +431,7 @@ impl Default for PluginConnection {
             last_widget_error: None,
             monitor_widget: MonitorWidgetViewModel::default(),
             vpn_widget: VpnWidgetViewModel::default(),
+            docker_widget: DockerWidgetViewModel::default(),
             setup_form: None,
             setup_attempt: 0,
         }

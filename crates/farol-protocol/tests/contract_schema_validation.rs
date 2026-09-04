@@ -1,5 +1,5 @@
 //! Teste de contrato: valida que o JSON produzido/aceito pelos tipos de `farol_protocol::messages`
-//! é genuinamente válido contra os 4 JSON Schemas normativos em `protocol/schema/v0.3/*.schema.json`
+//! é genuinamente válido contra os 4 JSON Schemas normativos em `protocol/schema/v0.4/*.schema.json`
 //! — não apenas "o Rust concorda consigo mesmo" (isso já é coberto pelos testes de unidade internos
 //! de round-trip em `src/framing.rs`, `src/version.rs` e `src/messages.rs`), mas "o Rust concorda
 //! com o contrato normativo do protocolo".
@@ -25,6 +25,18 @@
 //! `v0.2/` permanecem intocados como registro histórico do formato que `git-local`/`uptime-kuma`
 //! (até a migração da própria constante `PROTOCOL_VERSION`, fora do escopo desta task) ainda
 //! falam.
+//!
+//! ## T011 (`specs/005-docker-containers-plugin/tasks.md`) — migração para `v0.4`
+//!
+//! Bump aditivo (`research.md` D2 da feature 005): `ActionInvokeResult` ganha a terceira variante
+//! `Container` e `WidgetItems` ganha a quarta variante `Container` (`ContainerStatusItem`,
+//! `data-model.md` §1.2-§1.3/§1.5-§1.6). O wire já emitido por `git-local`/`openfortivpn-gui`
+//! continua validando sem alteração nenhuma — só os 4 `include_str!`/`$id` deste arquivo migram
+//! para `protocol/schema/v0.4/*.schema.json`, e exemplos novos são adicionados
+//! (`ContainerStatusItem` em `WidgetGetResult`, um por estado relevante incluindo `unknown`, e
+//! `ActionInvokeResult::Container`), no mesmo padrão dos exemplos já existentes para
+//! `GitRepository`/`MonitorStatusItem`/`VpnStatusItem`. `protocol/schema/v0.1/` a `v0.3/`
+//! permanecem intocados como registro histórico.
 //!
 //! ## Por que este arquivo mora aqui e não em `tests/contract/` na raiz do workspace
 //!
@@ -56,8 +68,9 @@ use serde_json::{json, Value};
 // arquivo de teste é editado aqui) — importados via `farol_protocol::messages` diretamente, que já
 // os declara `pub`.
 use farol_protocol::messages::{
-    Capability, KnownCapability, MonitorStatus, MonitorStatusItem, RequiredConfigItem,
-    VpnConnectionState, VpnProfile, VpnStatusItem, WidgetItems,
+    Capability, ContainerState, ContainerStatusItem, KnownCapability, MonitorStatus,
+    MonitorStatusItem, RequiredConfigItem, VpnConnectionState, VpnProfile, VpnStatusItem,
+    WidgetItems,
 };
 use farol_protocol::{
     ActionDeclaration, ActionInvokeParams, ActionInvokeRequest, ActionInvokeResponse,
@@ -68,11 +81,11 @@ use farol_protocol::{
 };
 
 // Conteúdo bruto dos 4 schemas normativos, embutido em tempo de compilação. Caminho relativo a
-// este arquivo: `crates/farol-protocol/tests/` -> raiz do workspace -> `protocol/schema/v0.3/`.
-const HANDSHAKE_SCHEMA: &str = include_str!("../../../protocol/schema/v0.3/handshake.schema.json");
-const WIDGET_SCHEMA: &str = include_str!("../../../protocol/schema/v0.3/widget.schema.json");
-const ACTION_SCHEMA: &str = include_str!("../../../protocol/schema/v0.3/action.schema.json");
-const ERROR_SCHEMA: &str = include_str!("../../../protocol/schema/v0.3/error.schema.json");
+// este arquivo: `crates/farol-protocol/tests/` -> raiz do workspace -> `protocol/schema/v0.4/`.
+const HANDSHAKE_SCHEMA: &str = include_str!("../../../protocol/schema/v0.4/handshake.schema.json");
+const WIDGET_SCHEMA: &str = include_str!("../../../protocol/schema/v0.4/widget.schema.json");
+const ACTION_SCHEMA: &str = include_str!("../../../protocol/schema/v0.4/action.schema.json");
+const ERROR_SCHEMA: &str = include_str!("../../../protocol/schema/v0.4/error.schema.json");
 
 /// Registra os 4 schemas juntos (por causa do `$ref` cruzado entre eles) e devolve um validador
 /// para cada um, montado sobre esse registry compartilhado.
@@ -94,25 +107,25 @@ fn load_schemas() -> Schemas {
         serde_json::from_str(ERROR_SCHEMA).expect("error.schema.json inválido");
 
     // Os 4 documentos são registrados sob suas próprias URLs `$id` para que `$ref` absolutos
-    // (ex.: `https://farol.dev/protocol/v0.3/error.schema.json`) resolvam entre eles.
+    // (ex.: `https://farol.dev/protocol/v0.4/error.schema.json`) resolvam entre eles.
     let registry = Registry::new()
         .add(
-            "https://farol.dev/protocol/v0.3/handshake.schema.json",
+            "https://farol.dev/protocol/v0.4/handshake.schema.json",
             handshake_value.clone(),
         )
         .expect("URI de handshake.schema.json inválida")
         .add(
-            "https://farol.dev/protocol/v0.3/widget.schema.json",
+            "https://farol.dev/protocol/v0.4/widget.schema.json",
             widget_value.clone(),
         )
         .expect("URI de widget.schema.json inválida")
         .add(
-            "https://farol.dev/protocol/v0.3/action.schema.json",
+            "https://farol.dev/protocol/v0.4/action.schema.json",
             action_value.clone(),
         )
         .expect("URI de action.schema.json inválida")
         .add(
-            "https://farol.dev/protocol/v0.3/error.schema.json",
+            "https://farol.dev/protocol/v0.4/error.schema.json",
             error_value.clone(),
         )
         .expect("URI de error.schema.json inválida")
@@ -534,6 +547,146 @@ fn widget_get_result_with_vpn_item_matches_schema() {
     );
 }
 
+/// Constrói uma `ActionDeclaration` de container com `target: {type: "docker-container", id}`
+/// (`data-model.md` §1.3 invariante 3) para os testes de `ContainerStatusItem` abaixo.
+fn container_action(
+    action_id: &str,
+    label: &str,
+    target_id: &str,
+    enabled: bool,
+    timeout_hint_ms: u64,
+) -> ActionDeclaration {
+    ActionDeclaration {
+        id: action_id.to_string(),
+        label: label.to_string(),
+        target: ActionTarget {
+            r#type: "docker-container".to_string(),
+            id: target_id.to_string(),
+        },
+        enabled,
+        timeout_hint_ms: Some(timeout_hint_ms),
+    }
+}
+
+/// Constrói um `ContainerStatusItem` válido: `id` de 64 hex minúsculos (`tag` seguido de zeros até
+/// completar 64 caracteres), e as três `ActionDeclaration` com `enabled` conforme a matriz de
+/// FR-008 (`data-model.md` §1.3 invariante 5) e `timeout_hint_ms` de `research.md` D6
+/// (20000/35000/45000, sempre presente — invariante 6).
+fn container_item(
+    tag: &str,
+    state: ContainerState,
+    start_enabled: bool,
+    stop_enabled: bool,
+    restart_enabled: bool,
+    status_text: Option<&str>,
+) -> ContainerStatusItem {
+    let id = format!("{tag}{}", "0".repeat(64 - tag.len()));
+    ContainerStatusItem {
+        id: id.clone(),
+        name: format!("container-{tag}"),
+        image: "example.org/library/app:latest".to_string(),
+        state,
+        status_text: status_text.map(|s| s.to_string()),
+        start_action: container_action(
+            "docker.container.start",
+            "Iniciar",
+            &id,
+            start_enabled,
+            20000,
+        ),
+        stop_action: container_action("docker.container.stop", "Parar", &id, stop_enabled, 35000),
+        restart_action: container_action(
+            "docker.container.restart",
+            "Reiniciar",
+            &id,
+            restart_enabled,
+            45000,
+        ),
+    }
+}
+
+/// Caso positivo novo (T011, feature 005): `WidgetGetResult` com `items:
+/// WidgetItems::Container(...)` — o novo vocabulário `ContainerStatusItem` para um widget
+/// `kind: "container-status-grid"` (`research.md` D1-D4/D6/D12, `data-model.md` §1.2-§1.3),
+/// exercitado aqui contra `widget.schema.json` v0.4 pela primeira vez neste arquivo. Um item por
+/// estado relevante, incluindo `unknown` (fallback de FR-012), cada um com `enabled` das três
+/// ações seguindo exatamente a matriz de FR-008.
+#[test]
+fn widget_get_result_with_container_items_matches_schema() {
+    let schemas = load_schemas();
+    let items = vec![
+        container_item(
+            "c0",
+            ContainerState::Created,
+            true,
+            false,
+            true,
+            Some("Created"),
+        ),
+        container_item(
+            "c1",
+            ContainerState::Running,
+            false,
+            true,
+            true,
+            Some("Up 3 hours"),
+        ),
+        container_item(
+            "c2",
+            ContainerState::Restarting,
+            false,
+            true,
+            true,
+            Some("Restarting (1) 2 seconds ago"),
+        ),
+        container_item(
+            "c3",
+            ContainerState::Paused,
+            false,
+            true,
+            true,
+            Some("Up 3 hours (Paused)"),
+        ),
+        container_item(
+            "c4",
+            ContainerState::Exited,
+            true,
+            false,
+            true,
+            Some("Exited (0) 5 minutes ago"),
+        ),
+        container_item(
+            "c5",
+            ContainerState::Removing,
+            false,
+            false,
+            false,
+            Some("Removal In Progress"),
+        ),
+        container_item("c6", ContainerState::Dead, false, false, false, Some("Dead")),
+        // `Unknown` nunca é emitido pelo Docker — produzido pelo plugin ao encontrar um `State`
+        // fora do vocabulário conhecido (FR-012). `status_text: None` aqui demonstra o caso
+        // nullable além do `Some` já exercitado pelos demais estados.
+        container_item("c7", ContainerState::Unknown, false, false, false, None),
+    ];
+
+    let resp = WidgetGetResponse::Success {
+        jsonrpc: "2.0".to_string(),
+        id: RequestId::Integer(7),
+        result: WidgetGetResult {
+            widget_id: "docker-containers".to_string(),
+            items: WidgetItems::Container(items),
+        },
+    };
+    let instance = serde_json::to_value(&resp).unwrap();
+    assert_valid(
+        &schemas.widget,
+        &instance,
+        "widget.schema.json",
+        "WidgetGetResult positivo (container-status-grid, WidgetItems::Container, um item por estado incluindo unknown)",
+    );
+}
+
 /// Caso positivo: `items: []` com `anyOf` (correção da definição em `widget.schema.json` v0.2).
 /// Com `oneOf`, um array vazio satisfaria *ambas* as alternativas (`WidgetItem[]` vs.
 /// `MonitorStatusItem[]`) — as duas ramas são `{"type":"array","items":{$ref ...}}` sem
@@ -717,6 +870,42 @@ fn action_invoke_response_success_with_vpn_status_matches_schema() {
         &instance,
         "action.schema.json",
         "ActionInvokeResponse::Success positivo (vpn.disconnect, ActionInvokeResult::Vpn)",
+    );
+}
+
+/// Caso positivo novo (T011, feature 005): `ActionInvokeResponse::Success` com
+/// `result: ActionInvokeResult::Container { container }` — o resultado devolvido por
+/// `docker.container.start`/`stop`/`restart` do plugin `docker-containers` (`research.md` D4/D11,
+/// `data-model.md` §1.6), exercitado aqui contra `action.schema.json` v0.4 pela primeira vez neste
+/// arquivo. O wire `{"container": {...}}` é a terceira alternativa do `oneOf` de
+/// `ActionInvokeResult` — distinta, sem ambiguidade, das duas primeiras (`{"repo": {...}}`,
+/// `{"vpn_status": {...}}`) exercitadas nos testes acima, porque as três chaves de topo são
+/// disjuntas (`research.md` D12). `state == Running`, então (matriz de FR-008) `start_action` fica
+/// `enabled == false` e `stop_action`/`restart_action` ficam `enabled == true` — o `ContainerStatusItem`
+/// inteiro pós-ação, não só o novo `state` (D11).
+#[test]
+fn action_invoke_response_success_with_container_matches_schema() {
+    let schemas = load_schemas();
+    let resp = ActionInvokeResponse::Success {
+        jsonrpc: "2.0".to_string(),
+        id: RequestId::Integer(8),
+        result: ActionInvokeResult::Container {
+            container: Box::new(container_item(
+                "d0",
+                ContainerState::Running,
+                false,
+                true,
+                true,
+                Some("Up 2 seconds"),
+            )),
+        },
+    };
+    let instance = serde_json::to_value(&resp).unwrap();
+    assert_valid(
+        &schemas.action,
+        &instance,
+        "action.schema.json",
+        "ActionInvokeResponse::Success positivo (docker.container.start, ActionInvokeResult::Container)",
     );
 }
 

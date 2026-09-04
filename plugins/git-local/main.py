@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plugin de referência `git-local` — o lado "servidor" do protocolo Farol v0.3.
+"""Plugin de referência `git-local` — o lado "servidor" do protocolo Farol v0.4.
 
 Prova que o protocolo (`protocol/SPEC.md`) é agnóstico de linguagem (D3 de `research.md`): este
 arquivo não importa nem depende do crate Rust `farol-protocol` em nenhum momento — é uma
@@ -15,6 +15,7 @@ novo `required_config` (D8 da mesma feature), sempre `[]` aqui: `git-local` não
 credencial/configuração a declarar. `widgets`/`actions` permanecem exatamente como antes.
 Migrado novamente para `"0.3"` como parte da feature 004 (`specs/004-vpn-status-plugin/research.md` D2)
 — mudança mecânica, nenhum campo novo usado por este plugin.
+Migrado novamente para `"0.4"` como parte da feature 005 (`specs/005-docker-containers-plugin/research.md` D2) — mudança mecânica, nenhum campo novo usado por este plugin.
 
 Transporte: JSON-RPC 2.0 sobre NDJSON em stdin/stdout (`protocol/SPEC.md` §2-§4). O core é sempre
 quem inicia cada requisição; este processo nunca escreve nada em stdout antes de receber e
@@ -34,7 +35,7 @@ import config
 import scan
 
 JSONRPC_VERSION = "2.0"
-PROTOCOL_VERSION = "0.3"
+PROTOCOL_VERSION = "0.4"
 PLUGIN_NAME = "git-local"
 
 WIDGET_ID = "repo-status"

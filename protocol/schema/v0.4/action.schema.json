@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://farol.dev/protocol/v0.4/action.schema.json",
+  "title": "Farol Protocol v0.4 — action/invoke",
+  "description": "Request and response envelopes for the action/invoke method. See protocol/SPEC.md §5.3 for the normative round-trip and §7.2 for its dedicated timeout budget (RPC_TIMEOUT_ACTION, distinct from RPC_TIMEOUT_CONTROL used by handshake/hello and widget/get). References ActionTarget from handshake.schema.json and GitRepository/VpnStatusItem/ContainerStatusItem from widget.schema.json. Evolved from v0.3 (protocol/schema/v0.3/action.schema.json, retained as-is): ActionInvokeResult, previously a oneOf of repo/vpn_status, gains a third branch, container (research.md D4, D11, data-model.md §1.6), returned by the new docker-containers reference plugin's docker.container.start/stop/restart actions. The wire already emitted by git-local ({\"repo\": {...}}) and openfortivpn-gui ({\"vpn_status\": {...}}) keeps validating against the first two branches unchanged - this is an additive change; the three branches remain disjoint by top-level key (repo/vpn_status/container), so the untagged disambiguation here stays structural and sound, unlike WidgetItems in widget.schema.json (research.md D12).",
+  "oneOf": [
+    { "$ref": "#/$defs/ActionInvokeRequest" },
+    { "$ref": "#/$defs/ActionInvokeResponseSuccess" },
+    { "$ref": "#/$defs/ActionInvokeResponseError" }
+  ],
+  "$defs": {
+    "RequestId": {
+      "title": "RequestId",
+      "oneOf": [
+        { "type": "integer" },
+        { "type": "string", "minLength": 1 }
+      ]
+    },
+
+    "ActionInvokeParams": {
+      "title": "ActionInvokeParams",
+      "type": "object",
+      "properties": {
+        "action_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Must match the `id` of an ActionDeclaration the plugin previously declared (in the handshake result and/or a widget/get response) for the given target, with enabled=true."
+        },
+        "target": {
+          "$ref": "https://farol.dev/protocol/v0.4/handshake.schema.json#/$defs/ActionTarget",
+          "description": "MUST be echoed back verbatim from the target of the ActionDeclaration that motivated this invocation - the core MUST NOT reconstruct a target on its own."
+        }
+      },
+      "required": ["action_id", "target"],
+      "additionalProperties": false
+    },
+
+    "ActionInvokeRequest": {
+      "title": "ActionInvokeRequest",
+      "type": "object",
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "id": { "$ref": "#/$defs/RequestId" },
+        "method": { "const": "action/invoke" },
+        "params": { "$ref": "#/$defs/ActionInvokeParams" }
+      },
+      "required": ["jsonrpc", "id", "method", "params"],
+      "additionalProperties": false
+    },
+
+    "ActionInvokeResult": {
+      "title": "ActionInvokeResult",
+      "description": "Result of a successful action invocation. Discriminated by which single property is present - repo (git-local's fetch action, unchanged since v0.2), vpn_status (openfortivpn-gui's connect/disconnect actions, since v0.3), or container (new in v0.4, research.md D4, D11, data-model.md §1.6). For the git-local reference plugin's git.fetch action, repo is the post-fetch repository state. For the openfortivpn-gui reference plugin's vpn.connect/vpn.disconnect actions, vpn_status is the post-action VpnStatusItem. For the docker-containers reference plugin's docker.container.start/stop/restart actions, container is the post-action ContainerStatusItem in full, not just the new state, because enabled of the three ActionDeclaration changes with state and the core MUST NOT recompute it on its own (protocol/SPEC.md §5.3, research.md D4/D11) - same reasoning as vpn_status. The wire already emitted by git-local ({\"repo\": {...}}) and openfortivpn-gui ({\"vpn_status\": {...}}) keeps validating against the first two branches, unchanged.",
+      "oneOf": [
+        {
+          "title": "ActionInvokeResultRepo",
+          "type": "object",
+          "properties": {
+            "repo": {
+              "$ref": "https://farol.dev/protocol/v0.4/widget.schema.json#/$defs/GitRepository",
+              "description": "Updated state of the target repository after the action ran."
+            }
+          },
+          "required": ["repo"],
+          "additionalProperties": false
+        },
+        {
+          "title": "ActionInvokeResultVpnStatus",
+          "type": "object",
+          "description": "Since v0.3 (research.md D2/D4-D5, data-model.md §1.5) - returned by vpn.connect/vpn.disconnect.",
+          "properties": {
+            "vpn_status": {
+              "$ref": "https://farol.dev/protocol/v0.4/widget.schema.json#/$defs/VpnStatusItem",
+              "description": "Updated VPN connection status after the action ran."
+            }
+          },
+          "required": ["vpn_status"],
+          "additionalProperties": false
+        },
+        {
+          "title": "ActionInvokeResultContainer",
+          "type": "object",
+          "description": "New in v0.4 (research.md D4, D11, data-model.md §1.6) - returned by docker.container.start/stop/restart.",
+          "properties": {
+            "container": {
+              "$ref": "https://farol.dev/protocol/v0.4/widget.schema.json#/$defs/ContainerStatusItem",
+              "description": "Updated container state after the action ran, in full - not only the new state, since enabled of its three ActionDeclaration depends on state."
+            }
+          },
+          "required": ["container"],
+          "additionalProperties": false
+        }
+      ]
+    },
+
+    "ActionInvokeResponseSuccess": {
+      "title": "ActionInvokeResponseSuccess",
+      "type": "object",
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "id": { "$ref": "#/$defs/RequestId" },
+        "result": { "$ref": "#/$defs/ActionInvokeResult" }
+      },
+      "required": ["jsonrpc", "id", "result"],
+      "additionalProperties": false
+    },
+
+    "ActionInvokeResponseError": {
+      "title": "ActionInvokeResponseError",
+      "type": "object",
+      "description": "E.g. code -32001 / reason \"fetch_failed\" when the underlying action execution failed, or code -32002 / reason \"action_timeout\" synthesized by the core when RPC_TIMEOUT_ACTION elapses. MUST NOT cause the plugin process to exit (protocol/SPEC.md §8.3) - the plugin keeps responding to subsequent requests. Never marks the plugin connection unavailable by itself.",
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "id": { "$ref": "#/$defs/RequestId" },
+        "error": { "$ref": "https://farol.dev/protocol/v0.4/error.schema.json" }
+      },
+      "required": ["jsonrpc", "id", "error"],
+      "additionalProperties": false
+    }
+  }
+}

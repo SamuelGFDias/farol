@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plugin `openfortivpn-vpn` — o lado "servidor" do protocolo Farol v0.3.
+"""Plugin `openfortivpn-vpn` — o lado "servidor" do protocolo Farol v0.4.
 
 Prova que o protocolo (`protocol/SPEC.md`) é agnóstico de linguagem: este arquivo não importa nem
 depende do crate Rust `farol-protocol` em nenhum momento — é uma implementação independente lendo
@@ -14,6 +14,7 @@ quem inicia cada requisição; este processo nunca escreve nada em stdout antes 
 nunca faz parte do protocolo em si.
 
 Apenas biblioteca padrão — `json`, `sys`.
+Migrado para `"0.4"` como parte da feature 005 (`specs/005-docker-containers-plugin/research.md` D2) — mudança mecânica, nenhum campo novo usado por este plugin.
 """
 
 from __future__ import annotations
@@ -24,7 +25,7 @@ import sys
 import vpn_cli
 
 JSONRPC_VERSION = "2.0"
-PROTOCOL_VERSION = "0.3"
+PROTOCOL_VERSION = "0.4"
 PLUGIN_NAME = "openfortivpn-vpn"
 
 WIDGET_ID = "vpn-connection"

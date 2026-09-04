@@ -4,7 +4,7 @@
 //! Diferente de `contract_schema_validation.rs` (exemplos manuais, escritos à mão um a um), este
 //! arquivo deriva casos de borda (`MinimumMinusOne`/`Minimum`/`MaximumPlusOne`/`Maximum`/
 //! `NoMinimumNegative`/`Null`/`MissingRequired`) diretamente do CONTEÚDO REAL dos JSON Schemas
-//! `protocol/schema/v0.3/*.schema.json`, em tempo de execução do teste — nunca de uma constante
+//! `protocol/schema/v0.4/*.schema.json`, em tempo de execução do teste — nunca de uma constante
 //! Rust paralela que apenas descreve o schema. Se o schema mudar (um `minimum` for editado, um
 //! campo deixar de ser `required`...), os valores gerados aqui mudam junto, sem precisar tocar
 //! este arquivo — é essa propriedade que faz o teste realmente quebrar quando schema e binding
@@ -42,18 +42,20 @@
 use jsonschema::{Registry, Validator};
 use serde_json::{json, Value};
 
-use farol_protocol::messages::{Capability, KnownCapability, MonitorStatusItem, VpnStatusItem};
+use farol_protocol::messages::{
+    Capability, ContainerStatusItem, KnownCapability, MonitorStatusItem, VpnStatusItem,
+};
 use farol_protocol::{ActionDeclaration, ErrorObject, RemoteStatus, WidgetDeclaration};
 
-const HANDSHAKE_ID: &str = "https://farol.dev/protocol/v0.3/handshake.schema.json";
-const WIDGET_ID: &str = "https://farol.dev/protocol/v0.3/widget.schema.json";
-const ACTION_ID: &str = "https://farol.dev/protocol/v0.3/action.schema.json";
-const ERROR_ID: &str = "https://farol.dev/protocol/v0.3/error.schema.json";
+const HANDSHAKE_ID: &str = "https://farol.dev/protocol/v0.4/handshake.schema.json";
+const WIDGET_ID: &str = "https://farol.dev/protocol/v0.4/widget.schema.json";
+const ACTION_ID: &str = "https://farol.dev/protocol/v0.4/action.schema.json";
+const ERROR_ID: &str = "https://farol.dev/protocol/v0.4/error.schema.json";
 
-const HANDSHAKE_SCHEMA: &str = include_str!("../../../protocol/schema/v0.3/handshake.schema.json");
-const WIDGET_SCHEMA: &str = include_str!("../../../protocol/schema/v0.3/widget.schema.json");
-const ACTION_SCHEMA: &str = include_str!("../../../protocol/schema/v0.3/action.schema.json");
-const ERROR_SCHEMA: &str = include_str!("../../../protocol/schema/v0.3/error.schema.json");
+const HANDSHAKE_SCHEMA: &str = include_str!("../../../protocol/schema/v0.4/handshake.schema.json");
+const WIDGET_SCHEMA: &str = include_str!("../../../protocol/schema/v0.4/widget.schema.json");
+const ACTION_SCHEMA: &str = include_str!("../../../protocol/schema/v0.4/action.schema.json");
+const ERROR_SCHEMA: &str = include_str!("../../../protocol/schema/v0.4/error.schema.json");
 
 // -------------------------------------------------------------------------------------------
 // Carregamento dos schemas (equivalente a `load_schemas()` de `contract_schema_validation.rs`,
@@ -77,22 +79,22 @@ fn load_schema_set<'a>() -> SchemaSet<'a> {
 
     let registry = Registry::new()
         .add(
-            "https://farol.dev/protocol/v0.3/handshake.schema.json",
+            "https://farol.dev/protocol/v0.4/handshake.schema.json",
             handshake.clone(),
         )
         .expect("URI de handshake.schema.json inválida")
         .add(
-            "https://farol.dev/protocol/v0.3/widget.schema.json",
+            "https://farol.dev/protocol/v0.4/widget.schema.json",
             widget.clone(),
         )
         .expect("URI de widget.schema.json inválida")
         .add(
-            "https://farol.dev/protocol/v0.3/action.schema.json",
+            "https://farol.dev/protocol/v0.4/action.schema.json",
             action.clone(),
         )
         .expect("URI de action.schema.json inválida")
         .add(
-            "https://farol.dev/protocol/v0.3/error.schema.json",
+            "https://farol.dev/protocol/v0.4/error.schema.json",
             error.clone(),
         )
         .expect("URI de error.schema.json inválida")
@@ -760,6 +762,131 @@ fn widget_vpn_status_item_elapsed_seconds_missing_required_is_rejected() {
         "/$defs/VpnStatusItem",
         &case,
         &instance,
+    );
+}
+
+// -------------------------------------------------------------------------------------------
+// T012 (specs/005-docker-containers-plugin/tasks.md) — ContainerStatusItem (widget.schema.json)
+// -------------------------------------------------------------------------------------------
+//
+// `ContainerStatusItem.id` usa `pattern: "^[0-9a-f]{64}$"` (`data-model.md` §1.3 invariante 1) —
+// uma fronteira de string/regex, fora do vocabulário de `numeric_and_null_boundary_cases` (que só
+// deriva `minimum`/`maximum`/`null`/tipo numérico, per o contrato normativo). Testado abaixo
+// manualmente, direto contra o `pattern` real lido do schema — o teste primeiro confirma que o
+// `pattern` do schema ainda é exatamente `^[0-9a-f]{64}$` (falha alto e claro se mudar) antes de
+// aplicar os comprimentos 63/64/65 hardcoded, em vez de reimplementar um parser de regex só para
+// este caso único no protocolo inteiro.
+
+/// Um `ActionDeclaration` de container válido, como JSON bruto (mesmo padrão de `base: json!({...})`
+/// já usado neste arquivo para `VpnStatusItem`/`MonitorStatusItem`).
+fn container_action_json(action_id: &str, target_id: &str, enabled: bool, timeout_hint_ms: u64) -> Value {
+    json!({
+        "id": action_id,
+        "label": "Ação",
+        "target": {"type": "docker-container", "id": target_id},
+        "enabled": enabled,
+        "timeout_hint_ms": timeout_hint_ms
+    })
+}
+
+/// Um `ContainerStatusItem` válido, como JSON bruto, com o `id` dado (mesmo `id` ecoado nas três
+/// `ActionDeclaration.target.id`, invariante 3 de `data-model.md` §1.3).
+fn container_json(id: &str) -> Value {
+    json!({
+        "id": id,
+        "name": "web",
+        "image": "nginx:latest",
+        "state": "running",
+        "status_text": "Up 2 seconds",
+        "start_action": container_action_json("docker.container.start", id, false, 20000),
+        "stop_action": container_action_json("docker.container.stop", id, true, 35000),
+        "restart_action": container_action_json("docker.container.restart", id, true, 45000)
+    })
+}
+
+/// `ContainerStatusItem.id` — `pattern: "^[0-9a-f]{64}$"`. 63 e 65 caracteres, e 64 caracteres com
+/// uma letra maiúscula, são rejeitados pelo `pattern`; exatos 64 caracteres hex minúsculos são
+/// aceitos e desserializam como `ContainerStatusItem`.
+#[test]
+fn widget_container_status_item_id_pattern_length_and_case_boundaries() {
+    let schemas = load_schema_set();
+    let validator = schemas.def_validator(WIDGET_ID, "ContainerStatusItem");
+    let pointer = "/$defs/ContainerStatusItem/properties/id";
+    let property_schema = schemas.at(&schemas.widget, pointer);
+    let pattern = property_schema
+        .get("pattern")
+        .and_then(Value::as_str)
+        .expect("ContainerStatusItem.id deveria declarar `pattern` no schema real");
+    assert_eq!(
+        pattern, "^[0-9a-f]{64}$",
+        "pattern de ContainerStatusItem.id mudou — os comprimentos 63/64/65 hardcoded abaixo \
+         precisam ser revisitados junto"
+    );
+
+    let sixty_three = "a".repeat(63);
+    let sixty_four = "a".repeat(64);
+    let sixty_five = "a".repeat(65);
+    let sixty_four_uppercase = format!("A{}", "a".repeat(63));
+
+    for (case_name, id_value, expected_valid) in [
+        ("63 caracteres", sixty_three.as_str(), false),
+        ("64 caracteres hex minúsculos", sixty_four.as_str(), true),
+        ("65 caracteres", sixty_five.as_str(), false),
+        ("64 caracteres com maiúscula", sixty_four_uppercase.as_str(), false),
+    ] {
+        let instance = container_json(id_value);
+        let actual_valid = validator.is_valid(&instance);
+        assert_eq!(
+            actual_valid, expected_valid,
+            "ContainerStatusItem.id ({case_name}, pattern='{pattern}'): esperava valid={expected_valid}, \
+             schema retornou {actual_valid}. instância: {}",
+            serde_json::to_string_pretty(&instance).unwrap(),
+        );
+        if expected_valid {
+            let result: Result<ContainerStatusItem, _> = serde_json::from_value(instance);
+            assert!(
+                result.is_ok(),
+                "FR-006: id de 64 hex minúsculos, permitido pelo schema, foi REJEITADO pela \
+                 desserialização Rust (ContainerStatusItem::id: String): {}",
+                result.err().map(|e| e.to_string()).unwrap_or_default(),
+            );
+        }
+    }
+}
+
+/// `ContainerStatusItem.state` — `enum` fechado de 8 valores (`ContainerState`,
+/// `data-model.md` §1.2). Um valor fora desse vocabulário é rejeitado pelo schema — diferente de
+/// `Unknown` em si (o fallback de FR-012, já coberto como caso positivo em
+/// `contract_schema_validation.rs`), que é um dos 8 valores válidos, não um valor arbitrário.
+#[test]
+fn widget_container_status_item_state_outside_known_enum_is_rejected() {
+    let schemas = load_schema_set();
+    let validator = schemas.def_validator(WIDGET_ID, "ContainerStatusItem");
+
+    let mut instance = container_json(&"a".repeat(64));
+    instance["state"] = json!("stopped"); // fora do vocabulário de 8 valores conhecidos
+    assert!(
+        !validator.is_valid(&instance),
+        "ContainerStatusItem.state='stopped' (fora do enum de 8 valores) deveria ser REJEITADO \
+         por widget.schema.json, mas foi aceito:\n{}",
+        serde_json::to_string_pretty(&instance).unwrap(),
+    );
+}
+
+/// `ContainerStatusItem` — `additionalProperties: false`. Um campo extra não declarado no schema
+/// é rejeitado, mesmo com todos os campos obrigatórios presentes e válidos.
+#[test]
+fn widget_container_status_item_rejects_additional_properties() {
+    let schemas = load_schema_set();
+    let validator = schemas.def_validator(WIDGET_ID, "ContainerStatusItem");
+
+    let mut instance = container_json(&"a".repeat(64));
+    instance["labels"] = json!({"com.example": "unexpected"}); // campo não declarado no schema
+    assert!(
+        !validator.is_valid(&instance),
+        "ContainerStatusItem com campo extra 'labels' deveria ser REJEITADO por \
+         `additionalProperties: false`, mas foi aceito:\n{}",
+        serde_json::to_string_pretty(&instance).unwrap(),
     );
 }
 

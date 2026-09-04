@@ -1,0 +1,290 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://farol.dev/protocol/v0.4/handshake.schema.json",
+  "title": "Farol Protocol v0.4 — handshake/hello",
+  "description": "Request and response envelopes for the handshake/hello method. See protocol/SPEC.md §6 for the normative sequencing and versioning rules. The core sends the request first, right after spawning the plugin process; the plugin MUST respond before accepting any other method. This file also defines WidgetDeclaration, ActionDeclaration, ActionTarget, Capability, CapabilityManifest and RequiredConfigItem, which are referenced by widget.schema.json and action.schema.json. Unchanged in shape from v0.3 (protocol/schema/v0.3/handshake.schema.json, retained as-is): this revision (research.md D2) adds no new field or type here - it only introduces the \"container-status-grid\" WidgetDeclaration.kind value (already-open vocabulary, protocol/SPEC.md §6.3, no schema change needed) and the ActionTarget {type: \"docker-container\"} value used by the new docker-containers reference plugin (data-model.md §1.4) - it fits the existing generic {type: string, id: string} ActionTarget shape, the same way {type: \"vpn-profile\" | \"vpn-connection\"} did in v0.3. protocol_version now reaches \"0.4\" (research.md D2); ProtocolVersion itself remains a plain MAJOR.MINOR string, no format change.",
+  "oneOf": [
+    { "$ref": "#/$defs/HandshakeHelloRequest" },
+    { "$ref": "#/$defs/HandshakeHelloResponseSuccess" },
+    { "$ref": "#/$defs/HandshakeHelloResponseError" }
+  ],
+  "$defs": {
+    "RequestId": {
+      "title": "RequestId",
+      "description": "JSON-RPC request id, chosen by the core, unique within a connection while unresolved.",
+      "oneOf": [
+        { "type": "integer" },
+        { "type": "string", "minLength": 1 }
+      ]
+    },
+    "ProtocolVersion": {
+      "title": "ProtocolVersion",
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+$",
+      "description": "MAJOR.MINOR version string (e.g. \"0.3\"). See protocol/SPEC.md §6.4 for the comparison algorithm. This version of the schema set describes protocol_version = \"0.3\"."
+    },
+
+    "HandshakeHelloParams": {
+      "title": "HandshakeHelloParams",
+      "type": "object",
+      "properties": {
+        "protocol_version": {
+          "$ref": "#/$defs/ProtocolVersion",
+          "description": "Protocol version the core supports."
+        },
+        "core_name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Identifies the core sending the request (e.g. \"farol-core\"). Informative only - not used by the compatibility rule."
+        }
+      },
+      "required": ["protocol_version", "core_name"],
+      "additionalProperties": false
+    },
+
+    "HandshakeHelloRequest": {
+      "title": "HandshakeHelloRequest",
+      "type": "object",
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "id": { "$ref": "#/$defs/RequestId" },
+        "method": { "const": "handshake/hello" },
+        "params": { "$ref": "#/$defs/HandshakeHelloParams" }
+      },
+      "required": ["jsonrpc", "id", "method", "params"],
+      "additionalProperties": false
+    },
+
+    "Capability": {
+      "title": "Capability",
+      "description": "One declared capability, discriminated by `kind`. The `kind` vocabulary is open (protocol/SPEC.md §10) - a `kind` unknown to the core MUST be accepted, registered and displayed generically, without interpreting its extra fields. Two known kinds in protocol v0.2: \"exec\" (no extra fields) and \"network\" (host required, port optional). There is no \"secret\" kind in v0.2 - a plugin's credential needs are declared via required_config instead (research.md D1/D8).",
+      "type": "object",
+      "required": ["kind"],
+      "properties": {
+        "kind": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": true,
+      "allOf": [
+        {
+          "if": {
+            "properties": { "kind": { "const": "exec" } },
+            "required": ["kind"]
+          },
+          "then": {
+            "additionalProperties": false,
+            "properties": {
+              "kind": { "const": "exec" }
+            },
+            "required": ["kind"]
+          }
+        },
+        {
+          "if": {
+            "properties": { "kind": { "const": "network" } },
+            "required": ["kind"]
+          },
+          "then": {
+            "additionalProperties": false,
+            "properties": {
+              "kind": { "const": "network" },
+              "host": {
+                "type": "string",
+                "minLength": 1,
+                "description": "Hostname or IP address of the network endpoint this capability declares access to (Constitution Principle IV: allowlist by host, not by URL/path)."
+              },
+              "port": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 65535,
+                "description": "Port, when fixed/known (e.g. 443 for HTTPS). Absent = not declared, no default inferred by the core."
+              }
+            },
+            "required": ["kind", "host"]
+          }
+        }
+      ]
+    },
+
+    "CapabilityManifest": {
+      "title": "CapabilityManifest",
+      "type": "object",
+      "description": "Plugin-declared capability manifest. No enforcement is defined by protocol v0.2 - the core only registers and displays what the plugin declares. Changed from v0.1: capabilities is now Capability[] instead of string[], and MAY be an empty array (no minItems:1) when the plugin has nothing concrete to declare yet (e.g. base_url not yet resolved).",
+      "properties": {
+        "capabilities": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/Capability" },
+          "description": "Capability objects, discriminated by kind. MAY be empty - a plugin with no concrete capability to honestly declare yet (e.g. uptime-kuma before base_url is resolved) reports capabilities: []."
+        }
+      },
+      "required": ["capabilities"],
+      "additionalProperties": false
+    },
+
+    "RequiredConfigItem": {
+      "title": "RequiredConfigItem",
+      "type": "object",
+      "description": "Declares one configuration variable the plugin needs the user to provide, secret or not. The core, not the plugin, resolves, stores and injects the value (research.md D8, data-model.md §1.6.1). Always declared in full, regardless of whether a value is already stored - this is the fixed list of what the plugin always needs, including on first run.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable identifier of the variable, chosen by the plugin (e.g. \"base_url\", \"api_key\"). Used by the core to derive the injected environment variable name (FAROL_PLUGIN_<PLUGIN_NAME>_<NAME>, uppercased, non-alphanumeric -> \"_\") and to index config.toml/secrets.toml."
+        },
+        "secret": {
+          "type": "boolean",
+          "description": "true means the core MUST store this value in $XDG_CONFIG_HOME/farol/secrets.toml (permission 0600, never in config.toml) and mask the corresponding field in the setup screen."
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Human-readable label shown as the field label in the setup screen."
+        }
+      },
+      "required": ["name", "secret", "description"],
+      "additionalProperties": false
+    },
+
+    "WidgetDeclaration": {
+      "title": "WidgetDeclaration",
+      "type": "object",
+      "description": "Declares one widget offered by the plugin. The list of WidgetDeclaration objects returned in a handshake result is frozen for the lifetime of the connection - it does not change afterwards.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable identifier of this widget within this plugin (e.g. \"repo-status\", \"uptime-kuma-monitors\"). Used as widget_id in widget/get requests."
+        },
+        "kind": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Declarative widget type (e.g. \"status-grid\", \"monitor-status-grid\"). Vocabulary is owned by the core, not the plugin - the core uses this value to pick how to render the widget's items. A kind unknown to the core MUST be silently ignored (widget not rendered), without failing the plugin or the core."
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Human-readable label shown by the core (e.g. \"Repositórios Git\")."
+        },
+        "suggested_refresh_interval_ms": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "description": "Suggested refresh interval in milliseconds for this widget's widget/get polling cycle. When absent, the core MUST apply a default of 30000ms."
+        }
+      },
+      "required": ["id", "kind", "title"],
+      "additionalProperties": false
+    },
+
+    "ActionTarget": {
+      "title": "ActionTarget",
+      "type": "object",
+      "description": "Identifies the object an action operates on. The core MUST echo this value back verbatim in action/invoke requests, never reconstructing it on its own.",
+      "properties": {
+        "type": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Target kind. In protocol v0.1 / the git-local reference plugin, always \"repo\"."
+        },
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Identifier of the target within its type (e.g. the absolute path of a repository)."
+        }
+      },
+      "required": ["type", "id"],
+      "additionalProperties": false
+    },
+
+    "ActionDeclaration": {
+      "title": "ActionDeclaration",
+      "type": "object",
+      "description": "Declares one action offered by the plugin over a specific target, symmetrical to WidgetDeclaration. May be delivered in the handshake result (when already known) and/or in subsequent widget/get responses (see protocol/SPEC.md §6.3.1). The core MUST NOT construct an ActionDeclaration from its own heuristics - only what the plugin explicitly declares is ever exposed to the user. The uptime-kuma reference plugin always reports actions: [] (it never declares any).",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable action identifier (e.g. \"git.fetch\"). The same action id is typically reused across many targets - `target` is what differentiates instances."
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Human-readable label for UI display (e.g. \"Fetch\")."
+        },
+        "target": {
+          "$ref": "#/$defs/ActionTarget",
+          "description": "The object this specific action instance operates on."
+        },
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether this action is currently invokable, as declared by the plugin. The core MUST NOT decide this on its own and MUST NOT display/allow invoking an action declared with enabled=false."
+        },
+        "timeout_hint_ms": {
+          "type": "integer",
+          "exclusiveMinimum": 0,
+          "description": "Plugin-suggested timeout budget, in milliseconds, for RPC_TIMEOUT_ACTION when this specific action is invoked via action/invoke. When absent, the core MUST apply a default of 120000ms."
+        }
+      },
+      "required": ["id", "label", "target", "enabled"],
+      "additionalProperties": false
+    },
+
+    "HandshakeHelloResult": {
+      "title": "HandshakeHelloResult",
+      "type": "object",
+      "description": "Changed from v0.1: gains the new required_config field, sibling of capabilities/widgets/actions, positioned right after capabilities (research.md D8, data-model.md §1.6).",
+      "properties": {
+        "protocol_version": {
+          "$ref": "#/$defs/ProtocolVersion",
+          "description": "Protocol version spoken by the plugin."
+        },
+        "plugin_name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Plugin identity (e.g. \"git-local\", \"uptime-kuma\")."
+        },
+        "capabilities": { "$ref": "#/$defs/CapabilityManifest" },
+        "required_config": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/RequiredConfigItem" },
+          "description": "Configuration variables the plugin needs from the user, secret or not (research.md D8). Declared always, in full, regardless of whether a value is already stored. MAY be an empty array for a plugin that needs no configuration (e.g. git-local)."
+        },
+        "widgets": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/WidgetDeclaration" },
+          "description": "Widgets offered by this plugin. Frozen for the connection's lifetime."
+        },
+        "actions": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/ActionDeclaration" },
+          "description": "Actions already known at handshake time. MAY be empty when the plugin's action list is only knowable after a subsequent widget/get call (see protocol/SPEC.md §6.3.1), or when the plugin never declares any action at all (e.g. uptime-kuma, FR-004) - callers MUST treat this list as the actions known so far, not necessarily the definitive/complete set."
+        }
+      },
+      "required": ["protocol_version", "plugin_name", "capabilities", "required_config", "widgets", "actions"],
+      "additionalProperties": false
+    },
+
+    "HandshakeHelloResponseSuccess": {
+      "title": "HandshakeHelloResponseSuccess",
+      "type": "object",
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "id": { "$ref": "#/$defs/RequestId" },
+        "result": { "$ref": "#/$defs/HandshakeHelloResult" }
+      },
+      "required": ["jsonrpc", "id", "result"],
+      "additionalProperties": false
+    },
+
+    "HandshakeHelloResponseError": {
+      "title": "HandshakeHelloResponseError",
+      "type": "object",
+      "description": "Plugin-side refusal path (protocol/SPEC.md §6.1) - e.g. code -32000 / reason \"protocol_version_incompatible\" when the plugin itself rejects the core's proposed protocol_version instead of returning a result.",
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "id": { "$ref": "#/$defs/RequestId" },
+        "error": { "$ref": "https://farol.dev/protocol/v0.4/error.schema.json" }
+      },
+      "required": ["jsonrpc", "id", "error"],
+      "additionalProperties": false
+    }
+  }
+}

@@ -55,6 +55,15 @@ const MONITOR_WIDGET_KIND: &str = "monitor-status-grid";
 /// ou erro pontual de `widget/get` continua sendo escopo de T024, não T018.
 const VPN_WIDGET_KIND: &str = "vpn-status";
 
+/// `kind` do widget do plugin `docker-containers` (feature 005,
+/// `specs/005-docker-containers-plugin/data-model.md` §1.8) — usado junto com
+/// [`MONITOR_WIDGET_KIND`]/[`VPN_WIDGET_KIND`] para classificar o `kind` já congelado em
+/// `slot.connection.widgets` (ver [`WidgetKind`]/[`normalize_widget_items`]).
+/// **T019**: só participa da resolução de ambiguidade de array vazio nesta subtarefa — popular
+/// `PluginConnection::docker_widget` a partir de um sucesso ou erro pontual de `widget/get`
+/// continua sendo escopo de T024, não T019.
+const CONTAINER_WIDGET_KIND: &str = "container-status-grid";
+
 impl Farol {
     pub(crate) fn update(&mut self, message: Message) {
         match message {
@@ -65,7 +74,12 @@ impl Farol {
                 action_id,
                 target,
                 timeout_hint_ms,
-            } => self.handle_action_invoke_requested(&plugin_name, action_id, target, timeout_hint_ms),
+            } => self.handle_action_invoke_requested(
+                &plugin_name,
+                action_id,
+                target,
+                timeout_hint_ms,
+            ),
             Message::SetupFieldChanged {
                 plugin_name,
                 field_name,
@@ -313,6 +327,14 @@ impl Farol {
     /// `PluginConnection::vpn_widget.last_error` é escopo de T024, não desta
     /// subtarefa (T018 só resolve a ambiguidade de array vazio em
     /// `normalize_widget_items`).
+    ///
+    /// **T019 (feature 005)**: `widget_kind` passa a reconhecer também `CONTAINER_WIDGET_KIND` —
+    /// mesma generalização que T018 já fez para `Vpn`. Popular `PluginConnection::docker_widget` a
+    /// partir de um sucesso ou erro pontual de `widget/get` continua sendo escopo de T024, não
+    /// desta subtarefa: a variante `Container` de `MergedWidgetItems` é, por ora, um placeholder de
+    /// exaustividade (mesmo padrão que `Vpn` teve em T018 da feature 004), e o braço de erro
+    /// abaixo continua roteando qualquer `kind` que não seja `Monitor` (inclusive `Container`) para
+    /// `last_widget_error`.
     fn handle_widget_outcome(&mut self, plugin_name: &str, outcome: WidgetOutcome) {
         let Some(slot) = self.slot_mut(plugin_name) else {
             return;
@@ -331,6 +353,13 @@ impl Farol {
             .any(|widget| widget.kind == VPN_WIDGET_KIND)
         {
             WidgetKind::Vpn
+        } else if slot
+            .connection
+            .widgets
+            .iter()
+            .any(|widget| widget.kind == CONTAINER_WIDGET_KIND)
+        {
+            WidgetKind::Container
         } else {
             WidgetKind::Git
         };
@@ -354,6 +383,10 @@ impl Farol {
                         slot.connection.vpn_widget.status = items.into_iter().next();
                         slot.connection.vpn_widget.last_error = None;
                     }
+                    // T019: placeholder de exaustividade — popular
+                    // `PluginConnection::docker_widget` a partir daqui é escopo
+                    // de T024 (US1), não desta subtarefa.
+                    MergedWidgetItems::Container(_) => {}
                 }
             }
             WidgetOutcome::PluginError(message) => {
@@ -427,6 +460,13 @@ impl Farol {
                 slot.connection.vpn_widget.disconnect_in_flight = false;
                 slot.connection.vpn_widget.last_action_error = None;
             }
+            // T019 (feature 005): ajuste mecânico de exaustividade — `ActionInvokeResult` ganhou a
+            // terceira variante `Container` nesta subtarefa (`farol-protocol`, T010), mas fundir a
+            // resposta em `PluginConnection::docker_widget` é escopo de T031 (US2), não desta
+            // subtarefa. Nenhuma ação de container é disparada antes de T031
+            // (`handle_action_invoke_requested` ainda não conhece `target.r#type ==
+            // "docker-container"`), então este braço não é exercitado em uso normal ainda.
+            ActionOutcome::Success(farol_protocol::ActionInvokeResult::Container { .. }) => {}
             ActionOutcome::PluginError { target, message } => match target.r#type.as_str() {
                 "repo" => set_fetch_error(&mut slot.connection.items, &target.id, message),
                 "vpn-profile" | "vpn-connection" => {
@@ -475,6 +515,14 @@ impl Farol {
     /// `git-local`). Um `target.r#type` desconhecido é no-op defensivo — não
     /// deveria acontecer, já que o core só invoca `target`s ecoados de uma
     /// `ActionDeclaration` que o próprio plugin declarou.
+    ///
+    /// **T019 (feature 005)**: `target.r#type == "docker-container"` ainda não é reconhecido aqui
+    /// — cai no braço `_` (no-op defensivo) igual a qualquer outro tipo desconhecido. O plugin
+    /// `docker-containers` só declara `actions: []` no handshake desta fase (T020) e `widget/get`
+    /// ainda não populou `docker_widget.containers` (placeholder de T019 em
+    /// `handle_widget_outcome`), então nenhuma `ActionDeclaration` de container existe para a UI
+    /// disparar ainda de qualquer forma — reconhecer `"docker-container"` de fato é escopo de T031
+    /// (US2), não desta subtarefa.
     fn handle_action_invoke_requested(
         &mut self,
         plugin_name: &str,
@@ -560,7 +608,8 @@ impl Farol {
                 slot.connection.vpn_widget.disconnect_in_flight = true;
             }
             _ => {
-                // No-op defensivo — ver docstring da função.
+                // No-op defensivo — ver docstring da função. Inclui, nesta subtarefa (T019),
+                // `target.r#type == "docker-container"` (ver nota de escopo na docstring acima).
             }
         }
     }
@@ -784,7 +833,7 @@ fn set_vpn_action_error(vpn_widget: &mut model::VpnWidgetViewModel, message: Str
 
 /// Resultado de [`merge_widget_items`] — união discriminada pelo mesmo
 /// `kind` que já discrimina `farol_protocol::messages::WidgetItems` (T031).
-/// Existe porque as duas variantes de entrada produzem tipos de saída
+/// Existe porque as variantes de entrada produzem tipos de saída
 /// diferentes: `Git` funde com o `RepositoryViewModel` já conhecido
 /// (preservando `fetch_in_flight`/`last_error` de UI local); `Monitor` não
 /// tem nenhum estado de UI local por item a preservar (`MonitorStatusItem`
@@ -796,13 +845,17 @@ enum MergedWidgetItems {
     Monitor(Vec<farol_protocol::messages::MonitorStatusItem>),
     /// Novo em v0.3 (`farol_protocol::messages::WidgetItems::Vpn`, feature 004, T009). Repassado
     /// sem fusão de estado de UI local — assim como `Monitor`, nenhum `VpnStatusItem` tem estado
-    /// de UI prévio a preservar. Nenhum `PluginConnection` ainda tem um campo para consumir isso
-    /// (wiring do widget de VPN é escopo de T013-T019, outro subagente) — a variante existe aqui
-    /// só para tornar este `match` exaustivo sem esconder o novo vocabulário de `WidgetItems`
-    /// atrás de um `_ =>` silencioso. `#[allow(dead_code)]`: o payload em si só passa a ser lido
-    /// quando T013-T019 conectar um campo de VPN a `PluginConnection`.
-    #[allow(dead_code)]
+    /// de UI prévio a preservar.
     Vpn(Vec<farol_protocol::messages::VpnStatusItem>),
+    /// Novo em v0.4 (`farol_protocol::messages::WidgetItems::Container`, feature 005 T009). Nenhum
+    /// `PluginConnection` ainda tem um campo populado a partir disto (`docker_widget` existe desde
+    /// T018, mas só é escrito a partir de T024) — a variante existe aqui só para tornar este
+    /// `match` exaustivo sem esconder o novo vocabulário de `WidgetItems` atrás de um `_ =>`
+    /// silencioso. `#[allow(dead_code)]`: o payload em si só passa a ser lido quando T024 conectar
+    /// esta variante a `docker_widget.containers` (fundindo por `id`, diferente de `Monitor`/`Vpn`
+    /// acima — ver docstring de `merge_widget_items` quando essa fusão existir).
+    #[allow(dead_code)]
+    Container(Vec<farol_protocol::messages::ContainerStatusItem>),
 }
 
 /// Classifica o `kind` de widget já congelado em `slot.connection.widgets`
@@ -826,13 +879,17 @@ enum WidgetKind {
     /// `kind: "vpn-status"` (`openfortivpn-vpn`, feature 004) — ver
     /// [`VPN_WIDGET_KIND`].
     Vpn,
+    /// `kind: "container-status-grid"` (`docker-containers`, feature 005) — ver
+    /// [`CONTAINER_WIDGET_KIND`].
+    Container,
 }
 
 /// Corrige a ambiguidade documentada de `farol_protocol::messages::WidgetItems`
-/// (`#[serde(untagged)]`, `crates/farol-protocol/src/messages.rs`): as três
+/// (`#[serde(untagged)]`, `crates/farol-protocol/src/messages.rs`): as quatro
 /// variantes serializam como `Vec<T>` simples, então um array `items: []`
 /// desserializa sempre como a primeira variante tentada (`Git`), mesmo
-/// quando a resposta veio de um widget `monitor-status-grid`/`vpn-status`
+/// quando a resposta veio de um widget `monitor-status-grid`/`vpn-status`/
+/// `container-status-grid`
 /// (débito #5, issue #7 — achado ao corrigir T039/T051: uma instância Uptime
 /// Kuma real sem monitores cadastrados devolve `items: []`, que
 /// `handle_widget_outcome` roteava para `connection.items`, o campo errado,
@@ -841,13 +898,14 @@ enum WidgetKind {
 /// O core já sabe, pelo `kind` que este `widget_id` declarou no handshake
 /// (`widget_kind: WidgetKind`, calculado por `handle_widget_outcome` antes de
 /// chamar esta função — T018, feature 004: generalizado de um `bool`
-/// `is_monitor_widget` para escalar a um terceiro `kind`, ver [`WidgetKind`]),
+/// `is_monitor_widget` para escalar a um terceiro `kind`; T019, feature 005:
+/// estendido para um quarto `kind`, ver [`WidgetKind`]),
 /// qual vocabulário esperar — a correção mora aqui, no ponto de consumo, e
-/// não no formato wire (`protocol/schema/v0.3/widget.schema.json` continua
-/// um `oneOf` de três arrays, sem tag). Um array **não vazio** nunca é
-/// ambíguo (os campos de `WidgetItem`/`MonitorStatusItem`/`VpnStatusItem`
-/// não coincidem, então o `serde` já resolve certo) — só o caso vazio
-/// precisa de ajuda.
+/// não no formato wire (`protocol/schema/v0.4/widget.schema.json` continua
+/// um `oneOf` de quatro arrays, sem tag). Um array **não vazio** nunca é
+/// ambíguo (os campos de `WidgetItem`/`MonitorStatusItem`/`VpnStatusItem`/
+/// `ContainerStatusItem` não coincidem, então o `serde` já resolve certo) —
+/// só o caso vazio precisa de ajuda.
 fn normalize_widget_items(
     items: farol_protocol::messages::WidgetItems,
     widget_kind: WidgetKind,
@@ -862,6 +920,11 @@ fn normalize_widget_items(
             if items.is_empty() =>
         {
             farol_protocol::messages::WidgetItems::Vpn(Vec::new())
+        }
+        (farol_protocol::messages::WidgetItems::Git(items), WidgetKind::Container)
+            if items.is_empty() =>
+        {
+            farol_protocol::messages::WidgetItems::Container(Vec::new())
         }
         (items, _) => items,
     }
@@ -913,6 +976,12 @@ fn merge_widget_items(
         ),
         farol_protocol::messages::WidgetItems::Monitor(items) => MergedWidgetItems::Monitor(items),
         farol_protocol::messages::WidgetItems::Vpn(items) => MergedWidgetItems::Vpn(items),
+        // T019: repassado sem fusão — a variante `Container` de `MergedWidgetItems` ainda é um
+        // placeholder de exaustividade (ver docstring dela); fundir por `id` contra o estado de UI
+        // anterior é escopo de T024 (US1), não desta subtarefa.
+        farol_protocol::messages::WidgetItems::Container(items) => {
+            MergedWidgetItems::Container(items)
+        }
     }
 }
 
@@ -1913,8 +1982,9 @@ pub(crate) mod tests {
             .setup_attempt = 1;
         let _ = app.subscription();
         // T016 (feature 004): `known_plugins()` passou a ter três entradas
-        // (`git-local`, `uptime-kuma`, `openfortivpn-vpn`).
-        assert_eq!(app.plugins.len(), 3);
+        // (`git-local`, `uptime-kuma`, `openfortivpn-vpn`). T017 (feature 005): quarta entrada
+        // (`docker-containers`).
+        assert_eq!(app.plugins.len(), 4);
     }
 
     /// Regressão: `Farol::subscription` panicava em runtime
