@@ -53,15 +53,24 @@ const MONITOR_WIDGET_KIND: &str = "monitor-status-grid";
 /// **T018**: só participa da resolução de ambiguidade de array vazio nesta
 /// subtarefa — popular `PluginConnection::vpn_widget` a partir de um sucesso
 /// ou erro pontual de `widget/get` continua sendo escopo de T024, não T018.
+///
+/// **Nota (T024, feature 005)**: um erro pontual de `widget/get` para este `kind` continua
+/// roteado para `PluginConnection::last_widget_error` (mesmo braço `WidgetKind::Git |
+/// WidgetKind::Vpn` de `handle_widget_outcome`, comportamento de antes desta subtarefa) — a
+/// docstring de `VpnWidgetViewModel` (`model.rs`) atribui esse roteamento a "T024" da feature
+/// 004, mas isso nunca chegou a ser implementado (só o sucesso de `widget/get`/`action/invoke`
+/// popula `vpn_widget.status`/`vpn_widget.last_action_error`); rotear o erro de `widget/get`
+/// para `vpn_widget.last_error` fica fora do escopo desta subtarefa (só o `kind` `Container` é
+/// tocado aqui).
 const VPN_WIDGET_KIND: &str = "vpn-status";
 
 /// `kind` do widget do plugin `docker-containers` (feature 005,
 /// `specs/005-docker-containers-plugin/data-model.md` §1.8) — usado junto com
 /// [`MONITOR_WIDGET_KIND`]/[`VPN_WIDGET_KIND`] para classificar o `kind` já congelado em
 /// `slot.connection.widgets` (ver [`WidgetKind`]/[`normalize_widget_items`]).
-/// **T019**: só participa da resolução de ambiguidade de array vazio nesta subtarefa — popular
-/// `PluginConnection::docker_widget` a partir de um sucesso ou erro pontual de `widget/get`
-/// continua sendo escopo de T024, não T019.
+/// **T019**: só participava da resolução de ambiguidade de array vazio naquela subtarefa — popular
+/// `PluginConnection::docker_widget` a partir de um sucesso ou erro pontual de `widget/get` é T024
+/// (esta subtarefa), ver `handle_widget_outcome`.
 const CONTAINER_WIDGET_KIND: &str = "container-status-grid";
 
 impl Farol {
@@ -328,13 +337,15 @@ impl Farol {
     /// subtarefa (T018 só resolve a ambiguidade de array vazio em
     /// `normalize_widget_items`).
     ///
-    /// **T019 (feature 005)**: `widget_kind` passa a reconhecer também `CONTAINER_WIDGET_KIND` —
-    /// mesma generalização que T018 já fez para `Vpn`. Popular `PluginConnection::docker_widget` a
-    /// partir de um sucesso ou erro pontual de `widget/get` continua sendo escopo de T024, não
-    /// desta subtarefa: a variante `Container` de `MergedWidgetItems` é, por ora, um placeholder de
-    /// exaustividade (mesmo padrão que `Vpn` teve em T018 da feature 004), e o braço de erro
-    /// abaixo continua roteando qualquer `kind` que não seja `Monitor` (inclusive `Container`) para
-    /// `last_widget_error`.
+    /// **T024 (feature 005, `data-model.md` §2.4/`tasks.md` T024)**: a variante `Container` deixa
+    /// de ser no-op — sucesso substitui `docker_widget.containers` (já fundido com o estado de UI
+    /// anterior por [`merge_widget_items`], que preserva `action_in_flight`/`last_action_error` por
+    /// `id`, ver docstring daquela função) e marca `docker_widget.loaded = true` (distingue "ainda
+    /// não li" de "li e está vazia", `DockerWidgetViewModel::loaded`, FR-011); erro pontual popula
+    /// `docker_widget.last_error`, preservando `containers` — mesmo padrão de `monitor_widget`.
+    /// `WidgetKind::Vpn` continua sem braço dedicado no erro (nota de escopo em
+    /// [`VPN_WIDGET_KIND`] acima) — só `Container` ganha um braço novo aqui, `Git`/`Vpn` continuam
+    /// exatamente como estavam.
     fn handle_widget_outcome(&mut self, plugin_name: &str, outcome: WidgetOutcome) {
         let Some(slot) = self.slot_mut(plugin_name) else {
             return;
@@ -366,7 +377,7 @@ impl Farol {
         match outcome {
             WidgetOutcome::Success(result) => {
                 let items = normalize_widget_items(result.items, widget_kind);
-                match merge_widget_items(&slot.connection.items, items) {
+                match merge_widget_items(&slot.connection, items) {
                     MergedWidgetItems::Git(items) => {
                         // T035: preserva `fetch_in_flight`/`last_error` dos
                         // repositórios já conhecidos — um refresh periódico não
@@ -383,19 +394,29 @@ impl Farol {
                         slot.connection.vpn_widget.status = items.into_iter().next();
                         slot.connection.vpn_widget.last_error = None;
                     }
-                    // T019: placeholder de exaustividade — popular
-                    // `PluginConnection::docker_widget` a partir daqui é escopo
-                    // de T024 (US1), não desta subtarefa.
-                    MergedWidgetItems::Container(_) => {}
+                    MergedWidgetItems::Container(containers) => {
+                        // T024 (`data-model.md` §2.4): `containers` já chega fundido com o
+                        // `action_in_flight`/`last_action_error` anterior por `id` (ver
+                        // `merge_widget_items`) — aqui só resta gravar o resultado e marcar
+                        // `loaded` (FR-011: distingue "ainda não li" de "li e está vazia").
+                        slot.connection.docker_widget.containers = containers;
+                        slot.connection.docker_widget.last_error = None;
+                        slot.connection.docker_widget.loaded = true;
+                    }
                 }
             }
-            WidgetOutcome::PluginError(message) => {
-                if widget_kind == WidgetKind::Monitor {
-                    slot.connection.monitor_widget.last_error = Some(message);
-                } else {
-                    slot.connection.last_widget_error = Some(message);
+            WidgetOutcome::PluginError(message) => match widget_kind {
+                WidgetKind::Monitor => slot.connection.monitor_widget.last_error = Some(message),
+                // T024: novo braço — erro pontual de `widget/get` para `container-status-grid`
+                // popula só `docker_widget.last_error`, preservando `containers` da leitura
+                // anterior (FR-006), sem alterar `PluginState` — mesmo padrão de `Monitor` acima.
+                WidgetKind::Container => slot.connection.docker_widget.last_error = Some(message),
+                // `Git`/`Vpn` continuam roteados para o mecanismo genérico — ver nota de escopo em
+                // `VPN_WIDGET_KIND` sobre `Vpn` não ganhar um campo próprio aqui.
+                WidgetKind::Git | WidgetKind::Vpn => {
+                    slot.connection.last_widget_error = Some(message)
                 }
-            }
+            },
             WidgetOutcome::Unresponsive => {
                 slot.connection.state = PluginState::Unavailable {
                     reason: UnavailableReason::Unresponsive,
@@ -845,17 +866,19 @@ enum MergedWidgetItems {
     Monitor(Vec<farol_protocol::messages::MonitorStatusItem>),
     /// Novo em v0.3 (`farol_protocol::messages::WidgetItems::Vpn`, feature 004, T009). Repassado
     /// sem fusão de estado de UI local — assim como `Monitor`, nenhum `VpnStatusItem` tem estado
-    /// de UI prévio a preservar.
+    /// de UI prévio a preservar (o estado de UI de VPN, `connect_in_flight`/`disconnect_in_flight`,
+    /// vive no widget inteiro, `VpnWidgetViewModel`, não por item — não há o que casar por `id`
+    /// aqui, diferente de `Container` abaixo).
     Vpn(Vec<farol_protocol::messages::VpnStatusItem>),
-    /// Novo em v0.4 (`farol_protocol::messages::WidgetItems::Container`, feature 005 T009). Nenhum
-    /// `PluginConnection` ainda tem um campo populado a partir disto (`docker_widget` existe desde
-    /// T018, mas só é escrito a partir de T024) — a variante existe aqui só para tornar este
-    /// `match` exaustivo sem esconder o novo vocabulário de `WidgetItems` atrás de um `_ =>`
-    /// silencioso. `#[allow(dead_code)]`: o payload em si só passa a ser lido quando T024 conectar
-    /// esta variante a `docker_widget.containers` (fundindo por `id`, diferente de `Monitor`/`Vpn`
-    /// acima — ver docstring de `merge_widget_items` quando essa fusão existir).
-    #[allow(dead_code)]
-    Container(Vec<farol_protocol::messages::ContainerStatusItem>),
+    /// Novo em v0.4 (`farol_protocol::messages::WidgetItems::Container`, feature 005 T009).
+    /// Diferente de `Monitor`/`Vpn` acima, **funde** estado de UI por item — mesma estratégia de
+    /// `Git`, casando por `ContainerStatusItem.id` (`data-model.md` §2.4) em vez de `repo.id`:
+    /// `action_in_flight`/`last_action_error` de um `model::ContainerViewModel` já conhecido são
+    /// preservados quando o container correspondente ainda está na lista nova (FR-017 — um refresh
+    /// no meio de uma ação não apaga a indicação, T031/US2, task futura, é quem primeiro exercita
+    /// essa preservação de fato); um container novo entra com os dois `None`; um container que
+    /// sumiu da lista nova é descartado, junto com qualquer `action_in_flight` que tivesse.
+    Container(Vec<model::ContainerViewModel>),
 }
 
 /// Classifica o `kind` de widget já congelado em `slot.connection.widgets`
@@ -950,8 +973,26 @@ fn normalize_widget_items(
 /// `Monitor` era um no-op que só preservava `previous`, porque
 /// `MonitorWidgetViewModel` (`data-model.md` §3.1) ainda não existia no
 /// `Model` — T029 introduziu o tipo, T031 conecta esta função a ele.
+///
+/// **T024 (feature 005, `data-model.md` §2.4)**: `previous` deixou de ser `&[RepositoryViewModel]`
+/// e passou a ser `&model::PluginConnection` inteiro. Motivo: a variante `Container` precisa
+/// fundir por `id` contra `previous.docker_widget.containers` (`Vec<model::ContainerViewModel>`),
+/// não contra `previous.items` (`Vec<RepositoryViewModel>`) — a mesma limitação que a assinatura
+/// anterior já tinha para `Git`, generalizada. Passar a conexão inteira (em vez de acrescentar um
+/// segundo parâmetro `previous_containers: &[ContainerViewModel]`) foi a opção escolhida por três
+/// razões: (1) mantém a assinatura estável à prova do próximo `kind` que precisar fundir por item
+/// — um `kind` futuro não exige alterar a assinatura de novo, só ler outro campo de dentro da
+/// função; (2) evita que o chamador (`handle_widget_outcome`) precise saber, de fora, quais dois
+/// campos de `PluginConnection` esta função efetivamente lê — hoje é `items`/`docker_widget.
+/// containers`, um detalhe interno do `match` sobre `new_items`; (3) é consistente com o estilo já
+/// usado em `refresh_interval(connection: &model::PluginConnection)`, a outra função livre deste
+/// arquivo que precisa de estado da conexão inteira. O "custo" (a função também recebe `state`/
+/// `widgets`/etc. que nunca lê) é irrelevante — é uma referência compartilhada, não uma cópia. As
+/// variantes `Monitor`/`Vpn` continuam repassando a lista recém-chegada sem consultar `previous`
+/// (nenhum estado de UI por item a preservar, ver [`MergedWidgetItems`]) — comportamento idêntico
+/// ao de antes desta subtarefa.
 fn merge_widget_items(
-    previous: &[RepositoryViewModel],
+    previous: &model::PluginConnection,
     // `farol_protocol::WidgetItems` (novo em v0.2) ainda não está na lista de re-exports de
     // `crates/farol-protocol/src/lib.rs` — mesmo gap documentado em `plugin_worker.rs`/`view.rs`,
     // fora do escopo desta subtarefa corrigir; referenciado via `farol_protocol::messages::WidgetItems`.
@@ -964,6 +1005,7 @@ fn merge_widget_items(
                 .map(|item| {
                     let mut view_model = RepositoryViewModel::from(item);
                     if let Some(prev) = previous
+                        .items
                         .iter()
                         .find(|prev| prev.repo.id == view_model.repo.id)
                     {
@@ -976,12 +1018,40 @@ fn merge_widget_items(
         ),
         farol_protocol::messages::WidgetItems::Monitor(items) => MergedWidgetItems::Monitor(items),
         farol_protocol::messages::WidgetItems::Vpn(items) => MergedWidgetItems::Vpn(items),
-        // T019: repassado sem fusão — a variante `Container` de `MergedWidgetItems` ainda é um
-        // placeholder de exaustividade (ver docstring dela); fundir por `id` contra o estado de UI
-        // anterior é escopo de T024 (US1), não desta subtarefa.
-        farol_protocol::messages::WidgetItems::Container(items) => {
-            MergedWidgetItems::Container(items)
-        }
+        farol_protocol::messages::WidgetItems::Container(items) => MergedWidgetItems::Container(
+            items
+                .into_iter()
+                .map(|item| {
+                    // `model::ContainerViewModel::from(ContainerStatusItem)` não existe (só
+                    // `RepositoryViewModel` tem um `impl From` equivalente em `model.rs`) — esta
+                    // subtarefa está autorizada só a tocar `update.rs`, então o container "novo"
+                    // (`action_in_flight: None`, `last_action_error: None`, `data-model.md` §2.4)
+                    // é construído inline aqui, mesmo shape que um `From` equivalente produziria.
+                    let mut view_model = model::ContainerViewModel {
+                        item,
+                        action_in_flight: None,
+                        last_action_error: None,
+                    };
+                    if let Some(prev) = previous
+                        .docker_widget
+                        .containers
+                        .iter()
+                        .find(|prev| prev.item.id == view_model.item.id)
+                    {
+                        // FR-017/`data-model.md` §2.4: preserva `action_in_flight`/
+                        // `last_action_error` do container correspondente — um refresh que chega
+                        // no meio de uma ação (`docker.container.start`/`stop`/`restart`) não deve
+                        // apagar essa indicação. Um container que sumiu da lista nova simplesmente
+                        // não aparece no resultado deste `.map()` — descartado junto com qualquer
+                        // `action_in_flight` que tivesse, sem código adicional (é a semântica
+                        // natural de mapear só sobre `items`, a lista nova).
+                        view_model.action_in_flight = prev.action_in_flight;
+                        view_model.last_action_error = prev.last_action_error.clone();
+                    }
+                    view_model
+                })
+                .collect(),
+        ),
     }
 }
 
@@ -2006,5 +2076,205 @@ pub(crate) mod tests {
         let app = farol_with_widget(Some(5_000));
         assert_eq!(connection_state(&app, "git-local"), PluginState::Ready);
         let _ = app.subscription();
+    }
+    // --- T024 (feature 005, docker-containers): `handle_widget_outcome`/`merge_widget_items`
+    // generalizados para a variante `Container` ---
+
+    /// Análogo de `farol_with_vpn_widget`, mas para a entrada `docker-containers` (T017: plugin
+    /// conhecido desde `known_plugins()`) já `Ready`, com o widget `container-status-grid`
+    /// declarado.
+    fn farol_with_docker_widget() -> Farol {
+        let mut app = Farol::default();
+        let slot = app
+            .slot_mut("docker-containers")
+            .expect("docker-containers é um plugin conhecido");
+        slot.connection.state = PluginState::Ready;
+        slot.connection.identity = Some(PluginIdentity {
+            plugin_name: "docker-containers".to_string(),
+            protocol_version: ProtocolVersion::new(0, 4),
+            capabilities: CapabilityManifest {
+                capabilities: vec![Capability::Known(KnownCapability::Exec)],
+            },
+        });
+        slot.connection.widgets = vec![farol_protocol::WidgetDeclaration {
+            id: "docker-containers".to_string(),
+            kind: CONTAINER_WIDGET_KIND.to_string(),
+            title: "Containers Docker".to_string(),
+            suggested_refresh_interval_ms: None,
+        }];
+        app
+    }
+
+    fn sample_container_action(
+        action_id: &str,
+        label: &str,
+        container_id: &str,
+    ) -> farol_protocol::ActionDeclaration {
+        farol_protocol::ActionDeclaration {
+            id: action_id.to_string(),
+            label: label.to_string(),
+            target: farol_protocol::ActionTarget {
+                r#type: "docker-container".to_string(),
+                id: container_id.to_string(),
+            },
+            enabled: true,
+            timeout_hint_ms: Some(20_000),
+        }
+    }
+
+    fn sample_container_item(
+        id: &str,
+        name: &str,
+    ) -> farol_protocol::messages::ContainerStatusItem {
+        farol_protocol::messages::ContainerStatusItem {
+            id: id.to_string(),
+            name: name.to_string(),
+            image: "nginx:latest".to_string(),
+            state: farol_protocol::messages::ContainerState::Running,
+            status_text: Some("Up 2 hours".to_string()),
+            start_action: sample_container_action("docker.container.start", "Iniciar", id),
+            stop_action: sample_container_action("docker.container.stop", "Parar", id),
+            restart_action: sample_container_action("docker.container.restart", "Reiniciar", id),
+        }
+    }
+
+    /// T024: sucesso de `widget/get` para o widget `container-status-grid` popula
+    /// `docker_widget.containers`, limpa `docker_widget.last_error` e marca `docker_widget.loaded
+    /// = true` (FR-011 — distingue "ainda não li" de "li e está vazia").
+    #[test]
+    fn widget_success_outcome_with_container_items_populates_docker_widget() {
+        let mut app = farol_with_docker_widget();
+        {
+            let slot = app.slot_mut("docker-containers").unwrap();
+            slot.connection.docker_widget.last_error = Some("erro antigo".to_string());
+        }
+
+        let result = farol_protocol::WidgetGetResult {
+            widget_id: "docker-containers".to_string(),
+            items: WidgetItems::Container(vec![sample_container_item("abc123", "web")]),
+        };
+        app.handle_widget_outcome("docker-containers", WidgetOutcome::Success(result));
+
+        let slot = app.slot_mut("docker-containers").unwrap();
+        assert_eq!(slot.connection.docker_widget.containers.len(), 1);
+        assert_eq!(slot.connection.docker_widget.containers[0].item.name, "web");
+        assert!(slot.connection.docker_widget.last_error.is_none());
+        assert!(slot.connection.docker_widget.loaded);
+        // `items` (git) MUST NOT ser tocado por uma resposta `Container`.
+        assert!(slot.connection.items.is_empty());
+    }
+
+    /// T024: um erro pontual de `widget/get` para o widget `container-status-grid`
+    /// (`docker_unavailable`/`exec_unavailable`) MUST atualizar só `docker_widget.last_error`,
+    /// preservando `docker_widget.containers` anterior e sem alterar `PluginState` (FR-006) —
+    /// nunca `last_widget_error` (mecanismo genérico de `git-local`).
+    #[test]
+    fn widget_plugin_error_for_container_widget_updates_only_docker_last_error() {
+        let mut app = farol_with_docker_widget();
+        {
+            let slot = app.slot_mut("docker-containers").unwrap();
+            slot.connection.docker_widget.containers = vec![model::ContainerViewModel {
+                item: sample_container_item("abc123", "web"),
+                action_in_flight: None,
+                last_action_error: None,
+            }];
+            slot.connection.docker_widget.loaded = true;
+        }
+
+        app.handle_widget_outcome(
+            "docker-containers",
+            WidgetOutcome::PluginError("docker_unavailable".to_string()),
+        );
+
+        let slot = app.slot_mut("docker-containers").unwrap();
+        assert_eq!(slot.connection.state, PluginState::Ready);
+        assert_eq!(slot.connection.docker_widget.containers.len(), 1);
+        assert_eq!(
+            slot.connection.docker_widget.last_error.as_deref(),
+            Some("docker_unavailable")
+        );
+        assert!(slot.connection.docker_widget.loaded);
+        assert!(slot.connection.last_widget_error.is_none());
+    }
+
+    /// T024 (`data-model.md` §2.4, FR-017): `merge_widget_items`/`handle_widget_outcome` preservam
+    /// `action_in_flight`/`last_action_error` do `ContainerViewModel` anterior quando o container
+    /// correspondente (casado por `ContainerStatusItem.id`) continua presente na lista nova de um
+    /// refresh — um refresh que chega no meio de uma ação não deve apagar a indicação "em
+    /// andamento"/erro. A preservação de fato (disparo da ação em si) é escopo de T031/US2, mas o
+    /// mecanismo de merge que a habilita pertence a esta subtarefa.
+    #[test]
+    fn widget_refresh_preserves_action_in_flight_and_last_action_error_for_matching_container() {
+        let mut app = farol_with_docker_widget();
+        {
+            let slot = app.slot_mut("docker-containers").unwrap();
+            slot.connection.docker_widget.containers = vec![model::ContainerViewModel {
+                item: sample_container_item("abc123", "web"),
+                action_in_flight: Some(model::ContainerActionKind::Stop),
+                last_action_error: Some("erro anterior".to_string()),
+            }];
+            slot.connection.docker_widget.loaded = true;
+        }
+
+        // Refresh chega com o mesmo container (`id` igual), dado atualizado.
+        let result = farol_protocol::WidgetGetResult {
+            widget_id: "docker-containers".to_string(),
+            items: WidgetItems::Container(vec![sample_container_item("abc123", "web")]),
+        };
+        app.handle_widget_outcome("docker-containers", WidgetOutcome::Success(result));
+
+        let slot = app.slot_mut("docker-containers").unwrap();
+        assert_eq!(slot.connection.docker_widget.containers.len(), 1);
+        assert_eq!(
+            slot.connection.docker_widget.containers[0].action_in_flight,
+            Some(model::ContainerActionKind::Stop)
+        );
+        assert_eq!(
+            slot.connection.docker_widget.containers[0]
+                .last_action_error
+                .as_deref(),
+            Some("erro anterior")
+        );
+    }
+
+    /// T024 (`data-model.md` §2.4, FR-017): um container que tinha `action_in_flight`/
+    /// `last_action_error` mas sumiu da lista nova de um refresh é descartado — junto com esse
+    /// estado de UI, que não faz mais sentido preservar para um container que deixou de existir.
+    #[test]
+    fn widget_refresh_discards_action_in_flight_for_a_container_that_disappeared() {
+        let mut app = farol_with_docker_widget();
+        {
+            let slot = app.slot_mut("docker-containers").unwrap();
+            slot.connection.docker_widget.containers = vec![
+                model::ContainerViewModel {
+                    item: sample_container_item("abc123", "web"),
+                    action_in_flight: Some(model::ContainerActionKind::Restart),
+                    last_action_error: None,
+                },
+                model::ContainerViewModel {
+                    item: sample_container_item("def456", "db"),
+                    action_in_flight: None,
+                    last_action_error: None,
+                },
+            ];
+            slot.connection.docker_widget.loaded = true;
+        }
+
+        // Refresh chega só com "db" — "web" (que tinha `action_in_flight`) sumiu.
+        let result = farol_protocol::WidgetGetResult {
+            widget_id: "docker-containers".to_string(),
+            items: WidgetItems::Container(vec![sample_container_item("def456", "db")]),
+        };
+        app.handle_widget_outcome("docker-containers", WidgetOutcome::Success(result));
+
+        let slot = app.slot_mut("docker-containers").unwrap();
+        assert_eq!(slot.connection.docker_widget.containers.len(), 1);
+        assert_eq!(
+            slot.connection.docker_widget.containers[0].item.id,
+            "def456"
+        );
+        assert!(slot.connection.docker_widget.containers[0]
+            .action_in_flight
+            .is_none());
     }
 }

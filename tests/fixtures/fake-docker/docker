@@ -1,0 +1,282 @@
+#!/usr/bin/env python3
+"""Fixture determinística do binário `docker` real (T026a,
+`specs/005-docker-containers-plugin/tasks.md`), mesmo padrão de
+`tests/fixtures/fake-openfortivpn-gui/openfortivpn-gui` (feature 004): um script Python controlável
+por variável de ambiente, injetado à frente do `PATH` via `PathPrefixGuard`
+(`crates/farol-core/src/e2e_tests.rs`), sem nenhum daemon Docker real envolvido.
+
+O **nome deste arquivo importa**: `plugins/docker-containers/docker_cli.py::find_binary()` resolve
+`shutil.which("docker")` contra o `PATH` — o diretório deste script (não o script em si) é o que
+precisa ser prependado ao `PATH` do processo de teste; o nome do arquivo precisa bater literalmente
+com o nome do binário real procurado.
+
+Contrato normativo simulado: `specs/005-docker-containers-plugin/contracts/docker-cli-mapping.md`.
+
+Variáveis de ambiente reconhecidas:
+
+- `FAKE_DOCKER_SCENARIO` — controla a resposta de `docker ps` (default `multi_state`):
+  - `multi_state` — três containers: um `running`, um `exited`, e um com `state` fora do
+    vocabulário conhecido do Docker (exercita `unknown`, FR-012).
+  - `action_target` — dois containers de IDs **fixos** (não derivados de `hashlib.sha256`, ao
+    contrário de `multi_state` acima): `app` (`aaaa...a`, 64 hex `a`) e `sidecar` (`bbbb...b`, 64
+    hex `b`) — usado pelos cenários e2e de ação (T033,
+    `crates/farol-core/src/e2e_tests.rs::docker_container_start_action_*`), que precisam hardcodar
+    o `target.id` de `Message::ActionInvokeRequested` sem primeiro ler o estado real do `Farol` (o
+    `Scenario` do harness só expõe o modelo através de `finish()`, que encerra o cenário). Ver a
+    docstring de `_action_target_rows` abaixo para a convenção de estado (sem persistência entre
+    processos) que faz `app` aparecer `exited` numa listagem cheia e `running` só na releitura
+    filtrada por `id=<ID de app>` que sucede um `start`/`restart` bem-sucedido.
+  - `empty` — zero linhas, exit `0` (FR-011 — lista vazia é sucesso, nunca erro).
+  - `permission_denied` — exit `1`, stderr com a formulação observada em Docker 29.6.2 para
+    permissão negada.
+  - `daemon_unreachable` — exit `1`, stderr com a formulação observada para daemon fora do ar.
+  - `permission_and_daemon` — exit `1`, stderr contendo as duas substrings simultaneamente (T023
+    do lado Python já cobre a ordem de classificação; aqui só para replicar o cenário caso um teste
+    e2e futuro queira exercitá-lo também — `docker_cli.py::_classify_stderr` MUST preferir
+    `permission_denied`).
+  - `cli_error` — exit `1`, stderr com uma mensagem que não casa nenhum dos padrões conhecidos
+    (fallback).
+  - `timeout` — dorme além do timeout de 3s que `docker_cli.py::list_containers` aplica
+    (`subprocess.run(..., timeout=3)`), para exercitar `TimeoutExpired` do lado do chamador; o
+    processo é morto pelo próprio Python antes de `main()` retornar aqui.
+
+- `FAKE_DOCKER_ACTION_SCENARIO` — controla a resposta de `docker start|stop|restart <id>` (default
+  `success`; T033, `specs/005-docker-containers-plugin/tasks.md`), independente de
+  `FAKE_DOCKER_SCENARIO` acima (um cenário e2e de ação normalmente fixa `FAKE_DOCKER_SCENARIO=
+  action_target` para a listagem E ajusta esta variável à parte para a ação em si):
+  - `success` (default) — imprime o `id` recebido em `stdout` e sai `0`, mesmo stub mínimo de T026.
+  - `no_such_container` — exit `1`, stderr com a formulação observada em Docker 29.6.2
+    (`contracts/docker-cli-mapping.md` § action/invoke: "`docker start|stop|restart` de um
+    container inexistente devolve exit 1 e stderr `Error response from daemon: No such container:
+    <nome>`").
+  - `permission_denied`/`daemon_unreachable`/`cli_error` — mesma formulação de stderr das
+    contrapartes de `FAKE_DOCKER_SCENARIO` acima, agora classificadas por
+    `docker_cli.py::_classify_action_stderr` (ordem normativa idêntica, com `no_such_container`
+    testado primeiro).
+  - `timeout` — dorme além do maior timeout de ação (`docker_cli.py::ACTION_TIMEOUT_SECONDS`, 40s
+    para `restart`); o processo é morto pelo chamador antes de retornar, mesma mecânica do
+    `timeout` de `FAKE_DOCKER_SCENARIO`.
+
+Escopo mínimo aceitável em T026 (`specs/005-docker-containers-plugin/tasks.md`): só `ps` precisava
+refletir fielmente o contrato para aquela task — `start`/`stop`/`restart` eram stubs de sucesso
+simples. T033 (US2) estende ambos os subcomandos com o cenário `action_target` acima e
+`FAKE_DOCKER_ACTION_SCENARIO`, sem alterar o comportamento de `multi_state`/`empty`/demais cenários
+de `FAKE_DOCKER_SCENARIO` já em uso por T026.
+
+Apenas biblioteca padrão (`json`, `os`, `sys`, `time`) — mesmo espírito dos plugins de referência e
+das demais fixtures deste diretório.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import sys
+import time
+
+
+def _fake_id(name: str) -> str:
+    """64 hex minúsculos determinísticos a partir de `name` — mesmo formato de
+    `docker ps --no-trunc` (`ID` de 64 caracteres), sem depender de nenhum daemon real."""
+    return hashlib.sha256(name.encode("utf-8")).hexdigest()
+
+
+# Containers do cenário `multi_state` — nomes/ids fixos entre execuções (`hashlib.sha256` é
+# determinístico), cobrindo os três casos que `contracts/docker-cli-mapping.md` exige: um
+# `running`, um `exited`, e um `state` fora do vocabulário do Docker (vira `unknown` no plugin,
+# FR-012, sem invalidar as demais linhas).
+_MULTI_STATE_CONTAINERS = [
+    {
+        "ID": _fake_id("web"),
+        "Names": "web",
+        "Image": "nginx:latest",
+        "State": "running",
+        "Status": "Up 2 hours",
+    },
+    {
+        "ID": _fake_id("db"),
+        "Names": "db",
+        "Image": "postgres:16",
+        "State": "exited",
+        "Status": "Exited (0) 3 days ago",
+    },
+    {
+        "ID": _fake_id("mystery"),
+        "Names": "mystery",
+        "Image": "sha256:" + _fake_id("mystery-image"),
+        "State": "borked",  # fora do vocabulário conhecido do Docker de propósito (FR-012)
+        "Status": "Uma coisa estranha",
+    },
+]
+
+
+# IDs fixos do cenário `action_target` (T033) — de propósito NÃO derivados de `hashlib.sha256`
+# (diferente de `_MULTI_STATE_CONTAINERS` acima): um cenário e2e de ação precisa hardcodar o
+# `target.id` de `Message::ActionInvokeRequested` em `crates/farol-core/src/e2e_tests.rs` sem
+# nenhuma leitura prévia do estado real do `Farol`, e um literal repetido (`"a" * 64`) é trivial de
+# reproduzir dos dois lados — mesmo padrão já usado por `hex_id` em `visual_snapshot_tests.rs`.
+_ACTION_TARGET_APP_ID = "a" * 64
+_ACTION_TARGET_SIDECAR_ID = "b" * 64
+
+
+def _action_target_rows(filter_id: str | None) -> list[dict]:
+    """Containers do cenário `action_target` (T033, US2): `app` (o alvo das ações simuladas) e
+    `sidecar` (um bystander que nenhum cenário de ação toca — prova que uma ação em `app` nunca
+    mexe nas demais linhas do widget, FR-009).
+
+    Convenção deliberada, dada a ausência de qualquer estado persistido entre as invocações
+    (cada `docker ps`/`docker start` desta fixture é um processo Python novo, sem daemon nem disco
+    compartilhado): a listagem **sem filtro** sempre reporta `app` como `exited` (o estado "antes de
+    qualquer ação") — só a releitura **filtrada** por `id=<ID de app>` (o que
+    `docker_cli.py::_reread_container` sempre faz logo depois de um `start`/`stop`/`restart`
+    bem-sucedido, `contracts/docker-cli-mapping.md` § action/invoke) reporta `app` já `running`,
+    simulando o resultado do `docker start` que acabou de suceder. Os cenários e2e que dependem
+    disto (T033) nunca disparam um novo `widget/get` de lista cheia depois de despachar a ação — só
+    drenam a resposta já pendente daquela ação (`wait_until_passive`,
+    `crates/farol-core/src/e2e_tests.rs`) — então esta simplificação nunca é observada como uma
+    listagem que "esqueceu" a ação bem-sucedida.
+    """
+    app_running = filter_id == _ACTION_TARGET_APP_ID
+    rows = [
+        {
+            "ID": _ACTION_TARGET_APP_ID,
+            "Names": "app",
+            "Image": "nginx:latest",
+            "State": "running" if app_running else "exited",
+            "Status": "Up less than a second" if app_running else "Exited (0) 2 minutes ago",
+        },
+        {
+            "ID": _ACTION_TARGET_SIDECAR_ID,
+            "Names": "sidecar",
+            "Image": "redis:7",
+            "State": "running",
+            "Status": "Up 10 minutes",
+        },
+    ]
+    if filter_id is not None:
+        rows = [row for row in rows if row["ID"] == filter_id]
+    return rows
+
+
+def _emit_ps_rows(rows: list[dict]) -> int:
+    for row in rows:
+        sys.stdout.write(json.dumps(row) + "\n")
+    sys.stdout.flush()
+    return 0
+
+
+def _fail(stderr: str) -> int:
+    sys.stderr.write(stderr + "\n")
+    sys.stderr.flush()
+    return 1
+
+
+def _cmd_ps(args: list[str]) -> int:
+    filter_id = None
+    for arg in args:
+        if arg.startswith("--filter=id="):
+            filter_id = arg.removeprefix("--filter=id=")
+        elif arg == "--filter" and args.index(arg) + 1 < len(args):
+            candidate = args[args.index(arg) + 1]
+            if candidate.startswith("id="):
+                filter_id = candidate.removeprefix("id=")
+
+    scenario = os.environ.get("FAKE_DOCKER_SCENARIO", "multi_state")
+
+    if scenario == "empty":
+        return _emit_ps_rows([])
+    if scenario == "action_target":
+        return _emit_ps_rows(_action_target_rows(filter_id))
+    if scenario == "multi_state":
+        rows = _MULTI_STATE_CONTAINERS
+        if filter_id is not None:
+            rows = [row for row in rows if row["ID"] == filter_id]
+        return _emit_ps_rows(rows)
+    if scenario == "permission_denied":
+        return _fail(
+            "permission denied while trying to connect to the docker API at "
+            "unix:///var/run/docker.sock"
+        )
+    if scenario == "daemon_unreachable":
+        return _fail(
+            "failed to connect to the docker API at unix:///var/run/docker.sock; check if the "
+            "path is correct and if the daemon is running"
+        )
+    if scenario == "permission_and_daemon":
+        return _fail(
+            "permission denied while trying to connect to the docker API at "
+            "unix:///var/run/docker.sock: failed to connect to the docker API at "
+            "unix:///var/run/docker.sock; check if the path is correct and if the daemon is "
+            "running"
+        )
+    if scenario == "cli_error":
+        return _fail("Error: unexpected internal error while talking to the Docker Engine")
+    if scenario == "timeout":
+        # Além do timeout de 3s que `docker_cli.py::list_containers` aplica ao `subprocess.run` —
+        # o chamador mata este processo antes dele conseguir sair sozinho.
+        time.sleep(10)
+        return 0
+
+    return _fail(f"[fake-docker] cenário desconhecido: {scenario!r}")
+
+
+def _cmd_lifecycle(args: list[str]) -> int:
+    """`start`/`stop`/`restart <id>` (T033, US2 — estende o stub de sucesso simples de T026).
+    Aceita e ignora quaisquer flags além do id. `FAKE_DOCKER_ACTION_SCENARIO` (default `success`)
+    controla o resultado — ver a docstring do módulo para o vocabulário completo e a formulação de
+    stderr exata simulada por cada cenário de falha (a mesma que
+    `docker_cli.py::_classify_action_stderr` reconhece)."""
+    container_id = next((arg for arg in args if not arg.startswith("-")), None)
+    if container_id is None:
+        return _fail("[fake-docker] id do container ausente")
+
+    scenario = os.environ.get("FAKE_DOCKER_ACTION_SCENARIO", "success")
+
+    if scenario == "success":
+        sys.stdout.write(container_id + "\n")
+        sys.stdout.flush()
+        return 0
+    if scenario == "no_such_container":
+        return _fail(
+            f"Error response from daemon: No such container: {container_id}\n"
+            f"failed to start containers: {container_id}"
+        )
+    if scenario == "permission_denied":
+        return _fail(
+            "permission denied while trying to connect to the docker API at "
+            "unix:///var/run/docker.sock"
+        )
+    if scenario == "daemon_unreachable":
+        return _fail(
+            "failed to connect to the docker API at unix:///var/run/docker.sock; check if the "
+            "path is correct and if the daemon is running"
+        )
+    if scenario == "cli_error":
+        return _fail("Error: unexpected internal error while talking to the Docker Engine")
+    if scenario == "timeout":
+        # Além do maior timeout de ação (`docker_cli.py::ACTION_TIMEOUT_SECONDS`, 40s para
+        # `restart`) — o chamador mata este processo antes dele conseguir sair sozinho, mesma
+        # mecânica do `timeout` de `FAKE_DOCKER_SCENARIO` acima.
+        time.sleep(45)
+        return 0
+
+    return _fail(f"[fake-docker] cenário de ação desconhecido: {scenario!r}")
+
+
+def main(argv: list[str]) -> int:
+    if not argv:
+        return _fail("[fake-docker] subcomando ausente")
+
+    subcommand, rest = argv[0], argv[1:]
+
+    if subcommand == "ps":
+        return _cmd_ps(rest)
+    if subcommand in ("start", "stop", "restart"):
+        return _cmd_lifecycle(rest)
+
+    return _fail(f"[fake-docker] subcomando desconhecido: {subcommand!r}")
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv[1:]))

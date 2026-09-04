@@ -358,6 +358,168 @@ fn vpn_widget_connected_state() -> Farol {
     app
 }
 
+/// `screen_id` `DockerWidgetPopulated` (T027, `specs/005-docker-containers-plugin/tasks.md`,
+/// extensão do conjunto de `data-model.md` §3 via FR-013 de `visual-snapshot-contract.md`, mesmo
+/// mecanismo de [`monitor_widget_error_state`]/[`vpn_widget_connected_state`]) — o widget
+/// `container-status-grid` (`docker-containers`) `Ready` e populado com containers em estados
+/// diferentes, **incluindo um `state` desconhecido** (`ContainerState::Unknown`, FR-012):
+/// distingue esta tela tanto do estado "nenhum container" (`widget.loaded && containers vazio`)
+/// quanto do estado de espera inicial (`!widget.loaded`).
+///
+/// Construído diretamente em memória (sem processo filho — mesma filosofia do módulo, ver
+/// docstring de topo, e de [`dashboard_ready_state`]), preenchendo `PluginConnection::docker_widget`
+/// do slot `docker-containers` (`known_plugins()` já registra este quarto plugin, T017) com três
+/// `ContainerViewModel` equivalentes ao que `plugins/docker-containers/docker_cli.py::list_containers`
+/// mapearia a partir de `docker ps` real — mesmos nomes/estados simulados por
+/// `tests/fixtures/fake-docker/` no cenário e2e irmão
+/// (`e2e_tests.rs::docker_containers_reaches_ready_and_populates_the_container_grid`, T026), para
+/// as duas verificações (snapshot rápido aqui, ciclo de protocolo real ali) afirmarem sobre o mesmo
+/// estado de domínio.
+///
+/// **T034 (US2)**: estende o estado somente-leitura original (T025/US1) com o que T032 acrescentou
+/// à linha — a matriz de habilitação de FR-008 já estava coberta pelos três containers originais
+/// (`db`/exited: só start+restart; `web`/running: só stop+restart; `mystery`/unknown: as três
+/// desabilitadas) e continua sendo, sem alteração; o que muda é (1) os rótulos de botão passam a
+/// ser os PT-BR reais (`action`, acima) em vez do `action_id` cru, e (2) `db` ganha
+/// `action_in_flight: Some(Start)` — uma ação "Iniciar" em andamento sobre um container ainda
+/// `exited` (o item só troca de estado quando a ação responde, T031/`update.rs`), para o snapshot
+/// também cobrir o indicador "Iniciando..." (`view.rs::view_container_row`) lado a lado com uma
+/// linha sem nenhuma ação em curso.
+fn docker_widget_populated_state() -> Farol {
+    use farol_protocol::messages::{
+        Capability, ContainerState, ContainerStatusItem, KnownCapability,
+    };
+    use farol_protocol::{ActionDeclaration, ActionTarget, CapabilityManifest, ProtocolVersion};
+
+    let mut app = Farol::default();
+    let slot = app
+        .plugins
+        .iter_mut()
+        .find(|slot| slot.spawn_config.plugin_name == "docker-containers")
+        .expect("docker-containers é um plugin conhecido (known_plugins(), T017)");
+
+    slot.connection.state = PluginState::Ready;
+    slot.connection.identity = Some(model::PluginIdentity {
+        plugin_name: "docker-containers".to_string(),
+        protocol_version: ProtocolVersion::new(0, 4),
+        capabilities: CapabilityManifest {
+            capabilities: vec![Capability::Known(KnownCapability::Exec)],
+        },
+    });
+    slot.connection.widgets = vec![farol_protocol::WidgetDeclaration {
+        id: "docker-containers".to_string(),
+        kind: "container-status-grid".to_string(),
+        title: "Containers Docker".to_string(),
+        suggested_refresh_interval_ms: None,
+    }];
+
+    let action = |action_id: &str, label: &str, container_id: &str, enabled: bool, timeout_hint_ms: u64| {
+        ActionDeclaration {
+            id: action_id.to_string(),
+            // T034 (`specs/005-docker-containers-plugin/tasks.md`): rótulo PT-BR real (antes desta
+            // subtarefa, `label` era só `action_id.to_string()` — um placeholder que nunca refletiu
+            // o texto de botão de verdade). Mesmos três rótulos fixos que
+            // `plugins/docker-containers/docker_cli.py::_build_container_status_item` declara
+            // ("Iniciar"/"Parar"/"Reiniciar") — o `label` é uma decisão do plugin, não recalculado
+            // pelo core (`view.rs::view_container_action_control` só ecoa `action.label`).
+            label: label.to_string(),
+            target: ActionTarget {
+                r#type: "docker-container".to_string(),
+                id: container_id.to_string(),
+            },
+            enabled,
+            timeout_hint_ms: Some(timeout_hint_ms),
+        }
+    };
+
+    let container_item = |id: &str,
+                           name: &str,
+                           image: &str,
+                           state: ContainerState,
+                           status_text: &str,
+                           start_enabled: bool,
+                           stop_enabled: bool,
+                           restart_enabled: bool| {
+        ContainerStatusItem {
+            id: id.to_string(),
+            name: name.to_string(),
+            image: image.to_string(),
+            state,
+            status_text: Some(status_text.to_string()),
+            start_action: action(
+                "docker.container.start",
+                "Iniciar",
+                id,
+                start_enabled,
+                20_000,
+            ),
+            stop_action: action("docker.container.stop", "Parar", id, stop_enabled, 35_000),
+            restart_action: action(
+                "docker.container.restart",
+                "Reiniciar",
+                id,
+                restart_enabled,
+                45_000,
+            ),
+        }
+    };
+
+    // IDs sintéticos de 64 hex minúsculos (`--no-trunc`, FR-013) — um dígito repetido por
+    // container, só para serem visualmente distintos entre si; nenhum tem significado especial.
+    let hex_id = |digit: char| digit.to_string().repeat(64);
+
+    slot.connection.docker_widget.loaded = true;
+    slot.connection.docker_widget.containers = vec![
+        model::ContainerViewModel {
+            item: container_item(
+                &hex_id('1'),
+                "db",
+                "postgres:16",
+                ContainerState::Exited,
+                "Exited (0) 3 days ago",
+                true,
+                false,
+                true,
+            ),
+            // T034: uma ação em andamento — o item continua "exited" até a ação responder
+            // (T031/`update.rs`), então `view_container_row` renderiza ao mesmo tempo o estado
+            // antigo ("parado") e o indicador "Iniciando..." desta linha.
+            action_in_flight: Some(model::ContainerActionKind::Start),
+            last_action_error: None,
+        },
+        model::ContainerViewModel {
+            item: container_item(
+                &hex_id('2'),
+                "mystery",
+                "sha256:deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef",
+                ContainerState::Unknown,
+                "Uma coisa estranha",
+                false,
+                false,
+                false,
+            ),
+            action_in_flight: None,
+            last_action_error: None,
+        },
+        model::ContainerViewModel {
+            item: container_item(
+                &hex_id('3'),
+                "web",
+                "nginx:latest",
+                ContainerState::Running,
+                "Up 2 hours",
+                false,
+                true,
+                true,
+            ),
+            action_in_flight: None,
+            last_action_error: None,
+        },
+    ];
+
+    app
+}
+
 // ---------------------------------------------------------------------------
 // Um `insta::assert_snapshot!` por `screen_id`
 // ---------------------------------------------------------------------------
@@ -390,4 +552,10 @@ fn monitor_widget_error_screen_matches_snapshot() {
 fn vpn_widget_connected_screen_matches_snapshot() {
     let app = vpn_widget_connected_state();
     insta::assert_snapshot!("VpnWidgetConnected", extract_visible_text(app.view()));
+}
+
+#[test]
+fn docker_widget_populated_screen_matches_snapshot() {
+    let app = docker_widget_populated_state();
+    insta::assert_snapshot!("DockerWidgetPopulated", extract_visible_text(app.view()));
 }

@@ -19,7 +19,9 @@ use farol_protocol::RemoteStatus;
 // re-exports de `crates/farol-protocol/src/lib.rs` — mesmo gap documentado em `plugin_worker.rs`,
 // fora do escopo desta subtarefa corrigir (`farol-protocol` é off-limits). Referenciados via
 // `farol_protocol::messages::*` (módulo e tipos ambos `pub`).
-use farol_protocol::messages::{Capability, KnownCapability, MonitorStatus, VpnConnectionState};
+use farol_protocol::messages::{
+    Capability, ContainerState, KnownCapability, MonitorStatus, VpnConnectionState,
+};
 use iced::widget::{button, column, container, row, text, text_input, Column};
 use iced::{Element, Length};
 
@@ -34,6 +36,12 @@ const MONITOR_WIDGET_KIND: &str = "monitor-status-grid";
 /// `kind` de widget `vpn-status` (`openfortivpn-vpn`, T025, novo em v0.3 —
 /// `specs/004-vpn-status-plugin/data-model.md` §1.7/`research.md` D3).
 const VPN_WIDGET_KIND: &str = "vpn-status";
+/// `kind` de widget `container-status-grid` (`docker-containers`, T025, novo em v0.4 —
+/// `specs/005-docker-containers-plugin/data-model.md` §1.3). Mesmo literal de
+/// `update::CONTAINER_WIDGET_KIND` (`update.rs` não é reutilizável aqui — cada módulo declara sua
+/// própria constante para o mesmo `kind`, mesmo padrão já usado por `SUPPORTED_WIDGET_KIND`/
+/// `MONITOR_WIDGET_KIND`/`VPN_WIDGET_KIND` acima).
+const CONTAINER_WIDGET_KIND: &str = "container-status-grid";
 
 impl Farol {
     pub(crate) fn view(&self) -> Element<'_, Message> {
@@ -138,6 +146,10 @@ fn view_ready<'a>(
         .widgets
         .iter()
         .any(|widget| widget.kind == VPN_WIDGET_KIND);
+    let renders_container_grid = connection
+        .widgets
+        .iter()
+        .any(|widget| widget.kind == CONTAINER_WIDGET_KIND);
 
     if renders_status_grid {
         content = view_status_grid(plugin_name, connection, content);
@@ -148,7 +160,14 @@ fn view_ready<'a>(
     if renders_vpn_widget {
         content = view_vpn_widget(plugin_name, &connection.vpn_widget, content);
     }
-    if !renders_status_grid && !renders_monitor_grid && !renders_vpn_widget {
+    if renders_container_grid {
+        content = view_container_grid(plugin_name, &connection.docker_widget, content);
+    }
+    if !renders_status_grid
+        && !renders_monitor_grid
+        && !renders_vpn_widget
+        && !renders_container_grid
+    {
         content = content.push(text(
             "Nenhum widget com um `kind` suportado por este core foi declarado.",
         ));
@@ -318,11 +337,8 @@ fn view_vpn_widget<'a>(
                 content = content.push(text("Nenhum perfil VPN configurado."));
             } else {
                 for profile in &item.available_profiles {
-                    content = content.push(view_vpn_profile_row(
-                        plugin_name,
-                        profile,
-                        action_in_flight,
-                    ));
+                    content =
+                        content.push(view_vpn_profile_row(plugin_name, profile, action_in_flight));
                 }
             }
         }
@@ -418,6 +434,77 @@ fn view_vpn_disconnect_control<'a>(
     button(text(action.label.clone()))
         .on_press_maybe(on_press)
         .into()
+}
+
+/// T025: widget `container-status-grid` (`docker-containers`) — renderização SOMENTE LEITURA
+/// (`specs/005-docker-containers-plugin/tasks.md` T025): sem botões de iniciar/parar/reiniciar,
+/// que são escopo de US2/T032. Mesmo espírito de `view_monitor_grid` para `last_error` (FR-006):
+/// um erro pontual do último `widget/get` não apaga `containers` de uma leitura anterior boa — o
+/// erro é exibido em cima do que já se sabe, nunca no lugar. `widget.loaded` distingue "ainda não
+/// li nada" de "li com sucesso e não há nenhum container" (FR-011) — sem ele, `containers.is_empty()`
+/// seria ambíguo entre os dois casos.
+fn view_container_grid<'a>(
+    plugin_name: &'a str,
+    widget: &'a model::DockerWidgetViewModel,
+    mut content: Column<'a, Message>,
+) -> Column<'a, Message> {
+    if let Some(error) = &widget.last_error {
+        content = content.push(text(format!("Falha ao consultar containers: {error}")));
+    }
+
+    if !widget.containers.is_empty() {
+        content = content.push(view_container_header());
+        for container in &widget.containers {
+            content = content.push(view_container_row(plugin_name, container));
+        }
+    } else if !widget.loaded {
+        content = content.push(text("Aguardando primeira leitura dos containers..."));
+    } else if widget.last_error.is_none() {
+        content = content.push(text("Nenhum container encontrado."));
+    }
+
+    content
+}
+
+fn view_container_header() -> Element<'static, Message> {
+    row![
+        text("Nome").width(Length::FillPortion(2)),
+        text("Imagem").width(Length::FillPortion(2)),
+        text("Estado").width(Length::FillPortion(1)),
+    ]
+    .spacing(8)
+    .into()
+}
+
+/// Renderiza uma linha do widget `container-status-grid`: nome, imagem, estado mapeado para
+/// PT-BR (FR-003, `spec.md` §Requisitos Funcionais — vocabulário de estado usado na matriz de
+/// ações). **Sem botões nesta fase** — os três controles de ação (`start_action`/`stop_action`/
+/// `restart_action`) são escopo de US2/T032, mesmo raciocínio de prioridade de `spec.md`: esta
+/// task (T025/US1) só lê, `container.action_in_flight`/`last_action_error` ainda não são
+/// exercitados por nenhuma UI (nenhuma ação é disparada antes de T031/T032).
+fn view_container_row<'a>(
+    _plugin_name: &'a str,
+    container: &'a model::ContainerViewModel,
+) -> Element<'a, Message> {
+    let item = &container.item;
+    let state_label = match item.state {
+        ContainerState::Created => "criado",
+        ContainerState::Running => "rodando",
+        ContainerState::Restarting => "reiniciando",
+        ContainerState::Paused => "pausado",
+        ContainerState::Removing => "em remoção",
+        ContainerState::Exited => "parado",
+        ContainerState::Dead => "morto",
+        ContainerState::Unknown => "desconhecido",
+    };
+
+    row![
+        text(item.name.clone()).width(Length::FillPortion(2)),
+        text(item.image.clone()).width(Length::FillPortion(2)),
+        text(state_label).width(Length::FillPortion(1)),
+    ]
+    .spacing(8)
+    .into()
 }
 
 /// T035 (D8): renderiza o formulário de setup (`SetupForm`, T030) — em vez

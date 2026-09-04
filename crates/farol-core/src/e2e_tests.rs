@@ -1310,6 +1310,27 @@ fn fake_openfortivpn_gui_dir() -> PathBuf {
     dir
 }
 
+// ---------------------------------------------------------------------------
+// T026a — fixture `fake-docker` via `PATH`
+// ---------------------------------------------------------------------------
+
+/// Diretório absoluto de `tests/fixtures/fake-docker/` (T026a,
+/// `specs/005-docker-containers-plugin/tasks.md`), resolvido a partir de [`repo_root`] — nunca do
+/// `cwd` do processo, mesmo raciocínio de [`fake_openfortivpn_gui_dir`].
+///
+/// Confirma que o script `docker` (o nome do arquivo importa —
+/// `plugins/docker-containers/docker_cli.py::find_binary()` resolve `shutil.which("docker")`)
+/// existe ali antes de qualquer cenário depender dele, com a mesma disciplina de falhar com causa
+/// óbvia em vez de um sintoma indireto mais tarde.
+fn fake_docker_dir() -> PathBuf {
+    let dir = repo_root().join("tests").join("fixtures").join("fake-docker");
+    assert!(
+        dir.join("docker").is_file(),
+        "a fixture fake-docker deveria existir em {dir:?} (T026a)"
+    );
+    dir
+}
+
 /// Prepend de um diretório ao `PATH` do processo de teste (T026b), com
 /// restauração no `Drop`.
 ///
@@ -2307,6 +2328,166 @@ fn openfortivpn_vpn_reaches_ready_and_populates_the_vpn_widget() {
     assert_eq!(
         connection.vpn_widget.last_error, None,
         "um ciclo de widget/get bem-sucedido MUST limpar o erro pontual anterior"
+    );
+
+    drop(app);
+    assert_no_lingering_children();
+}
+
+/// **T026b [US1] — `docker-containers` alcança `Ready` e popula o widget `container-status-grid`**
+/// (`specs/005-docker-containers-plugin/tasks.md` T026), mesmo padrão de
+/// [`openfortivpn_vpn_reaches_ready_and_populates_the_vpn_widget`] (T026 da feature 004).
+///
+/// `docker-containers` declara `required_config: []` (`research.md` D9,
+/// `plugins/docker-containers/main.py::handle_handshake_hello`) — alcançar `Ready` depende só do
+/// handshake, então [`HarnessFixture::new`] já basta (os valores de `base_url`/`api_key` que ela
+/// grava são só para `git-local`/`uptime-kuma`, ignorados por este quarto plugin).
+///
+/// O que este cenário precisa controlar é a saída de `docker ps --all --no-trunc --format
+/// '{{json .}}'` — feito prependando o diretório de [`fake_docker_dir`] (T026a) ao `PATH` do
+/// processo de teste via [`PathPrefixGuard`] e configurando `FAKE_DOCKER_SCENARIO=multi_state`, que
+/// a fixture reconhece para simular três containers (`contracts/docker-cli-mapping.md`): `web`
+/// (`running`), `db` (`exited`), e `mystery` (um `State` fora do vocabulário conhecido do Docker,
+/// que `docker_cli.py` MUST traduzir para `unknown` sem invalidar as demais linhas, FR-012).
+///
+/// Sem `PollerThread`/relógio próprio (mesmo raciocínio de `openfortivpn-vpn`, T026b da feature
+/// 004): cada `widget/get` invoca `docker ps` diretamente e de forma síncrona
+/// (`docker_cli.py::list_containers`) — o primeiro `widget/get` que o core dispara assim que a
+/// conexão fica `Ready` já traz os dados simulados, mas o cenário ainda usa [`wait_until`] pela
+/// mesma folga que os demais cenários deste módulo, em vez de assumir sincronismo perfeito com uma
+/// única `Scenario::settle`.
+#[test]
+fn docker_containers_reaches_ready_and_populates_the_container_grid() {
+    let _guard = e2e_guard();
+
+    let fixture_dir = fake_docker_dir();
+    let _path_guard = PathPrefixGuard::prepend(&fixture_dir);
+    std::env::set_var("FAKE_DOCKER_SCENARIO", "multi_state");
+
+    let fixture = HarnessFixture::new("docker-containers-widget");
+
+    let mut harness = start_scenario(
+        "docker-containers alcança Ready e popula o container-status-grid",
+        fixture.spawn_config("docker-containers"),
+    );
+    harness.settle();
+
+    // A conexão saiu de Starting/Handshaking — e chegou a `Ready` (sem tela de setup: D9, sem
+    // required_config): só `view_ready` renderiza esta linha.
+    assert!(
+        harness.screen_shows("Plugin: docker-containers (protocolo 0.4)"),
+        "docker-containers deveria estar Ready assim que o handshake completa (sem \
+         required_config, D9)"
+    );
+
+    // Espera o primeiro ciclo de dados chegar à tela (mesmo mecanismo de wait_until dos demais
+    // cenários — ver docstring acima sobre por que não basta assumir sincronismo perfeito).
+    wait_until(
+        &mut harness,
+        "primeiro ciclo de widget/get do docker-containers",
+        |h| h.screen_shows("web") && h.screen_shows("db") && h.screen_shows("mystery"),
+        STATE_TIMEOUT,
+    );
+
+    // A tela mostra os dados *derivados* de `view_container_grid` — cabeçalho, nomes, imagens e
+    // estado mapeado para PT-BR, incluindo o container com `state` desconhecido virando
+    // "desconhecido" (FR-012) sem invalidar as demais linhas.
+    for text in [
+        "Nome",
+        "Imagem",
+        "Estado",
+        "web",
+        "nginx:latest",
+        "rodando",
+        "db",
+        "postgres:16",
+        "parado",
+        "mystery",
+        "desconhecido",
+    ] {
+        assert!(
+            harness.screen_shows(text),
+            "o widget container-status-grid deveria renderizar {text:?}"
+        );
+    }
+    assert!(
+        !harness.screen_shows("Aguardando primeira leitura dos containers..."),
+        "com três containers simulados, a tela não pode mostrar o estado de espera inicial"
+    );
+    assert!(
+        !harness.screen_shows("Nenhum container encontrado."),
+        "com três containers simulados, a tela não pode mostrar o estado vazio"
+    );
+
+    let app = harness.finish();
+
+    let connection = &app
+        .plugins
+        .iter()
+        .find(|slot| slot.spawn_config.plugin_name == "docker-containers")
+        .expect("slot de docker-containers")
+        .connection;
+
+    assert_eq!(connection.state, PluginState::Ready);
+    assert!(
+        connection.docker_widget.loaded,
+        "um widget/get bem-sucedido MUST marcar loaded = true (FR-011)"
+    );
+    assert_eq!(connection.docker_widget.containers.len(), 3);
+    assert_eq!(
+        connection.docker_widget.last_error, None,
+        "um ciclo de widget/get bem-sucedido MUST limpar o erro pontual anterior"
+    );
+
+    let names: Vec<&str> = connection
+        .docker_widget
+        .containers
+        .iter()
+        .map(|container| container.item.name.as_str())
+        .collect();
+    assert_eq!(
+        names,
+        vec!["db", "mystery", "web"],
+        "os containers decodificados deveriam vir ordenados por (name, id) — research.md D10"
+    );
+
+    let mystery = connection
+        .docker_widget
+        .containers
+        .iter()
+        .find(|container| container.item.name == "mystery")
+        .expect("container mystery deveria estar presente");
+    assert_eq!(
+        mystery.item.state,
+        farol_protocol::messages::ContainerState::Unknown,
+        "um State fora do vocabulário conhecido do Docker (\"borked\", simulado pela fixture) MUST \
+         virar unknown (FR-012), sem invalidar as demais linhas"
+    );
+    assert!(
+        mystery.action_in_flight.is_none(),
+        "nenhuma ação foi disparada neste cenário (só leitura, US1)"
+    );
+    assert!(mystery.last_action_error.is_none());
+
+    let web = connection
+        .docker_widget
+        .containers
+        .iter()
+        .find(|container| container.item.name == "web")
+        .expect("container web deveria estar presente");
+    assert_eq!(
+        web.item.state,
+        farol_protocol::messages::ContainerState::Running
+    );
+    let db = connection
+        .docker_widget
+        .containers
+        .iter()
+        .find(|container| container.item.name == "db")
+        .expect("container db deveria estar presente");
+    assert_eq!(
+        db.item.state,
+        farol_protocol::messages::ContainerState::Exited
     );
 
     drop(app);

@@ -82,13 +82,34 @@ def handle_handshake_hello(request: dict) -> dict:
 
 
 def handle_widget_get(request: dict) -> dict:
-    """`widget/get` — devolve status dos containers Docker.
+    """`widget/get` — devolve status dos containers Docker (T022).
 
-    Ainda não implementado nesta subtarefa (Setup/Foundational) — a leitura real via
-    `docker_cli.list_containers()` é escopo de T022 (US1),
-    `specs/005-docker-containers-plugin/tasks.md`.
+    `docker_cli.list_containers()` nunca lança para os casos de erro previstos pelo contrato
+    (`contracts/docker-cli-mapping.md` § `widget/get`) — devolve um dict-marcador
+    `{"error": {"code", "condition"}}` (ver docstring de `docker_cli.py`), que este handler
+    traduz para o envelope JSON-RPC de erro apropriado. Lista vazia é sucesso normal, `items: []`
+    (FR-011), nunca erro.
     """
-    raise NotImplementedError("handle_widget_get será implementado em T022 (US1)")
+    request_id = request.get("id")
+
+    result = docker_cli.list_containers()
+
+    error = result.get("error")
+    if error is not None:
+        code = error["code"]
+        if code == -32003:
+            return _error(request_id, -32003, "docker não encontrado no PATH")
+        return _error(
+            request_id,
+            -32010,
+            "falha ao consultar containers Docker",
+            data={"reason": "docker_unavailable", "detail": {"condition": error["condition"]}},
+        )
+
+    return _success(
+        request_id,
+        {"widget_id": request["params"]["widget_id"], "items": result["items"]},
+    )
 
 
 def handle_action_invoke(request: dict) -> dict:

@@ -1,0 +1,35 @@
+---
+source: crates/farol-core/src/visual_snapshot_tests.rs
+expression: extract_visible_text(app.view())
+---
+git-local
+Iniciando plugin...
+uptime-kuma
+Iniciando plugin...
+openfortivpn-vpn
+Iniciando plugin...
+docker-containers
+Plugin: docker-containers (protocolo 0.4)
+Capacidades declaradas: exec
+Nome
+Imagem
+Estado
+db
+postgres:16
+parado
+Iniciar
+Parar
+Reiniciar
+Iniciando...
+mystery
+sha256:deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef
+desconhecido
+Iniciar
+Parar
+Reiniciar
+web
+nginx:latest
+rodando
+Iniciar
+Parar
+Reiniciar
