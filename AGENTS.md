@@ -38,6 +38,24 @@ Features existentes:
   por `vpn.connect`/`vpn.disconnect`, não era mais específico de `git.fetch`). Nova seção de
   teste: `tests/fixtures/fake-openfortivpn-gui/` — CLI determinística para e2e sem depender de
   instalação real de `openfortivpn-gui`.
+- `specs/005-docker-containers-plugin/` — **completa**. Plugin `docker-containers` com duas User
+  Stories implementadas: (US1) Ver o estado de todos os containers locais em tempo real (nome,
+  imagem, estado, incluindo parados); (US2) Iniciar, parar e reiniciar um container pelo widget
+  com feedback de operação em curso e tradução de erros por container. Protocolo `0.3` → `0.4`
+  (aditivo: novo `kind` de widget `"container-status-grid"`, terceira variante de `ActionInvokeResult`
+  denominada `Container`, dois novos códigos de erro `-32010`/`docker_unavailable` e `-32011`/
+  `container_action_failed`). `git-local`/`uptime-kuma`/`openfortivpn-vpn` migrados para `"0.4"`
+  na mesma feature (reutilizando padrão decisão D2 da feature 004, evitando reacumular débito de
+  migração). Generalização real executada nesta feature: `merge_widget_items`/`normalize_widget_items`
+  (`update.rs`) ampliadas para enxergar `&PluginConnection` completo em vez de só `&[RepositoryViewModel]`,
+  permitindo o merge por `id` de `ContainerViewModel` preservar `action_in_flight`/`last_action_error`
+  de containers individuais durante um refresh concorrente (FR-017). `ContainerInvokeResult::Container`
+  em `ActionInvokeResult` utiliza `Box<ContainerStatusItem>` para manter o tamanho do enum sob
+  limite do `clippy::large_enum_variant` sem necessidade de `#[allow]`. Fixture de teste determinística:
+  `tests/fixtures/fake-docker/` — binário `docker` CLI sintético, cobrindo todos os cenários de
+  sucesso/falha sem depender de instalação ou daemon Docker na máquina de CI. Bug descoberto e
+  registrado durante a implementação (fora de escopo): issue #11 (erro de `widget/get` do widget
+  VPN nunca alcança a UI, rastreado como débito de feature 004).
 
 `.specify/memory/constitution.md` é normativo e versionado (SemVer próprio, atualmente v1.0.0).
 Mudança de princípio exige emenda formal (skill `speckit-constitution`) — não editar a constitution
@@ -150,11 +168,12 @@ injetados como variável de ambiente no spawn — não há dependência de keyri
 
 ## Testes
 
-- `cargo test --workspace` — 109 testes passando (0 `#[ignore]`d): unit/e2e/snapshot de `farol-core`
-  (53, incluindo novos cenários de feature 004) + contrato/unit de `farol-protocol` (21
-  `contract_schema_validation` + 23 `schema_boundaries` + 18 unit) + fixtures automatizadas do plugin
-  `openfortivpn-vpn` (15 testes Python integrados ao harness). Suite Python do plugin (15 testes):
-  `python3 -m unittest discover -p "test_*.py"` dentro de `plugins/openfortivpn-vpn/`.
+- `cargo test --workspace` — 128 testes passando (0 `#[ignore]`d): unit/e2e/snapshot de `farol-core`
+  (67, incluindo novos cenários de features 004–005) + contrato/unit de `farol-protocol` (25
+  `contract_schema_validation` + 18 `schema_boundaries` + 18 unit) + fixtures automatizadas do plugin
+  `openfortivpn-vpn` (15 testes Python integrados ao harness) e `docker-containers` (23 testes Python).
+  Suites Python: `python3 -m unittest discover -p "test_*.py"` dentro de `plugins/openfortivpn-vpn/`
+  (15 testes) ou `plugins/docker-containers/` (23 testes).
 - `cargo clippy --workspace --all-targets` — deve ficar limpo, sem warning nenhum.
 - Harness de execução real em **duas camadas** (feature 003, `research.md` D1/D5,
   `contracts/e2e-harness-contract.md`) — a mesma máquina de estados real (`Program`/`Subscription`/
@@ -197,14 +216,15 @@ injetados como variável de ambiente no spawn — não há dependência de keyri
     `update::normalize_widget_items`, que usa o `kind` já conhecido do `widget_id` para resolver só o
     caso ambíguo (array vazio).
   - **Camada 2** — smoke do binário `farol` real (`fn main()`, backend de janela winit de verdade),
-    via `tests/integration/harness.sh` — precisa de `xvfb` (`Xvfb`). Confirma 6 condições: (1) subir
+    via `tests/integration/harness.sh` — precisa de `xvfb` (`Xvfb`). Confirma 7 condições: (1) subir
     e sobreviver à janela de observação; (2) `uptime-kuma` chega a `Ready`; (3) `git-local` chega a
-    `Ready` (migração para `"0.3"` na feature 004, antes era `"0.2"` — débito técnico #4 resolvido);
+    `Ready` (migração para `"0.4"` na feature 005, antes era `"0.3"` — débito técnico #4 resolvido);
     (4) `openfortivpn-vpn` chega a `Ready` (feature 004, fixture determinística sem depender de
-    `openfortivpn-gui` instalado); (5) encerra em `SIGTERM`; (6) nenhum processo remanescente.
-    Imprime `SUCESSO — 6/6 condições confirmadas em Ns` ou `[FALHA] ...` apontando a condição que
-    caiu, saída `0`/`1`. `tests/integration/README.md` documenta o contrato; o script em si é a
-    Camada 2, não mais um stub.
+    `openfortivpn-gui` instalado); (5) `docker-containers` chega a `Ready` (feature 005, fixture
+    determinística sem depender de Docker instalado/rodando na máquina de CI); (6) encerra em
+    `SIGTERM`; (7) nenhum processo remanescente. Imprime `SUCESSO — 7/7 condições confirmadas em Ns`
+    ou `[FALHA] ...` apontando a condição que caiu, saída `0`/`1`. `tests/integration/README.md`
+    documenta o contrato; o script em si é a Camada 2, não mais um stub.
   - Sob `iced 0.14`, um closure capturante em `Subscription::map` (a armadilha histórica acima) não
     chega a rodar — vira erro `E0080` de compilação, apanhado por `cargo test`/`cargo clippy
     --all-targets` (código de teste) ou já no primeiro passo do `harness.sh` (código de produção).

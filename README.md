@@ -2,7 +2,7 @@
 
 > Plano de controle pessoal para a máquina do dev — nativo, modular, extensível por plugins.
 
-**Status: núcleo funcional.** Quatro features completas (core Rust + iced, protocolo de plugin JSON-RPC provado por três plugins de referência reais — `git-local`, `uptime-kuma` e `openfortivpn-vpn` — e uma suíte de testes automatizada, incluindo harness de smoke do binário real). Ainda sem sandbox, sem registry e sem empacotamento (fases 3–5 do roadmap abaixo). As decisões de arquitetura estão formalizadas numa constitution versionada em [`.specify/memory/constitution.md`](.specify/memory/constitution.md), e o projeto adota spec-driven development (spec-kit).
+**Status: núcleo funcional.** Cinco features completas (core Rust + iced, protocolo de plugin JSON-RPC provado por quatro plugins de referência reais — `git-local`, `uptime-kuma`, `openfortivpn-vpn` e `docker-containers` — e uma suíte de testes automatizada, incluindo harness de smoke do binário real). Ainda sem sandbox, sem registry e sem empacotamento (fases 3–5 do roadmap abaixo). As decisões de arquitetura estão formalizadas numa constitution versionada em [`.specify/memory/constitution.md`](.specify/memory/constitution.md), e o projeto adota spec-driven development (spec-kit).
 
 ---
 
@@ -34,12 +34,12 @@ A dor: hoje o estado da sua vida técnica está espalhado em várias abas, termi
 - **Uptime Kuma** — status de monitores via endpoint `/metrics` (Prometheus).
 - **Git local** — repos em `~/dev` com mudanças pendentes, ahead/behind.
 - **GitHub** — issues atribuídas, PRs aguardando review.
-- **Docker** — containers up/down, logs.
+- **Docker** — containers up/down ✅ (plugin `docker-containers`: ver/iniciar/parar/reiniciar), logs adiado ([issue #10](https://github.com/SamuelGFDias/farol/issues/10)).
 
 ## Roadmap
 
 1. **Walking skeleton** ✅ (concluído) — fatia vertical com core em Rust + iced, protocolo de plugin JSON-RPC e um plugin de referência (Git local), provando o contrato de plugin ponta a ponta com um consumidor real.
-2. **Ampliar cobertura de plugins** (em andamento) — os demais plugins da seção "Integrações previstas" (VPN, Uptime Kuma, GitHub, Docker) sobre o protocolo já provado no walking skeleton. Uptime Kuma e VPN (`openfortivpn-vpn`) já são plugins funcionais (User Stories 1-3 completas: visualização de estado, conectar/desconectar pelo widget, duração da sessão); GitHub e Docker seguem pendentes.
+2. **Ampliar cobertura de plugins** (em andamento) — os demais plugins da seção "Integrações previstas" (VPN, Uptime Kuma, GitHub, Docker) sobre o protocolo já provado no walking skeleton. Uptime Kuma e VPN (`openfortivpn-vpn`) já são plugins funcionais (User Stories 1-3 completas: visualização de estado, conectar/desconectar pelo widget, duração da sessão); Docker (`docker-containers`) também, na parte "containers up/down" (User Stories 1-2 completas: visualização de estado, iniciar/parar/reiniciar pelo widget) — "logs" segue fora de escopo, adiado para quando o core tiver uma superfície de detalhe/drill-down ([issue #10](https://github.com/SamuelGFDias/farol/issues/10)). GitHub segue pendente.
 3. **Sandbox e permissões** — manifesto de capacidades, isolamento via bubblewrap, vault de segredos.
 4. **Registry** — repo-índice, CI de validação, instalação in-app, template de plugin.
 5. **Polimento social** — espaços exportáveis, temas, galeria de plugins.

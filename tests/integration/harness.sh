@@ -23,8 +23,13 @@
 #      `research.md` D6 — `required_config: []`, então `Ready` depende só do
 #      handshake completar, não de nenhum `config.toml`/`secrets.toml`
 #      provisionado nem de `openfortivpn-gui` estar instalado na máquina);
-#   5. o processo encerra ao receber `SIGTERM`;
-#   6. nenhum processo remanescente (core, Xvfb ou plugin) fica para trás.
+#   5. `docker-containers` alcança `PluginState::Ready` (feature 005,
+#      `research.md` D9 — `required_config: []` também aqui, então `Ready`
+#      depende só do handshake completar, não de `docker` instalado/rodando
+#      na máquina de CI; um eventual `widget/get` reportaria
+#      `exec_unavailable`/`docker_unavailable`, o que não impede `Ready`);
+#   6. o processo encerra ao receber `SIGTERM`;
+#   7. nenhum processo remanescente (core, Xvfb ou plugin) fica para trás.
 #
 # Como (2) e (3) são observados sem display gráfico — e sem instrumentar
 # o código de produção
@@ -277,13 +282,15 @@ transcript_has() {  # <arquivo> <padrão fixo>
 UPTIME_KUMA_TO_PLUGIN="$RPC_DIR/uptime-kuma.core-to-plugin.ndjson"
 GIT_LOCAL_TO_PLUGIN="$RPC_DIR/git-local.core-to-plugin.ndjson"
 OPENFORTIVPN_VPN_TO_PLUGIN="$RPC_DIR/openfortivpn-vpn.core-to-plugin.ndjson"
+DOCKER_CONTAINERS_TO_PLUGIN="$RPC_DIR/docker-containers.core-to-plugin.ndjson"
 
-# --- Verificação 1+2+3+4: sobe, e cada plugin chega a Ready ------------------
+# --- Verificação 1+2+3+4+5: sobe, e cada plugin chega a Ready ---------------
 log "aguardando (até ${STATE_TIMEOUT_SECONDS}s) os plugins alcançarem Ready"
 DEADLINE=$((SECONDS + STATE_TIMEOUT_SECONDS))
 UPTIME_KUMA_READY=0
 GIT_LOCAL_READY=0
 OPENFORTIVPN_VPN_READY=0
+DOCKER_CONTAINERS_READY=0
 
 while (( SECONDS < DEADLINE )); do
     check_scenario_budget "espera pelos estados dos plugins" || break
@@ -306,8 +313,11 @@ while (( SECONDS < DEADLINE )); do
     if transcript_has "$OPENFORTIVPN_VPN_TO_PLUGIN" '"widget/get"'; then
         OPENFORTIVPN_VPN_READY=1
     fi
+    if transcript_has "$DOCKER_CONTAINERS_TO_PLUGIN" '"widget/get"'; then
+        DOCKER_CONTAINERS_READY=1
+    fi
 
-    if (( UPTIME_KUMA_READY == 1 && GIT_LOCAL_READY == 1 && OPENFORTIVPN_VPN_READY == 1 )); then
+    if (( UPTIME_KUMA_READY == 1 && GIT_LOCAL_READY == 1 && OPENFORTIVPN_VPN_READY == 1 && DOCKER_CONTAINERS_READY == 1 )); then
         break
     fi
     sleep 0.2
@@ -330,6 +340,12 @@ if (( FAILED == 0 )); then
         fail "openfortivpn-vpn não alcançou Ready em ${STATE_TIMEOUT_SECONDS}s (nenhum widget/get na transcrição core→plugin)"
     else
         log "OK — openfortivpn-vpn alcançou Ready (widget/get observado na linha)"
+    fi
+
+    if (( DOCKER_CONTAINERS_READY == 0 )); then
+        fail "docker-containers não alcançou Ready em ${STATE_TIMEOUT_SECONDS}s (nenhum widget/get na transcrição core→plugin)"
+    else
+        log "OK — docker-containers alcançou Ready (widget/get observado na linha)"
     fi
 fi
 
@@ -399,4 +415,4 @@ if (( FAILED != 0 )); then
     exit 1
 fi
 
-log "SUCESSO — 6/6 condições confirmadas em ${ELAPSED}s (teto do cenário: ${SCENARIO_TIMEOUT_SECONDS}s)"
+log "SUCESSO — 7/7 condições confirmadas em ${ELAPSED}s (teto do cenário: ${SCENARIO_TIMEOUT_SECONDS}s)"

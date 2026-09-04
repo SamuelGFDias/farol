@@ -34,7 +34,7 @@ caminho que, na feature 002, foi o único a revelar os dois panics de `Subscript
 
 Pré-requisitos: `cargo`, `python3`, `git`, `xvfb-run` (pacote `xvfb`), `pgrep`.
 
-O script confirma **seis** condições e diz qual falhou (`[FALHA] ...`), sem exigir leitura de log
+O script confirma **sete** condições e diz qual falhou (`[FALHA] ...`), sem exigir leitura de log
 bruto:
 
 1. o binário sobe e sobrevive à janela de observação;
@@ -43,8 +43,10 @@ bruto:
    antes era `"0.2"` — débito técnico #4 resolvido);
 4. `openfortivpn-vpn` alcança `PluginState::Ready` (feature 004, fixture determinística sem
    depender de `openfortivpn-gui` instalado);
-5. o processo encerra ao receber `SIGTERM` (status `0` ou `143`);
-6. nenhum processo remanescente — core, Xvfb ou plugin.
+5. `docker-containers` alcança `PluginState::Ready` (feature 005, fixture determinística sem
+   depender de `docker` instalado/rodando na máquina de CI);
+6. o processo encerra ao receber `SIGTERM` (status `0` ou `143`);
+7. nenhum processo remanescente — core, Xvfb ou plugin.
 
 Saída: `0` sucesso, `1` alguma condição falhou, `2` pré-requisito de ambiente ausente.
 
