@@ -36,7 +36,75 @@ mod visual_snapshot_tests;
 const WINDOW_TITLE: &str = "Farol";
 
 fn main() -> iced::Result {
+    handle_install_subcommand();
     program(Farol::default).run()
+}
+
+/// Intercepta `farol install <owner>/<repo>` (T014, feature 007, US2, D5 de
+/// `specs/007-registry-instalacao-plugins-github/research.md`) antes de montar a aplicação
+/// `iced` — sem a subcommand `install`, `std::env::args().get(1)` não é `Some("install")` e esta
+/// função não faz nada, preservando o comportamento de hoje (abre a janela normalmente).
+///
+/// Formato de argumento inválido (zero ou mais de um `/`) MUST falhar imediatamente, sem tentar
+/// rede (contrato "Fluxo de instalação" do contrato de manifesto/instalação).
+fn handle_install_subcommand() {
+    let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) != Some("install") {
+        return;
+    }
+
+    let Some(owner_repo) = args.get(2) else {
+        eprintln!("uso: farol install <owner>/<repo>");
+        std::process::exit(1);
+    };
+
+    let mut parts = owner_repo.splitn(2, '/');
+    let (owner, repo) = match (parts.next(), parts.next()) {
+        (Some(owner), Some(repo)) if !owner.is_empty() && !repo.is_empty() && !repo.contains('/') => {
+            (owner, repo)
+        }
+        _ => {
+            eprintln!(
+                "formato inválido: \"{owner_repo}\" — esperado exatamente um \"/\", ex. owner/repo"
+            );
+            std::process::exit(1);
+        }
+    };
+
+    let (message_is_success, message, exit_code) = match install::run(owner, repo) {
+        install::InstallOutcome::Installed { plugin_name, path } => (
+            true,
+            format!("plugin \"{plugin_name}\" instalado em {}", path.display()),
+            0,
+        ),
+        install::InstallOutcome::NoRelease => (
+            false,
+            format!("nenhuma release encontrada em {owner}/{repo}"),
+            1,
+        ),
+        install::InstallOutcome::DownloadFailed(detail) => {
+            (false, format!("falha ao instalar {owner}/{repo}: {detail}"), 1)
+        }
+        install::InstallOutcome::ManifestInvalid(err) => (
+            false,
+            format!("manifesto de plugin inválido em {owner}/{repo}: {err:?}"),
+            1,
+        ),
+        install::InstallOutcome::NameCollision(plugin_name) => (
+            false,
+            format!(
+                "\"{plugin_name}\" colide com um plugin de referência já existente — instalação cancelada"
+            ),
+            1,
+        ),
+    };
+
+    if message_is_success {
+        println!("{message}");
+    } else {
+        eprintln!("{message}");
+    }
+    std::process::exit(exit_code);
 }
 
 /// Construção do `iced::Program` do Farol — **ponto único** de montagem da

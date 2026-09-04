@@ -94,23 +94,23 @@ o Farol o descobre e spawna.
 **Independent Test**: rodar o comando contra um servidor HTTP local de fixture e inspecionar o
 diretório de dados resultante.
 
-- [ ] T013 [US2] Implementar `InstallOutcome` e o fluxo de instalação (`research.md` D5,
+- [X] T013 [US2] Implementar `InstallOutcome` e o fluxo de instalação (`research.md` D5,
       `contracts/plugin-manifest-and-install-contract.md` § "Contrato do fluxo de instalação") em
       `crates/farol-core/src/install.rs` — `curl`/`tar` via `std::process::Command`, respeitando
       `FAROL_GITHUB_API_BASE` (`research.md` D8) para permitir override em teste
-- [ ] T014 [US2] Adicionar o parse da subcommand `install <owner>/<repo>` em `main()`
+- [X] T014 [US2] Adicionar o parse da subcommand `install <owner>/<repo>` em `main()`
       (`crates/farol-core/src/main.rs`), antes de montar o `iced::application` — formato inválido de
       `owner/repo` falha sem tentar rede; chama `install::run`, traduz `InstallOutcome` para
       código de saída (`0`/`1`) e mensagem em stdout/stderr
-- [ ] T015 [US2] Servidor HTTP local de fixture para teste (`research.md` D8, mesmo padrão de
+- [X] T015 [US2] Servidor HTTP local de fixture para teste (`research.md` D8, mesmo padrão de
       `MetricsFixtureServer` da feature 002) em `install.rs` (módulo `#[cfg(test)]`) — serve
       `/repos/<owner>/<repo>/releases/latest` sintético e um tarball construído em runtime (via
       `tar`/`gzip` reais, não mockado)
-- [ ] T016 [US2] Testes de integração do fluxo de instalação contra o servidor de fixture: sucesso
+- [X] T016 [US2] Testes de integração do fluxo de instalação contra o servidor de fixture: sucesso
       (manifesto válido, plugin publicado no diretório de dados temporário), 404 sem release,
       download falhando, manifesto ausente/inválido no tarball, `plugin_name` colidindo com um dos
       4 de referência, reinstalação limpa por cima de uma instalação anterior (FR-008)
-- [ ] T017 [US2] Rodar `cargo test --package farol-core` completo e confirmar 0 falhas
+- [X] T017 [US2] Rodar `cargo test --package farol-core` completo e confirmar 0 falhas
 
 **Checkpoint**: US2 entregue e testável de forma independente.
 
