@@ -221,6 +221,114 @@ fn farol_repo_root() -> PathBuf {
         .to_path_buf()
 }
 
+/// Descoberta dinâmica de plugins instalados (T008, feature 007, US1) —
+/// escaneia `plugin_manifest::farol_data_base_dir()/plugins/` (D2/D3 de
+/// `specs/007-registry-instalacao-plugins-github/research.md`) e devolve um
+/// `PluginSpawnConfig` para cada subdiretório direto cujo `farol-plugin.toml`
+/// valide com sucesso (`plugin_manifest::parse_manifest`). Passos exatos:
+/// contrato em `contracts/plugin-manifest-and-install-contract.md` § "Contrato
+/// de `discover_installed_plugins`".
+///
+/// Diretório de plugins ausente (nenhum plugin instalado — o estado normal na
+/// maioria das máquinas) devolve `vec![]` sem nenhum aviso, incluindo
+/// qualquer outro erro de `read_dir` (ex.: permissão) — tratado da mesma
+/// forma por simplicidade, já que este comportamento não é normativo além de
+/// "diretório não existe" no contrato.
+///
+/// Um manifesto malformado ao lado de um válido emite um `eprintln!` citando
+/// o subdiretório e o erro, mas **não interrompe** a varredura dos demais
+/// (FR-004) — a lista devolvida contém só os que validaram com sucesso, na
+/// ordem de `std::fs::read_dir`.
+///
+/// A filtragem de colisão de nome (entre descobertos, e contra os 4 de
+/// referência) **não** é responsabilidade desta função — ver [`all_plugins`]
+/// (T009).
+pub fn discover_installed_plugins() -> Vec<PluginSpawnConfig> {
+    let plugins_dir = crate::plugin_manifest::farol_data_base_dir().join("plugins");
+
+    let entries = match std::fs::read_dir(&plugins_dir) {
+        Ok(entries) => entries,
+        Err(_) => return Vec::new(),
+    };
+
+    let mut discovered = Vec::new();
+    for entry in entries.flatten() {
+        let subdir = entry.path();
+        if !subdir.is_dir() {
+            continue;
+        }
+
+        match crate::plugin_manifest::parse_manifest(&subdir.join("farol-plugin.toml")) {
+            Ok(manifest) => discovered.push(PluginSpawnConfig {
+                plugin_name: manifest.plugin_name,
+                command: manifest.command,
+                args: manifest.args,
+                sandbox_profile: crate::sandbox::SandboxProfile {
+                    allow_network: manifest.allow_network,
+                    allow_exec: manifest.allow_exec,
+                    extra_binds: vec![],
+                },
+                code_root: subdir,
+            }),
+            Err(err) => {
+                eprintln!(
+                    "plugin instalado em {subdir:?} ignorado — manifesto inválido: {err:?}"
+                );
+            }
+        }
+    }
+    discovered
+}
+
+/// Composição final da lista de plugins do `Farol` real (T009, feature 007,
+/// US1) — ponto único de montagem usado por `main.rs::Farol::default`. Soma
+/// [`known_plugins`] (4 de referência, sempre presentes, sempre vencedores em
+/// caso de colisão) com [`discover_installed_plugins`] (plugins de terceiros
+/// instalados), filtrando colisão de nome conforme
+/// `contracts/plugin-manifest-and-install-contract.md` § "Contrato de
+/// filtragem de colisão" (D6 de `research.md`):
+///
+/// - um `plugin_name` descoberto que já exista entre os 4 de referência é
+///   descartado com um `eprintln!` de aviso citando a colisão;
+/// - entre dois plugins descobertos com o mesmo nome, mantém só o primeiro
+///   (ordem de [`discover_installed_plugins`]), descarta o resto também com
+///   aviso.
+///
+/// Extraída de `Farol::default` para não inchar aquela função com esta
+/// lógica de composição — `main.rs` só chama
+/// `Self::with_plugins(plugin_worker::all_plugins())`.
+pub fn all_plugins() -> Vec<PluginSpawnConfig> {
+    let mut final_plugins = known_plugins();
+    let known_names: Vec<String> = final_plugins
+        .iter()
+        .map(|config| config.plugin_name.clone())
+        .collect();
+
+    for spawn_config in discover_installed_plugins() {
+        if known_names.contains(&spawn_config.plugin_name) {
+            eprintln!(
+                "plugin instalado {:?} ignorado — colide com o nome de um plugin de referência",
+                spawn_config.plugin_name
+            );
+            continue;
+        }
+        if final_plugins
+            .iter()
+            .any(|config| config.plugin_name == spawn_config.plugin_name)
+        {
+            eprintln!(
+                "plugin instalado {:?} ignorado — colide com outro plugin instalado já \
+                 descoberto",
+                spawn_config.plugin_name
+            );
+            continue;
+        }
+        final_plugins.push(spawn_config);
+    }
+
+    final_plugins
+}
+
 /// Orçamento de timeout para chamadas de controle (`handshake/hello` e
 /// `widget/get`) — `protocol/SPEC.md` §7.1 / `RPC_TIMEOUT_CONTROL`. Não se
 /// aplica a `action/invoke` (`RPC_TIMEOUT_ACTION`, US2, fora do escopo desta
@@ -1076,5 +1184,224 @@ async fn read_response<T: serde::de::DeserializeOwned>(
             Ok(None) => continue, // linha em branco — ignorada silenciosamente.
             Err(err) => return Err(io::Error::other(err)),
         }
+    }
+}
+
+/// Testes de unidade de [`discover_installed_plugins`]/[`all_plugins`] (T010,
+/// feature 007, US1).
+///
+/// # Hermetismo — `XDG_DATA_HOME`
+///
+/// `discover_installed_plugins` resolve `plugin_manifest::farol_data_base_dir()`,
+/// que lê `XDG_DATA_HOME` do ambiente do processo — uma variável global, e
+/// `cargo test` roda os testes deste binário em threads do mesmo processo.
+/// [`XDG_DATA_HOME_LOCK`] serializa só os testes deste módulo entre si (mesma
+/// disciplina de `e2e_tests::E2E_LOCK` para `XDG_CONFIG_HOME`) — suficiente
+/// porque nenhum outro teste deste crate lê ou escreve `XDG_DATA_HOME`:
+/// `plugin_manifest::tests` passa diretórios por caminho absoluto direto a
+/// `parse_manifest`, sem depender de `farol_data_base_dir()`, e
+/// `e2e_tests`/`config_store`/`secrets_store` só mexem em
+/// `XDG_CONFIG_HOME`/`HOME`, nunca em `XDG_DATA_HOME`.
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    /// Serializa os testes deste módulo entre si — ver a docstring acima do
+    /// módulo para o porquê de bastar um lock local (em vez de reusar
+    /// `e2e_tests::E2E_LOCK`, que protege uma variável diferente e vive num
+    /// módulo `#[cfg(test)]` irmão, não acessível daqui).
+    static XDG_DATA_HOME_LOCK: Mutex<()> = Mutex::new(());
+
+    fn xdg_data_home_guard() -> std::sync::MutexGuard<'static, ()> {
+        XDG_DATA_HOME_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    /// Diretório temporário único por teste — vira `$XDG_DATA_HOME` para o
+    /// escopo do teste; removido ao final.
+    fn temp_xdg_data_home(test_name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "farol-plugin-worker-discover-test-{}-{}-{}",
+            test_name,
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn write_installed_manifest(xdg_data_home: &Path, plugin_dir_name: &str, content: &str) {
+        let dir = xdg_data_home
+            .join("farol")
+            .join("plugins")
+            .join(plugin_dir_name);
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("farol-plugin.toml"), content).unwrap();
+    }
+
+    const VALID_MANIFEST: &str = "plugin_name = \"exemplo-instalado\"\ncommand = \"python3\"\n\
+                                   args = [\"main.py\"]\n\n[capabilities]\nnetwork = true\n\
+                                   exec = false\n";
+
+    #[test]
+    fn discover_returns_empty_when_no_plugins_directory_exists() {
+        let _guard = xdg_data_home_guard();
+        let xdg_data_home = temp_xdg_data_home("empty");
+        std::env::set_var("XDG_DATA_HOME", &xdg_data_home);
+
+        let discovered = discover_installed_plugins();
+
+        assert!(
+            discovered.is_empty(),
+            "esperava vec![] sem diretório de plugins, obteve {discovered:?}"
+        );
+        std::env::remove_var("XDG_DATA_HOME");
+        let _ = std::fs::remove_dir_all(&xdg_data_home);
+    }
+
+    #[test]
+    fn discover_returns_one_config_for_one_valid_plugin() {
+        let _guard = xdg_data_home_guard();
+        let xdg_data_home = temp_xdg_data_home("single-valid");
+        write_installed_manifest(&xdg_data_home, "exemplo-instalado", VALID_MANIFEST);
+        std::env::set_var("XDG_DATA_HOME", &xdg_data_home);
+
+        let discovered = discover_installed_plugins();
+
+        assert_eq!(discovered.len(), 1, "esperava 1 plugin, obteve {discovered:?}");
+        let config = &discovered[0];
+        assert_eq!(config.plugin_name, "exemplo-instalado");
+        assert_eq!(config.command, "python3");
+        assert_eq!(config.args, vec!["main.py".to_string()]);
+        assert!(config.sandbox_profile.allow_network);
+        assert!(!config.sandbox_profile.allow_exec);
+        assert!(config.sandbox_profile.extra_binds.is_empty());
+        assert_eq!(
+            config.code_root,
+            xdg_data_home
+                .join("farol")
+                .join("plugins")
+                .join("exemplo-instalado")
+        );
+        std::env::remove_var("XDG_DATA_HOME");
+        let _ = std::fs::remove_dir_all(&xdg_data_home);
+    }
+
+    #[test]
+    fn discover_skips_a_malformed_manifest_without_blocking_the_valid_one() {
+        let _guard = xdg_data_home_guard();
+        let xdg_data_home = temp_xdg_data_home("one-malformed-one-valid");
+        write_installed_manifest(&xdg_data_home, "exemplo-instalado", VALID_MANIFEST);
+        write_installed_manifest(&xdg_data_home, "exemplo-malformado", "isto não é [ toml válido");
+        std::env::set_var("XDG_DATA_HOME", &xdg_data_home);
+
+        let discovered = discover_installed_plugins();
+
+        assert_eq!(
+            discovered.len(),
+            1,
+            "esperava só o plugin válido, obteve {discovered:?}"
+        );
+        assert_eq!(discovered[0].plugin_name, "exemplo-instalado");
+        std::env::remove_var("XDG_DATA_HOME");
+        let _ = std::fs::remove_dir_all(&xdg_data_home);
+    }
+
+    #[test]
+    fn discover_does_not_filter_colliding_names_between_two_discovered_plugins() {
+        let _guard = xdg_data_home_guard();
+        let xdg_data_home = temp_xdg_data_home("colliding-discovered");
+        let colliding_manifest = "plugin_name = \"colidindo\"\ncommand = \"python3\"\n\
+                                   args = []\n";
+        // Dois subdiretórios distintos, mesmo `plugin_name` declarado dentro do manifesto —
+        // caso patológico que esta função deliberadamente NÃO filtra (D6/T009: essa
+        // responsabilidade é de `all_plugins`, não de `discover_installed_plugins`).
+        write_installed_manifest(&xdg_data_home, "primeiro-diretorio", colliding_manifest);
+        write_installed_manifest(&xdg_data_home, "segundo-diretorio", colliding_manifest);
+        std::env::set_var("XDG_DATA_HOME", &xdg_data_home);
+
+        let discovered = discover_installed_plugins();
+
+        assert_eq!(
+            discovered.len(),
+            2,
+            "esperava os dois plugins colidentes sem filtragem, obteve {discovered:?}"
+        );
+        assert!(discovered.iter().all(|config| config.plugin_name == "colidindo"));
+        std::env::remove_var("XDG_DATA_HOME");
+        let _ = std::fs::remove_dir_all(&xdg_data_home);
+    }
+
+    #[test]
+    fn all_plugins_filters_a_discovered_plugin_colliding_with_a_reference_plugin() {
+        let _guard = xdg_data_home_guard();
+        let xdg_data_home = temp_xdg_data_home("collides-with-reference");
+        // "git-local" é um dos 4 plugins de referência de `known_plugins()`.
+        let colliding_manifest = "plugin_name = \"git-local\"\ncommand = \"python3\"\n\
+                                   args = []\n";
+        write_installed_manifest(&xdg_data_home, "git-local-instalado", colliding_manifest);
+        std::env::set_var("XDG_DATA_HOME", &xdg_data_home);
+
+        let plugins = all_plugins();
+
+        let known = known_plugins();
+        assert_eq!(
+            plugins.len(),
+            known.len(),
+            "colisão com plugin de referência deveria ser descartada, obteve {plugins:?}"
+        );
+        // O `code_root` do "git-local" na lista final continua sendo o da raiz do repositório
+        // (de `known_plugins()`), não o `code_root` do diretório instalado descartado — prova de
+        // que o vencedor é o plugin de referência, não o descoberto.
+        let git_local = plugins
+            .iter()
+            .find(|config| config.plugin_name == "git-local")
+            .expect("git-local deveria continuar presente");
+        let git_local_known = known
+            .iter()
+            .find(|config| config.plugin_name == "git-local")
+            .unwrap();
+        assert_eq!(git_local.code_root, git_local_known.code_root);
+        std::env::remove_var("XDG_DATA_HOME");
+        let _ = std::fs::remove_dir_all(&xdg_data_home);
+    }
+
+    #[test]
+    fn all_plugins_keeps_only_the_first_of_two_colliding_discovered_plugins() {
+        let _guard = xdg_data_home_guard();
+        let xdg_data_home = temp_xdg_data_home("collides-with-each-other");
+        let colliding_manifest = "plugin_name = \"colidindo\"\ncommand = \"python3\"\n\
+                                   args = []\n";
+        // `std::fs::read_dir` não garante ordem entre execuções diferentes do SO (D6,
+        // `research.md`) — dentro de uma mesma chamada é determinístico o suficiente para este
+        // teste afirmar "só um dos dois sobrevive", sem depender de qual dos dois.
+        write_installed_manifest(&xdg_data_home, "primeiro-diretorio", colliding_manifest);
+        write_installed_manifest(&xdg_data_home, "segundo-diretorio", colliding_manifest);
+        std::env::set_var("XDG_DATA_HOME", &xdg_data_home);
+
+        let plugins = all_plugins();
+
+        let known = known_plugins();
+        let colliding_survivors: Vec<_> = plugins
+            .iter()
+            .filter(|config| config.plugin_name == "colidindo")
+            .collect();
+        assert_eq!(
+            colliding_survivors.len(),
+            1,
+            "esperava só 1 sobrevivente entre os dois descobertos colidentes, obteve {plugins:?}"
+        );
+        assert_eq!(
+            plugins.len(),
+            known.len() + 1,
+            "esperava os 4 de referência + 1 sobrevivente, obteve {plugins:?}"
+        );
+        std::env::remove_var("XDG_DATA_HOME");
+        let _ = std::fs::remove_dir_all(&xdg_data_home);
     }
 }

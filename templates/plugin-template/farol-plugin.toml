@@ -1,0 +1,33 @@
+# Manifesto do plugin — lido pelo Farol ao descobrir plugins instalados
+# (`discover_installed_plugins`, feature 007). Schema normativo:
+# `specs/007-registry-instalacao-plugins-github/contracts/
+# plugin-manifest-and-install-contract.md` § "Schema de `farol-plugin.toml`".
+#
+# Copie este diretório inteiro como ponto de partida do seu plugin — veja
+# README.md para o passo a passo completo (incluindo como registrar o plugin
+# para o Farol descobrir).
+
+# Nome do plugin. MUST ser único entre os plugins ativos (os 4 de referência
+# do Farol mais qualquer outro plugin já instalado) — uma colisão de nome faz
+# o Farol ignorar este plugin com um aviso, não travar. Ajuste também
+# `PLUGIN_NAME` em `main.py` para o mesmo valor (o handshake deve responder
+# este nome).
+plugin_name = "meu-plugin"
+
+# Comando usado para iniciar o processo do plugin, resolvido em $PATH (mesmo
+# mecanismo de qualquer plugin de referência).
+command = "python3"
+
+# Argumentos passados ao comando acima, relativos ao diretório do próprio
+# plugin (o diretório que contém este arquivo, chamado `code_root`) — não ao
+# diretório de onde o Farol foi iniciado.
+args = ["main.py"]
+
+# Seção opcional — se omitida, equivale a { network = false, exec = false }.
+# Declare aqui as permissões que o plugin realmente precisa; o Farol usa isto
+# para restringir o sandbox do processo filho.
+[capabilities]
+# Este plugin faz chamadas de rede (ex.: HTTP para uma API)?
+network = false
+# Este plugin executa outros binários no sistema (ex.: `git`, `docker`)?
+exec = false

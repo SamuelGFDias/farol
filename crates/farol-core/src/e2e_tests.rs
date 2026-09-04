@@ -1602,6 +1602,170 @@ fn emulator_takes_git_local_through_a_real_handshake_to_ready() {
     );
 }
 
+/// **T019 (US3, feature 007) — `templates/plugin-template/main.py` alcança `Ready`**.
+///
+/// Prova que o template mínimo de plugin (`templates/plugin-template/`, T018) é de fato um plugin
+/// Farol funcional, e não só um exemplo estático nunca exercitado: mesmo mecanismo do gate T004
+/// acima (`Emulator` real, processo Python real, handshake JSON-RPC/NDJSON real), agora contra o
+/// `main.py` do template em vez de um plugin de referência sob `plugins/`.
+///
+/// Não usa `HarnessFixture::spawn_config` porque esse helper resolve `main.py` sob
+/// `<repo_root>/plugins/<plugin_name>/` — o template mora em `<repo_root>/templates/
+/// plugin-template/`. `PluginSpawnConfig` é construído aqui diretamente, com `plugin_name:
+/// "meu-plugin"` (não um nome inventado como `"template-teste"`): o handshake real de
+/// `templates/plugin-template/main.py` devolve `PLUGIN_NAME = "meu-plugin"` fixo (T018 optou por não
+/// sujar o template com lógica de teste), e `plugin_state` abaixo localiza o slot da conexão pelo
+/// `plugin_name` do próprio `PluginSpawnConfig` de spawn — não pelo valor devolvido no handshake —,
+/// então usar um nome diferente do que o script realmente devolve não afetaria a busca do slot; a
+/// escolha é para o teste refletir com exatidão o que um usuário copiando o template do jeito que o
+/// README manda receberia.
+#[test]
+fn emulator_takes_plugin_template_through_a_real_handshake_to_ready() {
+    let _guard = e2e_guard();
+    let _fixture = HarnessFixture::new("plugin-template-ready");
+
+    let main_py = repo_root()
+        .join("templates")
+        .join("plugin-template")
+        .join("main.py");
+    assert!(
+        main_py.is_file(),
+        "o `main.py` do template deveria existir em {main_py:?}"
+    );
+
+    let spawn_config = PluginSpawnConfig {
+        plugin_name: "meu-plugin".to_string(),
+        command: "python3".to_string(),
+        args: vec![main_py.to_string_lossy().into_owned()],
+        sandbox_profile: crate::sandbox::SandboxProfile {
+            allow_network: false,
+            allow_exec: false,
+            extra_binds: vec![],
+        },
+        code_root: repo_root().to_path_buf(),
+    };
+
+    let observed = observe_plugin_state(
+        "template de plugin (meu-plugin) alcança Ready", spawn_config,
+    );
+
+    assert_eq!(
+        observed,
+        PluginState::Ready,
+        "esperava que o template de plugin alcançasse Ready pelo Emulator (handshake 0.4, sem \
+         widgets/ações), obteve {observed:?}"
+    );
+}
+
+/// **T011 (US1, feature 007) — um plugin *descoberto dinamicamente* alcança `Ready` pela máquina
+/// de estados real**.
+///
+/// Diferença deste teste para os gates acima: em vez de um `PluginSpawnConfig` montado à mão
+/// (`HarnessFixture::spawn_config`/literal), o `PluginSpawnConfig` aqui vem de
+/// `plugin_worker::discover_installed_plugins()` (T008) — provando que o caminho inteiro (`farol-
+/// plugin.toml` real em disco → `parse_manifest` → `discover_installed_plugins` → `Subscription`
+/// real → handshake JSON-RPC/NDJSON real → `PluginState::Ready`) funciona de ponta a ponta, não só
+/// a função de descoberta isoladamente (isso já é coberto por `plugin_worker::tests`, T010).
+///
+/// Fixture mínima criada em runtime pelo próprio teste, mesmo espírito do exemplo do Cenário 1 de
+/// `quickstart.md`: `<tmp>/xdg-data/farol/plugins/exemplo/{farol-plugin.toml,main.py}`, onde
+/// `main.py` responde ao `handshake/hello` com sucesso, protocolo `"0.4"`
+/// (`plugin_worker::CORE_PROTOCOL_VERSION`), zero widgets/ações/`required_config` — o contrato
+/// mínimo do protocolo, nada além disso (mesmo formato do `templates/plugin-template/main.py`
+/// exercitado pelo teste acima, só que escrito à mão aqui em vez de reaproveitado, porque a
+/// identidade do plugin — `plugin_name = "exemplo"` — precisa bater com o nome do subdiretório sob
+/// `farol_data_base_dir()/plugins/`, ao contrário do template).
+///
+/// `XDG_DATA_HOME` aponta para essa fixture — hermético, restaurado ao final, protegido por
+/// `E2E_LOCK` (mesma disciplina de `HarnessFixture` para `XDG_CONFIG_HOME`: ambas são variáveis
+/// globais ao processo, e este módulo é quem as manipula em todo o crate). `XDG_CONFIG_HOME`
+/// também aponta para um diretório vazio próprio da fixture — o plugin descoberto não declara
+/// `required_config`, então não há nada para o core resolver ali, mas isolar mesmo assim evita
+/// depender do `~/.config` real da máquina que roda o teste.
+#[test]
+fn discovered_plugin_reaches_ready_through_the_real_state_machine() {
+    let _guard = e2e_guard();
+
+    let base = std::env::temp_dir().join(format!(
+        "farol-e2e-discovered-plugin-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&base);
+
+    let plugin_dir = base
+        .join("xdg-data")
+        .join("farol")
+        .join("plugins")
+        .join("exemplo");
+    fs::create_dir_all(&plugin_dir).expect("criar diretório do plugin descoberto da fixture");
+    fs::write(
+        plugin_dir.join("farol-plugin.toml"),
+        "plugin_name = \"exemplo\"\ncommand = \"python3\"\nargs = [\"main.py\"]\n\n\
+         [capabilities]\nexec = false\nnetwork = false\n",
+    )
+    .expect("escrever farol-plugin.toml da fixture");
+    // Loop de leitura (não um único `readline`): o `Emulator`/`Farol` real mantém o worker vivo
+    // depois do handshake, dentro do mesmo `tokio::select!` que também observa `child.wait()`
+    // (`plugin_worker::worker`, T038/D6) — um script que responde ao handshake e sai em seguida
+    // termina o processo (`exit status: 0`) e o worker interpreta isso como `WorkerEvent::Crashed`
+    // antes mesmo de o `Emulator` conseguir observar `Ready`. Mesmo formato de loop de
+    // `templates/plugin-template/main.py` (T018, ver a docstring deste teste), só sem widgets/
+    // ações para responder — só o handshake é exercitado aqui.
+    fs::write(
+        plugin_dir.join("main.py"),
+        "import json, sys\n\
+         for raw_line in sys.stdin:\n\
+         \x20\x20\x20\x20line = raw_line.strip()\n\
+         \x20\x20\x20\x20if not line:\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20continue\n\
+         \x20\x20\x20\x20req = json.loads(line)\n\
+         \x20\x20\x20\x20result = {\"protocol_version\": \"0.4\", \"plugin_name\": \"exemplo\",\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\"capabilities\": {\"capabilities\": []}, \
+         \"required_config\": [],\n\
+         \x20\x20\x20\x20\x20\x20\x20\x20\"widgets\": [], \"actions\": []}\n\
+         \x20\x20\x20\x20print(json.dumps({\"jsonrpc\": \"2.0\", \"id\": req[\"id\"], \
+         \"result\": result}))\n\
+         \x20\x20\x20\x20sys.stdout.flush()\n",
+    )
+    .expect("escrever main.py da fixture");
+
+    let xdg_config_home = base.join("xdg-config");
+    fs::create_dir_all(&xdg_config_home).expect("criar XDG_CONFIG_HOME vazio da fixture");
+
+    // `set_var` é global ao processo — seguro aqui porque este teste segura `E2E_LOCK`, mesma
+    // disciplina de `HarnessFixture::new`/`with_uptime_kuma_base_url` para `XDG_CONFIG_HOME`
+    // (ver a docstring de `E2E_LOCK`). `XDG_DATA_HOME` não é lido por nenhum outro teste deste
+    // módulo (só por `plugin_worker::tests`, que tem seu próprio lock local, `XDG_DATA_HOME_LOCK`,
+    // separado de `E2E_LOCK`, e não roda simultaneamente com este por serem módulos distintos
+    // dentro do mesmo binário de teste — `cargo test` só paraleliza dentro do orçamento de
+    // threads, mas nunca dispensa a serialização que cada lock impõe sobre a variável que protege).
+    std::env::set_var("XDG_DATA_HOME", base.join("xdg-data"));
+    std::env::set_var("XDG_CONFIG_HOME", &xdg_config_home);
+
+    let discovered = crate::plugin_worker::discover_installed_plugins();
+    assert_eq!(
+        discovered.len(),
+        1,
+        "esperava exatamente 1 plugin descoberto pela fixture, obteve {discovered:?}"
+    );
+    let spawn_config = discovered.into_iter().next().unwrap();
+    assert_eq!(spawn_config.plugin_name, "exemplo");
+    assert_eq!(spawn_config.code_root, plugin_dir);
+
+    let observed = observe_plugin_state("plugin descoberto dinamicamente alcança Ready", spawn_config);
+
+    std::env::remove_var("XDG_DATA_HOME");
+    std::env::remove_var("XDG_CONFIG_HOME");
+    let _ = fs::remove_dir_all(&base);
+
+    assert_eq!(
+        observed,
+        PluginState::Ready,
+        "esperava que o plugin descoberto dinamicamente alcançasse Ready pelo Emulator, obteve \
+         {observed:?}"
+    );
+}
+
 /// **T006 (US1) — `uptime-kuma` alcança `Ready` *com dados de verdade***.
 ///
 /// O gate T004 prova que a conexão chega a `Ready`; para isso basta o

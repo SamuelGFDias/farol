@@ -64,24 +64,24 @@ colisão de nome.
 **Independent Test**: colocar um manifesto válido manualmente no diretório de dados e confirmar que
 o Farol o descobre e spawna.
 
-- [ ] T008 [US1] Implementar `discover_installed_plugins() -> Vec<PluginSpawnConfig>` em
+- [X] T008 [US1] Implementar `discover_installed_plugins() -> Vec<PluginSpawnConfig>` em
       `plugin_worker.rs`, seguindo exatamente o contrato de
       `contracts/plugin-manifest-and-install-contract.md` § "Contrato de
       `discover_installed_plugins`" (diretório ausente → `vec![]`; manifesto inválido → aviso +
       pular; sucesso → `PluginSpawnConfig` com `sandbox_profile`/`code_root` corretos)
-- [ ] T009 [US1] Implementar a filtragem de colisão de nome (`research.md` D6,
+- [X] T009 [US1] Implementar a filtragem de colisão de nome (`research.md` D6,
       `contracts/plugin-manifest-and-install-contract.md` § "Contrato de filtragem de colisão") no
       ponto de montagem `crates/farol-core/src/main.rs::Farol::default` — soma
       `known_plugins()` + `discover_installed_plugins()` filtrado
-- [ ] T010 [US1] Testes de unidade de `discover_installed_plugins` (diretório de dados temporário via
+- [X] T010 [US1] Testes de unidade de `discover_installed_plugins` (diretório de dados temporário via
       fixture, sem depender de `~/.local/share/farol` real): zero plugins instalados, um plugin
       válido, um manifesto malformado ao lado de um válido (o malformado não impede o válido), dois
       plugins com nomes colidindo entre si
-- [ ] T011 [US1] Teste de integração real (`iced_test::Emulator`, mesmo padrão de `e2e_tests.rs`
+- [X] T011 [US1] Teste de integração real (`iced_test::Emulator`, mesmo padrão de `e2e_tests.rs`
       já existente) confirmando que um plugin descoberto (fixture apontando `XDG_DATA_HOME` para um
       diretório temporário hermético, mesmo padrão de `XDG_CONFIG_HOME` já usado por
       `HarnessFixture`) chega a `Ready` pela máquina de estados real
-- [ ] T012 [US1] Rodar `cargo test --package farol-core e2e_tests` e `tests/integration/harness.sh`
+- [X] T012 [US1] Rodar `cargo test --package farol-core e2e_tests` e `tests/integration/harness.sh`
       — confirmar que os 4 plugins de referência continuam chegando a `Ready` sem regressão
       (SC-002/FR-009)
 
@@ -121,12 +121,12 @@ diretório de dados resultante.
 **Independent Test**: copiar o template, registrar manualmente como plugin instalado, confirmar
 handshake válido.
 
-- [ ] T018 [US3] Criar `templates/plugin-template/farol-plugin.toml` (exemplo mínimo, comentado) e
+- [X] T018 [US3] Criar `templates/plugin-template/farol-plugin.toml` (exemplo mínimo, comentado) e
       `templates/plugin-template/main.py` (handshake mínimo respondendo `handshake/hello` com
       `capabilities`/`required_config`/`widgets`/`actions` vazios, mesmo nível de simplicidade do
       exemplo do Cenário 1 de `quickstart.md`) + `templates/plugin-template/README.md` explicando
       como usar (copiar, ajustar nome, colocar em `installed_plugin_dir`)
-- [ ] T019 [US3] Teste de integração real (`iced_test::Emulator`) confirmando que o template, sem
+- [X] T019 [US3] Teste de integração real (`iced_test::Emulator`) confirmando que o template, sem
       nenhuma edição de lógica (só o `plugin_name` ajustado para um nome de teste), completa
       handshake e chega a `Ready`
 

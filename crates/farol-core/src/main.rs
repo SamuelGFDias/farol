@@ -84,12 +84,15 @@ pub(crate) struct Farol {
 }
 
 impl Default for Farol {
-    /// Uma entrada por plugin conhecido (T014/T015), cada uma começando em
-    /// `PluginState::Starting` (default de `model::PluginConnection`) e sem
-    /// canal de worker ainda (`None` — só existe depois que a `Subscription`
-    /// daquele plugin emitir `WorkerEvent::Ready`).
+    /// Uma entrada por plugin conhecido mais plugin instalado descoberto
+    /// (T014/T015; T009 da feature 007 — `plugin_worker::all_plugins()`
+    /// soma `known_plugins()` com `discover_installed_plugins()`, filtrando
+    /// colisão de nome), cada uma começando em `PluginState::Starting`
+    /// (default de `model::PluginConnection`) e sem canal de worker ainda
+    /// (`None` — só existe depois que a `Subscription` daquele plugin emitir
+    /// `WorkerEvent::Ready`).
     fn default() -> Self {
-        Self::with_plugins(plugin_worker::known_plugins())
+        Self::with_plugins(plugin_worker::all_plugins())
     }
 }
 
