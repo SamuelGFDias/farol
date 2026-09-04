@@ -455,6 +455,18 @@ impl Farol {
     /// mais simples. Um `target.r#type` desconhecido em `PluginError`/
     /// `Timeout` é no-op defensivo, mesmo raciocínio de
     /// `handle_action_invoke_requested`.
+    ///
+    /// **T031 (feature 005, US2, `data-model.md` §1.6/§2.2)**: `target.r#type == "docker-container"`
+    /// (ações `docker.container.start`/`.stop`/`.restart`) deixa de ser no-op. Diferente de
+    /// `vpn_widget` (widget inteiro, dois `bool`s), o estado "em andamento"/erro de container é
+    /// **por item** — sucesso substitui só o `item` do `ContainerViewModel` correspondente
+    /// (casado por `id`, `data-model.md` §2.2) pelo `ContainerStatusItem` inteiro devolvido, sem
+    /// recalcular `enabled` (a releitura pontual já é feita pelo plugin, mesmo espírito do FR-018
+    /// documentado acima para `git.fetch`), e limpa `action_in_flight`/`last_action_error` **só
+    /// daquele** container; erro/timeout populam `last_action_error` **só daquele** container
+    /// (`set_container_action_error`), sem tocar nos demais. Container não encontrado (refresh
+    /// concorrente já o removeu) é no-op silencioso em todos os três desfechos — nunca cria uma
+    /// entrada nova a partir de uma resposta de ação (`data-model.md` §2.1).
     fn handle_action_outcome(&mut self, plugin_name: &str, outcome: ActionOutcome) {
         let Some(slot) = self.slot_mut(plugin_name) else {
             return;
@@ -481,18 +493,44 @@ impl Farol {
                 slot.connection.vpn_widget.disconnect_in_flight = false;
                 slot.connection.vpn_widget.last_action_error = None;
             }
-            // T019 (feature 005): ajuste mecânico de exaustividade — `ActionInvokeResult` ganhou a
-            // terceira variante `Container` nesta subtarefa (`farol-protocol`, T010), mas fundir a
-            // resposta em `PluginConnection::docker_widget` é escopo de T031 (US2), não desta
-            // subtarefa. Nenhuma ação de container é disparada antes de T031
-            // (`handle_action_invoke_requested` ainda não conhece `target.r#type ==
-            // "docker-container"`), então este braço não é exercitado em uso normal ainda.
-            ActionOutcome::Success(farol_protocol::ActionInvokeResult::Container { .. }) => {}
+            // T031 (feature 005, US2, `data-model.md` §1.6/§2.2): o `ContainerStatusItem`
+            // devolvido é a fonte da verdade pós-ação (`enabled` das três `ActionDeclaration` já
+            // recalculado pelo plugin para o novo estado, releitura pontual feita pelo próprio
+            // plugin — sem `widget/get` extra, mesmo espírito de FR-018/`GitRepository`
+            // pós-fetch acima). Substitui **só** o `item` do `ContainerViewModel` correspondente
+            // (casado por `id`, nunca o nome), limpando `action_in_flight`/`last_action_error`
+            // **daquele** container — as demais linhas de `containers` não são tocadas. Se o
+            // `id` não for encontrado (raro — um refresh concorrente já removeu o container da
+            // lista entre o disparo da ação e esta resposta), é no-op silencioso: o container só
+            // entra na lista via `widget/get` (`data-model.md` §2.1), nunca a partir de uma
+            // resposta de ação.
+            ActionOutcome::Success(farol_protocol::ActionInvokeResult::Container { container }) => {
+                let container_id = container.id.clone();
+                if let Some(view_model) = slot
+                    .connection
+                    .docker_widget
+                    .containers
+                    .iter_mut()
+                    .find(|view_model| view_model.item.id == container_id)
+                {
+                    view_model.item = *container;
+                    view_model.action_in_flight = None;
+                    view_model.last_action_error = None;
+                }
+            }
             ActionOutcome::PluginError { target, message } => match target.r#type.as_str() {
                 "repo" => set_fetch_error(&mut slot.connection.items, &target.id, message),
                 "vpn-profile" | "vpn-connection" => {
                     set_vpn_action_error(&mut slot.connection.vpn_widget, message)
                 }
+                // T031: erro de `docker.container.start`/`.stop`/`.restart` — popula
+                // `last_action_error` só do container alvo (`target.id`), limpando
+                // `action_in_flight` daquele mesmo container (`set_container_action_error`).
+                "docker-container" => set_container_action_error(
+                    &mut slot.connection.docker_widget.containers,
+                    &target.id,
+                    message,
+                ),
                 _ => {}
             },
             ActionOutcome::Timeout { target } => {
@@ -505,6 +543,11 @@ impl Farol {
                     "vpn-profile" | "vpn-connection" => {
                         set_vpn_action_error(&mut slot.connection.vpn_widget, message)
                     }
+                    "docker-container" => set_container_action_error(
+                        &mut slot.connection.docker_widget.containers,
+                        &target.id,
+                        message,
+                    ),
                     _ => {}
                 }
             }
@@ -537,13 +580,16 @@ impl Farol {
     /// deveria acontecer, já que o core só invoca `target`s ecoados de uma
     /// `ActionDeclaration` que o próprio plugin declarou.
     ///
-    /// **T019 (feature 005)**: `target.r#type == "docker-container"` ainda não é reconhecido aqui
-    /// — cai no braço `_` (no-op defensivo) igual a qualquer outro tipo desconhecido. O plugin
-    /// `docker-containers` só declara `actions: []` no handshake desta fase (T020) e `widget/get`
-    /// ainda não populou `docker_widget.containers` (placeholder de T019 em
-    /// `handle_widget_outcome`), então nenhuma `ActionDeclaration` de container existe para a UI
-    /// disparar ainda de qualquer forma — reconhecer `"docker-container"` de fato é escopo de T031
-    /// (US2), não desta subtarefa.
+    /// **T031 (feature 005, US2, `data-model.md` §2.1/§2.2)**: `target.r#type == "docker-container"`
+    /// (ações `docker.container.start`/`.stop`/`.restart`) segue a mesma estratégia de `"repo"` —
+    /// o alvo é um item de uma lista (`slot.connection.docker_widget.containers`, casado por
+    /// `target.id == item.item.id`), não um widget inteiro como VPN. A defesa contra reentrância
+    /// é o `action_in_flight` **daquele** `ContainerViewModel` (`Option<ContainerActionKind>`,
+    /// D7/FR-017), marcado com o `ContainerActionKind` derivado de `action_id`
+    /// (`container_action_kind_from_action_id`) — generaliza os dois `bool` independentes de VPN
+    /// para "qual das três ações" por item. Container não encontrado, `action_id` não
+    /// reconhecido, ou uma ação já em andamento **para aquele container** são todos no-op
+    /// defensivo sem enviar nada ao worker.
     fn handle_action_invoke_requested(
         &mut self,
         plugin_name: &str,
@@ -628,9 +674,62 @@ impl Farol {
                 });
                 slot.connection.vpn_widget.disconnect_in_flight = true;
             }
+            "docker-container" => {
+                // T031 (feature 005, US2, `data-model.md` §2.1/§2.2): alvo é um
+                // `ContainerViewModel` dentro de `docker_widget.containers`, casado por
+                // `target.id == item.id` (`ContainerStatusItem.id`, nunca o nome — mesma
+                // identidade estável usada pelo merge de T024). Defesa contra reentrância:
+                // `action_in_flight.is_some()` deste container específico (não um `bool` só do
+                // widget inteiro, diferente de `vpn_widget` — cada container tem sua própria
+                // ação em andamento, FR-017/`data-model.md` §2.2). Container não encontrado (ex.:
+                // sumiu por um refresh concorrente) é no-op defensivo, mesmo raciocínio do braço
+                // `_` abaixo.
+                let Some(container) = slot
+                    .connection
+                    .docker_widget
+                    .containers
+                    .iter()
+                    .find(|container| container.item.id == target.id)
+                else {
+                    return;
+                };
+                if container.action_in_flight.is_some() {
+                    return;
+                }
+
+                // `action_id` determina qual das três ações está sendo disparada — o
+                // `ContainerActionKind` é só de UI (não trafega no protocolo, `data-model.md`
+                // §2.1), então precisa ser derivado do `action_id` ecoado da `ActionDeclaration`
+                // que motivou esta invocação.
+                let Some(action_kind) = container_action_kind_from_action_id(&action_id) else {
+                    // `action_id` desconhecido para este `target.r#type` — não deveria
+                    // acontecer (o core só invoca `action_id`s ecoados de uma
+                    // `ActionDeclaration` que o próprio plugin declarou), mas não custa ser
+                    // defensivo em vez de marcar `action_in_flight` sem saber com o quê.
+                    return;
+                };
+
+                let Some(sender) = slot.worker_sender.as_mut() else {
+                    return;
+                };
+                let _ = sender.try_send(WorkerInput::InvokeAction {
+                    action_id,
+                    target: target.clone(),
+                    timeout_hint_ms,
+                });
+
+                if let Some(container) = slot
+                    .connection
+                    .docker_widget
+                    .containers
+                    .iter_mut()
+                    .find(|container| container.item.id == target.id)
+                {
+                    container.action_in_flight = Some(action_kind);
+                }
+            }
             _ => {
-                // No-op defensivo — ver docstring da função. Inclui, nesta subtarefa (T019),
-                // `target.r#type == "docker-container"` (ver nota de escopo na docstring acima).
+                // No-op defensivo — ver docstring da função.
             }
         }
     }
@@ -850,6 +949,44 @@ fn set_vpn_action_error(vpn_widget: &mut model::VpnWidgetViewModel, message: Str
     vpn_widget.last_action_error = Some(message);
     vpn_widget.connect_in_flight = false;
     vpn_widget.disconnect_in_flight = false;
+}
+
+/// T031 (feature 005, US2, `data-model.md` §2.1): traduz o `action_id` de uma das três ações de
+/// container (ecoado literalmente da `ActionDeclaration` que motivou a invocação) para o
+/// [`model::ContainerActionKind`] correspondente — tipo só de UI, que não trafega no protocolo, daí
+/// não haver `impl From<&str>`/`FromStr` no próprio `farol-protocol`. `None` para qualquer outro
+/// valor (defensivo, `handle_action_invoke_requested`).
+fn container_action_kind_from_action_id(action_id: &str) -> Option<model::ContainerActionKind> {
+    match action_id {
+        "docker.container.start" => Some(model::ContainerActionKind::Start),
+        "docker.container.stop" => Some(model::ContainerActionKind::Stop),
+        "docker.container.restart" => Some(model::ContainerActionKind::Restart),
+        _ => None,
+    }
+}
+
+/// T031 (feature 005, US2): análogo de [`set_fetch_error`]/[`set_vpn_action_error`] acima, mas por
+/// container — marca `last_action_error` **só** do [`model::ContainerViewModel`] cujo
+/// `item.id == container_id` (`ActionOutcome::PluginError`/`Timeout` com
+/// `target.r#type == "docker-container"` em `handle_action_outcome`), limpando
+/// `action_in_flight` daquele mesmo container. Diferente de `set_vpn_action_error` (widget
+/// inteiro, dois `bool`s), o estado "em andamento" de container é por item
+/// (`data-model.md` §2.2) — as demais linhas de `containers` não são tocadas. Container não
+/// encontrado (ex.: sumiu por um refresh concorrente entre o disparo da ação e a resposta) é
+/// no-op silencioso — não recria uma entrada a partir de uma resposta de ação
+/// (`data-model.md` §2.1, o container só entra na lista via `widget/get`).
+fn set_container_action_error(
+    containers: &mut [model::ContainerViewModel],
+    container_id: &str,
+    message: String,
+) {
+    if let Some(container) = containers
+        .iter_mut()
+        .find(|container| container.item.id == container_id)
+    {
+        container.action_in_flight = None;
+        container.last_action_error = Some(message);
+    }
 }
 
 /// Resultado de [`merge_widget_items`] — união discriminada pelo mesmo
@@ -2077,6 +2214,7 @@ pub(crate) mod tests {
         assert_eq!(connection_state(&app, "git-local"), PluginState::Ready);
         let _ = app.subscription();
     }
+
     // --- T024 (feature 005, docker-containers): `handle_widget_outcome`/`merge_widget_items`
     // generalizados para a variante `Container` ---
 
@@ -2276,5 +2414,277 @@ pub(crate) mod tests {
         assert!(slot.connection.docker_widget.containers[0]
             .action_in_flight
             .is_none());
+    }
+
+    // --- T031 (feature 005, US2): `handle_action_invoke_requested`/`handle_action_outcome`
+    // generalizados para `target.r#type == "docker-container"` ---
+
+    /// T031: `handle_action_invoke_requested` para `target.r#type == "docker-container"` envia
+    /// `WorkerInput::InvokeAction` com o `action_id`/`target` ecoados e marca
+    /// `action_in_flight` do `ContainerViewModel` correspondente com o `ContainerActionKind`
+    /// derivado do `action_id` (`"docker.container.stop"` → `Stop`).
+    #[test]
+    fn action_invoke_requested_for_docker_container_marks_action_in_flight_and_sends_invoke() {
+        let mut app = farol_with_docker_widget();
+        {
+            let slot = app.slot_mut("docker-containers").unwrap();
+            slot.connection.docker_widget.containers = vec![model::ContainerViewModel {
+                item: sample_container_item("abc123", "web"),
+                action_in_flight: None,
+                last_action_error: None,
+            }];
+        }
+        let (sender, mut receiver) = iced::futures::channel::mpsc::channel::<WorkerInput>(16);
+        app.slot_mut("docker-containers").unwrap().worker_sender = Some(sender);
+
+        app.handle_action_invoke_requested(
+            "docker-containers",
+            "docker.container.stop".to_string(),
+            farol_protocol::ActionTarget {
+                r#type: "docker-container".to_string(),
+                id: "abc123".to_string(),
+            },
+            Some(35_000),
+        );
+
+        let slot = app.slot_mut("docker-containers").unwrap();
+        assert_eq!(
+            slot.connection.docker_widget.containers[0].action_in_flight,
+            Some(model::ContainerActionKind::Stop)
+        );
+        match receiver.try_recv() {
+            Ok(WorkerInput::InvokeAction {
+                action_id, target, ..
+            }) => {
+                assert_eq!(action_id, "docker.container.stop");
+                assert_eq!(target.id, "abc123");
+            }
+            other => panic!("esperava Ok(InvokeAction{{docker.container.stop}}), obteve {other:?}"),
+        }
+    }
+
+    /// T031: reentrância — com `action_in_flight` já `Some(..)` **daquele** container, uma
+    /// segunda `handle_action_invoke_requested` para o mesmo `id` não envia nada ao worker nem
+    /// troca o `ContainerActionKind` já marcado (defesa contra reentrância por container,
+    /// FR-017/`data-model.md` §2.2 — mesmo padrão já testado para `"vpn-profile"`).
+    #[test]
+    fn action_invoke_requested_for_docker_container_already_in_flight_is_noop() {
+        let mut app = farol_with_docker_widget();
+        {
+            let slot = app.slot_mut("docker-containers").unwrap();
+            slot.connection.docker_widget.containers = vec![model::ContainerViewModel {
+                item: sample_container_item("abc123", "web"),
+                action_in_flight: Some(model::ContainerActionKind::Restart),
+                last_action_error: None,
+            }];
+        }
+        let (sender, mut receiver) = iced::futures::channel::mpsc::channel::<WorkerInput>(16);
+        app.slot_mut("docker-containers").unwrap().worker_sender = Some(sender);
+
+        app.handle_action_invoke_requested(
+            "docker-containers",
+            "docker.container.stop".to_string(),
+            farol_protocol::ActionTarget {
+                r#type: "docker-container".to_string(),
+                id: "abc123".to_string(),
+            },
+            Some(35_000),
+        );
+
+        let slot = app.slot_mut("docker-containers").unwrap();
+        // Continua `Restart` — a segunda invocação (`Stop`) foi recusada, não sobrescreveu.
+        assert_eq!(
+            slot.connection.docker_widget.containers[0].action_in_flight,
+            Some(model::ContainerActionKind::Restart)
+        );
+        assert!(receiver.try_recv().is_err());
+    }
+
+    /// T031 (`data-model.md` §1.6/§2.2): sucesso de `action/invoke` para
+    /// `target.r#type == "docker-container"` substitui **só** o `item` do `ContainerViewModel`
+    /// cujo `id` casa com `target.id`, limpando `action_in_flight`/`last_action_error` **daquele**
+    /// container — o `ContainerViewModel` de um segundo container na mesma lista permanece
+    /// intocado (estado anterior preservado byte a byte), provando que a fusão é por item, não
+    /// pelo widget inteiro.
+    #[test]
+    fn action_success_outcome_replaces_only_the_matching_container_and_clears_its_flight_and_error()
+    {
+        let mut app = farol_with_docker_widget();
+        let untouched_other = model::ContainerViewModel {
+            item: sample_container_item("def456", "db"),
+            action_in_flight: Some(model::ContainerActionKind::Start),
+            last_action_error: Some("erro do outro container".to_string()),
+        };
+        {
+            let slot = app.slot_mut("docker-containers").unwrap();
+            slot.connection.docker_widget.containers = vec![
+                model::ContainerViewModel {
+                    item: sample_container_item("abc123", "web"),
+                    action_in_flight: Some(model::ContainerActionKind::Stop),
+                    last_action_error: Some("erro antigo".to_string()),
+                },
+                untouched_other.clone(),
+            ];
+        }
+
+        let mut updated_item = sample_container_item("abc123", "web");
+        updated_item.state = farol_protocol::messages::ContainerState::Exited;
+        updated_item.status_text = Some("Exited (0) 3 seconds ago".to_string());
+        app.handle_action_outcome(
+            "docker-containers",
+            ActionOutcome::Success(farol_protocol::ActionInvokeResult::Container {
+                container: Box::new(updated_item.clone()),
+            }),
+        );
+
+        let slot = app.slot_mut("docker-containers").unwrap();
+        assert_eq!(slot.connection.docker_widget.containers.len(), 2);
+        let web = slot
+            .connection
+            .docker_widget
+            .containers
+            .iter()
+            .find(|c| c.item.id == "abc123")
+            .expect("container abc123 continua na lista");
+        assert_eq!(web.item, updated_item);
+        assert!(web.action_in_flight.is_none());
+        assert!(web.last_action_error.is_none());
+
+        // O segundo container ("db") não foi tocado pela ação sobre "web".
+        let db = slot
+            .connection
+            .docker_widget
+            .containers
+            .iter()
+            .find(|c| c.item.id == "def456")
+            .expect("container def456 continua na lista");
+        assert_eq!(db, &untouched_other);
+    }
+
+    /// T031 (`data-model.md` §1.7/§2.2): erro pontual de `action/invoke`
+    /// (`container_action_failed`) para `target.r#type == "docker-container"` popula
+    /// `last_action_error` **só** do `ContainerViewModel` alvo, limpando `action_in_flight`
+    /// daquele mesmo container — um segundo container na mesma lista permanece intocado.
+    #[test]
+    fn action_plugin_error_outcome_for_docker_container_sets_last_action_error_only_for_that_container(
+    ) {
+        let mut app = farol_with_docker_widget();
+        let untouched_other = model::ContainerViewModel {
+            item: sample_container_item("def456", "db"),
+            action_in_flight: None,
+            last_action_error: None,
+        };
+        {
+            let slot = app.slot_mut("docker-containers").unwrap();
+            slot.connection.docker_widget.containers = vec![
+                model::ContainerViewModel {
+                    item: sample_container_item("abc123", "web"),
+                    action_in_flight: Some(model::ContainerActionKind::Stop),
+                    last_action_error: None,
+                },
+                untouched_other.clone(),
+            ];
+        }
+
+        app.handle_action_outcome(
+            "docker-containers",
+            ActionOutcome::PluginError {
+                target: farol_protocol::ActionTarget {
+                    r#type: "docker-container".to_string(),
+                    id: "abc123".to_string(),
+                },
+                message: "no_such_container".to_string(),
+            },
+        );
+
+        let slot = app.slot_mut("docker-containers").unwrap();
+        assert_eq!(slot.connection.docker_widget.containers.len(), 2);
+        let web = slot
+            .connection
+            .docker_widget
+            .containers
+            .iter()
+            .find(|c| c.item.id == "abc123")
+            .expect("container abc123 continua na lista");
+        assert!(web.action_in_flight.is_none());
+        assert_eq!(web.last_action_error.as_deref(), Some("no_such_container"));
+
+        // O segundo container ("db") não foi tocado pelo erro sobre "web".
+        let db = slot
+            .connection
+            .docker_widget
+            .containers
+            .iter()
+            .find(|c| c.item.id == "def456")
+            .expect("container def456 continua na lista");
+        assert_eq!(db, &untouched_other);
+    }
+
+    /// T031: `ActionOutcome::Timeout` para `target.r#type == "docker-container"` segue a mesma
+    /// disciplina do braço `PluginError` acima — popula `last_action_error` só do container
+    /// alvo, sem mudar `PluginState` (D6/`contracts/action-protocol.md`, mesma garantia já
+    /// coberta para `"repo"`/`"vpn-profile"`).
+    #[test]
+    fn action_timeout_outcome_for_docker_container_sets_last_action_error_without_changing_plugin_state(
+    ) {
+        let mut app = farol_with_docker_widget();
+        {
+            let slot = app.slot_mut("docker-containers").unwrap();
+            slot.connection.docker_widget.containers = vec![model::ContainerViewModel {
+                item: sample_container_item("abc123", "web"),
+                action_in_flight: Some(model::ContainerActionKind::Restart),
+                last_action_error: None,
+            }];
+        }
+
+        app.handle_action_outcome(
+            "docker-containers",
+            ActionOutcome::Timeout {
+                target: farol_protocol::ActionTarget {
+                    r#type: "docker-container".to_string(),
+                    id: "abc123".to_string(),
+                },
+            },
+        );
+
+        assert_eq!(
+            connection_state(&app, "docker-containers"),
+            PluginState::Ready
+        );
+        let slot = app.slot_mut("docker-containers").unwrap();
+        assert!(slot.connection.docker_widget.containers[0]
+            .action_in_flight
+            .is_none());
+        assert!(slot.connection.docker_widget.containers[0]
+            .last_action_error
+            .is_some());
+    }
+
+    /// T031 (`data-model.md` §2.1, no-op documentado): sucesso de `action/invoke` para um
+    /// container cujo `id` não está mais na lista (refresh concorrente removeu-o entre o
+    /// disparo e a resposta) é um no-op silencioso — não recria uma entrada a partir da resposta
+    /// de ação, e não altera a lista existente.
+    #[test]
+    fn action_success_outcome_for_a_container_no_longer_in_the_list_is_a_silent_noop() {
+        let mut app = farol_with_docker_widget();
+        let existing = model::ContainerViewModel {
+            item: sample_container_item("def456", "db"),
+            action_in_flight: None,
+            last_action_error: None,
+        };
+        {
+            let slot = app.slot_mut("docker-containers").unwrap();
+            slot.connection.docker_widget.containers = vec![existing.clone()];
+        }
+
+        app.handle_action_outcome(
+            "docker-containers",
+            ActionOutcome::Success(farol_protocol::ActionInvokeResult::Container {
+                container: Box::new(sample_container_item("abc123", "web")),
+            }),
+        );
+
+        let slot = app.slot_mut("docker-containers").unwrap();
+        assert_eq!(slot.connection.docker_widget.containers, vec![existing]);
     }
 }

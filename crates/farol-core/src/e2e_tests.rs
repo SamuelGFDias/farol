@@ -1331,6 +1331,21 @@ fn fake_docker_dir() -> PathBuf {
     dir
 }
 
+/// `ID` (64 hex `a`) do container `app` no cenário `FAKE_DOCKER_SCENARIO=action_target` de
+/// `tests/fixtures/fake-docker/docker` (T033) — **precisa bater literalmente** com
+/// `_ACTION_TARGET_APP_ID` daquele script. Fixo (em vez de derivado por hash, como
+/// `_MULTI_STATE_CONTAINERS`) de propósito: os cenários de ação (T033) montam o `ActionTarget` de
+/// `Message::ActionInvokeRequested` diretamente, sem primeiro ler o `Farol` real — o `Scenario` do
+/// harness só expõe o modelo ao final, via `finish()`, que já encerra o processo do plugin.
+const DOCKER_ACTION_TARGET_APP_ID: &str =
+    "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+/// `ID` (64 hex `b`) do container `sidecar` do mesmo cenário `action_target` (T033) — um bystander
+/// que nenhum cenário de ação toca, usado para confirmar que uma ação em `app` nunca mexe nas
+/// demais linhas (FR-009). Precisa bater literalmente com `_ACTION_TARGET_SIDECAR_ID` da fixture.
+const DOCKER_ACTION_TARGET_SIDECAR_ID: &str =
+    "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+
 /// Prepend de um diretório ao `PATH` do processo de teste (T026b), com
 /// restauração no `Drop`.
 ///
@@ -2489,6 +2504,274 @@ fn docker_containers_reaches_ready_and_populates_the_container_grid() {
         db.item.state,
         farol_protocol::messages::ContainerState::Exited
     );
+
+    drop(app);
+    assert_no_lingering_children();
+}
+
+/// **T033 [US2] — `docker.container.start` bem-sucedido leva a linha do container a "rodando", com
+/// os botões invertidos corretamente** (`specs/005-docker-containers-plugin/tasks.md` T033), mesmo
+/// espírito dos cenários de ação já existentes deste módulo (dispatch de
+/// `Message::ActionInvokeRequested` via [`Scenario::dispatch`]), agora fim a fim contra o plugin
+/// `docker-containers` real, em vez de só `update()` chamado diretamente (cobertura já existente em
+/// `update.rs::action_invoke_requested_for_docker_container_marks_action_in_flight_and_sends_invoke`/
+/// `action_success_outcome_for_docker_container_replaces_only_that_containers_item`).
+///
+/// A fixture usa `FAKE_DOCKER_SCENARIO=action_target` (T033, `tests/fixtures/fake-docker/docker`) —
+/// dois containers de IDs **fixos** ([`DOCKER_ACTION_TARGET_APP_ID`]/
+/// [`DOCKER_ACTION_TARGET_SIDECAR_ID`], não derivados de hash como `multi_state`), justamente para
+/// que este cenário monte o `ActionTarget` da ação sem primeiro precisar ler o `Farol` real (o
+/// `Scenario` do harness só expõe o modelo ao final, via `finish()`, que já encerra o processo do
+/// plugin).
+///
+/// Depois de despachar a ação, o cenário usa [`wait_until_passive`] — **não** [`wait_until`] — de
+/// propósito: a fixture `action_target` só reporta `app` como `running` na releitura **filtrada**
+/// que `docker_cli.py::_reread_container` faz depois de uma ação bem-sucedida (ver a docstring de
+/// `_action_target_rows` na fixture); um `RefreshTick` disparado nesse meio tempo pediria uma
+/// listagem **cheia**, que a fixture sempre reporta com `app` ainda `exited` (convenção deliberada,
+/// documentada ali — a fixture não tem nenhum estado persistido entre processos). A resposta da
+/// própria ação já está a caminho assim que o worker a despachou; não há nenhum novo estímulo a
+/// dar, só drenar o que já está em voo.
+#[test]
+fn docker_container_start_action_succeeds_and_flips_the_row_to_running() {
+    let _guard = e2e_guard();
+
+    let fixture_dir = fake_docker_dir();
+    let _path_guard = PathPrefixGuard::prepend(&fixture_dir);
+    std::env::set_var("FAKE_DOCKER_SCENARIO", "action_target");
+    std::env::remove_var("FAKE_DOCKER_ACTION_SCENARIO"); // default "success"
+
+    let fixture = HarnessFixture::new("docker-containers-start-success");
+
+    let mut harness = start_scenario(
+        "docker.container.start bem-sucedido leva a linha a \"rodando\"",
+        fixture.spawn_config("docker-containers"),
+    );
+    harness.settle();
+
+    assert!(
+        harness.screen_shows("Plugin: docker-containers (protocolo 0.4)"),
+        "docker-containers deveria estar Ready assim que o handshake completa (sem \
+         required_config, D9)"
+    );
+
+    // Primeiro ciclo de widget/get: `app` (exited/"parado") e `sidecar` (running/"rodando",
+    // nunca tocado por nenhuma ação deste cenário).
+    wait_until(
+        &mut harness,
+        "primeiro ciclo de widget/get do docker-containers (action_target)",
+        |h| h.screen_shows("app") && h.screen_shows("sidecar"),
+        STATE_TIMEOUT,
+    );
+    assert!(
+        harness.screen_shows("parado"),
+        "app deveria começar exited/\"parado\" (convenção da fixture action_target)"
+    );
+
+    // Dispara `docker.container.start` para `app` — mesmo shape de `ActionTarget`/
+    // `Message::ActionInvokeRequested` que `view_container_action_control` (view.rs) monta a
+    // partir do clique real no botão "Iniciar".
+    harness.dispatch(Message::ActionInvokeRequested {
+        plugin_name: "docker-containers".to_string(),
+        action_id: "docker.container.start".to_string(),
+        target: farol_protocol::ActionTarget {
+            r#type: "docker-container".to_string(),
+            id: DOCKER_ACTION_TARGET_APP_ID.to_string(),
+        },
+        timeout_hint_ms: Some(20_000),
+    });
+
+    // Ver docstring da função: passivo de propósito — um `RefreshTick` aqui pediria uma listagem
+    // cheia, que a fixture sempre responde com `app` ainda "exited".
+    wait_until_passive(
+        &mut harness,
+        "resposta de docker.container.start para \"app\"",
+        |h| !h.screen_shows("parado"),
+        STATE_TIMEOUT,
+    );
+    assert!(
+        harness.screen_shows("rodando"),
+        "app deveria aparecer \"rodando\" depois de docker.container.start bem-sucedido"
+    );
+
+    let app = harness.finish();
+    let connection = &app
+        .plugins
+        .iter()
+        .find(|slot| slot.spawn_config.plugin_name == "docker-containers")
+        .expect("slot de docker-containers")
+        .connection;
+
+    assert_eq!(connection.state, PluginState::Ready);
+
+    let target = connection
+        .docker_widget
+        .containers
+        .iter()
+        .find(|container| container.item.id == DOCKER_ACTION_TARGET_APP_ID)
+        .expect("container app deveria continuar presente");
+
+    assert_eq!(
+        target.item.state,
+        farol_protocol::messages::ContainerState::Running
+    );
+    assert!(
+        !target.item.start_action.enabled,
+        "start deveria ficar desabilitado com o container já rodando (FR-008)"
+    );
+    assert!(
+        target.item.stop_action.enabled,
+        "stop deveria ficar habilitado com o container rodando (FR-008)"
+    );
+    assert!(
+        target.item.restart_action.enabled,
+        "restart deveria continuar habilitado com o container rodando (FR-008)"
+    );
+    assert!(
+        target.action_in_flight.is_none(),
+        "action_in_flight MUST ser limpo ao receber a resposta (sucesso ou erro)"
+    );
+    assert!(target.last_action_error.is_none());
+
+    // FR-009: a ação em `app` não pode ter mexido em `sidecar`.
+    let sidecar = connection
+        .docker_widget
+        .containers
+        .iter()
+        .find(|container| container.item.id == DOCKER_ACTION_TARGET_SIDECAR_ID)
+        .expect("container sidecar deveria continuar presente, intocado");
+    assert_eq!(
+        sidecar.item.state,
+        farol_protocol::messages::ContainerState::Running
+    );
+    assert!(sidecar.action_in_flight.is_none());
+    assert!(sidecar.last_action_error.is_none());
+
+    drop(app);
+    assert_no_lingering_children();
+}
+
+/// **T033 [US2] — falha simulada de `docker.container.start` (`no_such_container`) resulta em
+/// mensagem traduzida visível na linha daquele container, sem derrubar o core nem apagar a lista
+/// dos demais containers** (`specs/005-docker-containers-plugin/tasks.md` T033), mesmo espírito de
+/// [`docker_container_start_action_succeeds_and_flips_the_row_to_running`] acima, agora com
+/// `FAKE_DOCKER_ACTION_SCENARIO=no_such_container` (T033, `tests/fixtures/fake-docker/docker`) — a
+/// formulação de stderr observada em Docker 29.6.2 (`contracts/docker-cli-mapping.md` § action/
+/// invoke), classificada por `docker_cli.py::_classify_action_stderr` e traduzida para PT-BR
+/// (`docker_cli.py::_ACTION_ERROR_MESSAGES`) antes de chegar ao core — a mesma mensagem que
+/// `update.rs::action_plugin_error_outcome_for_docker_container_sets_last_action_error_only_for_that_container`
+/// já cobre no nível de `update()`, agora fim a fim contra o plugin real.
+///
+/// Diferente do cenário de sucesso, aqui `docker start <id>` falha **antes** de qualquer releitura
+/// (`docker_cli.py::_run_action` só releitura em sucesso) — o estado de `app` permanece `exited` (a
+/// fixture nem chega a ser consultada de novo para aquele `id`), então este cenário também prova
+/// que uma falha não inventa uma transição de estado que não aconteceu.
+#[test]
+fn docker_container_start_action_failure_shows_translated_error_without_dropping_other_containers()
+{
+    let _guard = e2e_guard();
+
+    let fixture_dir = fake_docker_dir();
+    let _path_guard = PathPrefixGuard::prepend(&fixture_dir);
+    std::env::set_var("FAKE_DOCKER_SCENARIO", "action_target");
+    std::env::set_var("FAKE_DOCKER_ACTION_SCENARIO", "no_such_container");
+
+    let fixture = HarnessFixture::new("docker-containers-start-failure");
+
+    let mut harness = start_scenario(
+        "falha de docker.container.start mostra mensagem traduzida sem derrubar a lista",
+        fixture.spawn_config("docker-containers"),
+    );
+    harness.settle();
+
+    assert!(harness.screen_shows("Plugin: docker-containers (protocolo 0.4)"));
+
+    wait_until(
+        &mut harness,
+        "primeiro ciclo de widget/get do docker-containers (action_target)",
+        |h| h.screen_shows("app") && h.screen_shows("sidecar"),
+        STATE_TIMEOUT,
+    );
+
+    harness.dispatch(Message::ActionInvokeRequested {
+        plugin_name: "docker-containers".to_string(),
+        action_id: "docker.container.start".to_string(),
+        target: farol_protocol::ActionTarget {
+            r#type: "docker-container".to_string(),
+            id: DOCKER_ACTION_TARGET_APP_ID.to_string(),
+        },
+        timeout_hint_ms: Some(20_000),
+    });
+
+    // Tradução PT-BR exata de `docker_cli.py::_ACTION_ERROR_MESSAGES["no_such_container"]`
+    // (`contracts/docker-cli-mapping.md` § action/invoke) — `view.rs::view_container_row` a
+    // renderiza como `"Falha: {error}"`.
+    const TRANSLATED_ERROR: &str =
+        "O container não existe mais — ele pode ter sido removido enquanto a lista estava aberta.";
+    let expected_line = format!("Falha: {TRANSLATED_ERROR}");
+
+    // Passivo pelo mesmo motivo do cenário de sucesso acima — não há nenhum `widget/get` novo a
+    // pedir, só a resposta (de erro) da ação já em voo a drenar.
+    wait_until_passive(
+        &mut harness,
+        "resposta de erro de docker.container.start para \"app\"",
+        |h| h.screen_shows(&expected_line),
+        STATE_TIMEOUT,
+    );
+
+    // FR-009: o core continua respondendo, com a lista inteira ainda visível — nem a linha de
+    // `app` nem a de `sidecar` desapareceram por causa do erro.
+    assert!(harness.screen_shows("app"));
+    assert!(harness.screen_shows("sidecar"));
+    assert!(
+        harness.screen_shows("parado"),
+        "uma falha na própria ação (sem releitura) MUST deixar o estado do container como estava"
+    );
+
+    let app = harness.finish();
+    let connection = &app
+        .plugins
+        .iter()
+        .find(|slot| slot.spawn_config.plugin_name == "docker-containers")
+        .expect("slot de docker-containers")
+        .connection;
+
+    assert_eq!(
+        connection.state,
+        PluginState::Ready,
+        "um erro de ação MUST NOT derrubar o core"
+    );
+    assert_eq!(
+        connection.docker_widget.containers.len(),
+        2,
+        "nenhum container foi removido por causa do erro"
+    );
+
+    let target = connection
+        .docker_widget
+        .containers
+        .iter()
+        .find(|container| container.item.id == DOCKER_ACTION_TARGET_APP_ID)
+        .expect("container app deveria continuar presente");
+    assert_eq!(
+        target.item.state,
+        farol_protocol::messages::ContainerState::Exited,
+        "sem releitura (a própria ação falhou antes dela), o estado do container não muda"
+    );
+    assert_eq!(target.last_action_error.as_deref(), Some(TRANSLATED_ERROR));
+    assert!(
+        target.action_in_flight.is_none(),
+        "action_in_flight MUST ser limpo mesmo em erro"
+    );
+
+    let sidecar = connection
+        .docker_widget
+        .containers
+        .iter()
+        .find(|container| container.item.id == DOCKER_ACTION_TARGET_SIDECAR_ID)
+        .expect("container sidecar deveria continuar presente, intocado");
+    assert!(sidecar.last_action_error.is_none());
+    assert!(sidecar.action_in_flight.is_none());
 
     drop(app);
     assert_no_lingering_children();

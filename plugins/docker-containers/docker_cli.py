@@ -22,9 +22,37 @@ import subprocess
 import sys
 
 LIST_TIMEOUT_SECONDS = 3
+RECHECK_TIMEOUT_SECONDS = 3
+
+# Timeout de subprocess por ação (contracts/docker-cli-mapping.md § action/invoke) — sempre abaixo
+# do `timeout_hint_ms` declarado em `_build_action`, para que quem reporte um estouro seja este
+# plugin (erro de domínio `-32011`/`timeout`), não o core sintetizando `-32002`/`action_timeout`.
+ACTION_TIMEOUT_SECONDS = {"start": 15, "stop": 30, "restart": 40}
 
 _ERROR_EXEC_UNAVAILABLE = -32003
 _ERROR_DOCKER_UNAVAILABLE = -32010
+_ERROR_CONTAINER_ACTION_FAILED = -32011
+
+# Tradução PT-BR por `docker_condition` (`contracts/docker-cli-mapping.md` § action/invoke,
+# `protocol/schema/v0.4/error.schema.json` catálogo `-32011`/`container_action_failed`).
+_ACTION_ERROR_MESSAGES = {
+    "no_such_container": (
+        "O container não existe mais — ele pode ter sido removido enquanto a lista estava aberta."
+    ),
+    "container_gone": (
+        "O container foi removido durante a operação — a ação pode ter sido executada, mas o "
+        "estado final não pôde ser confirmado."
+    ),
+    "permission_denied": "Sem permissão para operar containers no daemon do Docker.",
+    "daemon_unreachable": (
+        "O daemon do Docker não está respondendo — a operação não foi executada."
+    ),
+    "timeout": (
+        "A operação não terminou dentro do tempo esperado. O container pode ainda estar em "
+        "transição."
+    ),
+    "cli_error": "O Docker recusou a operação.",
+}
 
 # Vocabulário publicado pelo Docker (data-model.md §1.2) — qualquer outro valor de `State` vira
 # "unknown" (FR-012), sem invalidar as demais linhas.
@@ -72,6 +100,43 @@ def _classify_stderr(stderr: str) -> str:
     ):
         return "daemon_unreachable"
     return "cli_error"
+
+
+def _classify_action_stderr(stderr: str) -> str:
+    """Classifica o stderr de `docker start|stop|restart`/releitura com falha
+    (`contracts/docker-cli-mapping.md` § action/invoke).
+
+    **A ordem dos testes é normativa** (mesma disciplina de `_classify_stderr`, com uma causa a
+    mais na frente): `no_such_container` MUST ser testado antes de `permission_denied`, que MUST
+    ser testado antes de `daemon_unreachable` — `no_such_container` é a falha esperada e frequente
+    do edge case "container removido entre a exibição da lista e o clique", e merece a mensagem
+    mais específica antes de qualquer outra classificação genérica.
+    """
+    lowered = stderr.lower()
+    if "no such container" in lowered:
+        return "no_such_container"
+    if "permission denied" in lowered:
+        return "permission_denied"
+    if (
+        "failed to connect" in lowered
+        or "cannot connect" in lowered
+        or "is the docker daemon running" in lowered
+    ):
+        return "daemon_unreachable"
+    return "cli_error"
+
+
+def _action_error_marker(condition: str) -> dict:
+    """Monta o dict-marcador de erro `-32011`/`container_action_failed` para `start`/`stop`/
+    `restart`. `message` é sempre a tradução PT-BR fixa por `condition`
+    (`contracts/docker-cli-mapping.md` § action/invoke)."""
+    return {
+        "error": {
+            "code": _ERROR_CONTAINER_ACTION_FAILED,
+            "condition": condition,
+            "message": _ACTION_ERROR_MESSAGES.get(condition, _ACTION_ERROR_MESSAGES["cli_error"]),
+        }
+    }
 
 
 def _build_action(
@@ -175,16 +240,92 @@ def list_containers() -> dict:
     return {"items": items}
 
 
+def _reread_container(container_id: str) -> dict:
+    """Releitura pontual de um único container após uma ação bem-sucedida (`contracts/
+    docker-cli-mapping.md` § action/invoke, passo 3) — nunca a lista inteira.
+
+    Devolve `{"container": <ContainerStatusItem>}` em sucesso (com `enabled` recalculado a partir
+    do novo `state`, via `_build_container_status_item`/`_ENABLED_BY_STATE`); dict-marcador de erro
+    `-32011` caso contrário — `condition: "container_gone"` quando a releitura vem vazia (container
+    removido no intervalo), ou classificado por `_classify_action_stderr` em caso de falha da
+    própria releitura.
+    """
+    try:
+        result = subprocess.run(
+            [
+                "docker",
+                "ps",
+                "--all",
+                "--no-trunc",
+                "--filter",
+                f"id={container_id}",
+                "--format",
+                "{{json .}}",
+            ],
+            capture_output=True,
+            text=True,
+            timeout=RECHECK_TIMEOUT_SECONDS,
+        )
+    except subprocess.TimeoutExpired:
+        return _action_error_marker("timeout")
+    except OSError:
+        return _action_error_marker("cli_error")
+
+    if result.returncode != 0:
+        return _action_error_marker(_classify_action_stderr(result.stderr or ""))
+
+    lines = [line.strip() for line in (result.stdout or "").splitlines() if line.strip()]
+    if not lines:
+        return _action_error_marker("container_gone")
+
+    try:
+        row = json.loads(lines[0])
+    except json.JSONDecodeError:
+        return _action_error_marker("cli_error")
+
+    if not isinstance(row, dict):
+        return _action_error_marker("cli_error")
+
+    return {"container": _build_container_status_item(row)}
+
+
+def _run_action(command: str, container_id: str) -> dict:
+    """Executa `docker start|stop|restart <id>` e, em sucesso, faz a releitura pontual do
+    container (`contracts/docker-cli-mapping.md` § action/invoke). Nunca passa `--time` — a
+    política de desligamento do container é do usuário, o Farol só reporta o Docker sem alterá-la
+    (FR-015, `research.md` D6)."""
+    binary = find_binary()
+    if binary is None:
+        return _error_marker(_ERROR_EXEC_UNAVAILABLE, "exec_unavailable")
+
+    try:
+        result = subprocess.run(
+            ["docker", command, container_id],
+            capture_output=True,
+            text=True,
+            timeout=ACTION_TIMEOUT_SECONDS[command],
+        )
+    except subprocess.TimeoutExpired:
+        return _action_error_marker("timeout")
+    except OSError:
+        return _action_error_marker("cli_error")
+
+    if result.returncode != 0:
+        return _action_error_marker(_classify_action_stderr(result.stderr or ""))
+
+    return _reread_container(container_id)
+
+
 def start(container_id: str) -> dict:
-    """Inicia um container Docker — implementado em T028 (US2)."""
-    raise NotImplementedError("start será implementado em T028 (US2)")
+    """Inicia um container Docker — implementado em T028."""
+    return _run_action("start", container_id)
 
 
 def stop(container_id: str) -> dict:
-    """Para um container Docker — implementado em T028 (US2)."""
-    raise NotImplementedError("stop será implementado em T028 (US2)")
+    """Para um container Docker — implementado em T028."""
+    return _run_action("stop", container_id)
 
 
 def restart(container_id: str) -> dict:
-    """Reinicia um container Docker — implementado em T028 (US2)."""
-    raise NotImplementedError("restart será implementado em T028 (US2)")
+    """Reinicia um container Docker — implementado em T028."""
+    return _run_action("restart", container_id)

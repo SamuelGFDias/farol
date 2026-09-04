@@ -478,12 +478,17 @@ fn view_container_header() -> Element<'static, Message> {
 
 /// Renderiza uma linha do widget `container-status-grid`: nome, imagem, estado mapeado para
 /// PT-BR (FR-003, `spec.md` §Requisitos Funcionais — vocabulário de estado usado na matriz de
-/// ações). **Sem botões nesta fase** — os três controles de ação (`start_action`/`stop_action`/
-/// `restart_action`) são escopo de US2/T032, mesmo raciocínio de prioridade de `spec.md`: esta
-/// task (T025/US1) só lê, `container.action_in_flight`/`last_action_error` ainda não são
-/// exercitados por nenhuma UI (nenhuma ação é disparada antes de T031/T032).
+/// ações) e, desde T032 (US2), os três botões de ação (`start_action`/`stop_action`/
+/// `restart_action`) — mesmo padrão exato de `view_vpn_profile_row`/`view_vpn_disconnect_control`
+/// para construir `Message::ActionInvokeRequested`: `on_press` só quando `action.enabled == true`
+/// **e** `container.action_in_flight == None` — o core pode recusar o que o plugin habilitou
+/// (`ActionDeclaration::enabled`), mas nunca habilitar o que o plugin desabilitou (`research.md`
+/// D7, Princípio III). Enquanto uma ação está em andamento (`action_in_flight.is_some()`), um
+/// texto curto indica qual ("Iniciando..."/"Parando..."/"Reiniciando...") sem esconder o resto da
+/// linha; `last_action_error`, quando presente, aparece como texto adicional pela mesma razão —
+/// nome/imagem/estado continuam visíveis (mesmo espírito de `last_error` do widget inteiro, FR-006).
 fn view_container_row<'a>(
-    _plugin_name: &'a str,
+    plugin_name: &'a str,
     container: &'a model::ContainerViewModel,
 ) -> Element<'a, Message> {
     let item = &container.item;
@@ -498,13 +503,55 @@ fn view_container_row<'a>(
         ContainerState::Unknown => "desconhecido",
     };
 
-    row![
+    let action_in_flight = container.action_in_flight.is_some();
+
+    let mut line: Column<Message> = column![row![
         text(item.name.clone()).width(Length::FillPortion(2)),
         text(item.image.clone()).width(Length::FillPortion(2)),
         text(state_label).width(Length::FillPortion(1)),
+        view_container_action_control(plugin_name, &item.start_action, action_in_flight),
+        view_container_action_control(plugin_name, &item.stop_action, action_in_flight),
+        view_container_action_control(plugin_name, &item.restart_action, action_in_flight),
     ]
-    .spacing(8)
-    .into()
+    .spacing(8)]
+    .spacing(4);
+
+    if let Some(kind) = container.action_in_flight {
+        let in_flight_label = match kind {
+            model::ContainerActionKind::Start => "Iniciando...",
+            model::ContainerActionKind::Stop => "Parando...",
+            model::ContainerActionKind::Restart => "Reiniciando...",
+        };
+        line = line.push(text(in_flight_label));
+    }
+
+    if let Some(error) = &container.last_action_error {
+        line = line.push(text(format!("Falha: {error}")));
+    }
+
+    line.into()
+}
+
+/// T032: um botão de ação de container (`start_action`/`stop_action`/`restart_action`) —
+/// habilitado quando `action.enabled == true` e nenhuma ação já está em andamento **para este
+/// container** (`action_in_flight`, restrição adicional do core, nunca uma habilitação por conta
+/// própria). Mesmo padrão exato de `view_vpn_disconnect_control`.
+fn view_container_action_control<'a>(
+    plugin_name: &'a str,
+    action: &'a farol_protocol::messages::ActionDeclaration,
+    action_in_flight: bool,
+) -> Element<'a, Message> {
+    let on_press = (action.enabled && !action_in_flight).then(|| Message::ActionInvokeRequested {
+        plugin_name: plugin_name.to_string(),
+        action_id: action.id.clone(),
+        target: action.target.clone(),
+        timeout_hint_ms: action.timeout_hint_ms,
+    });
+
+    button(text(action.label.clone()))
+        .width(Length::FillPortion(1))
+        .on_press_maybe(on_press)
+        .into()
 }
 
 /// T035 (D8): renderiza o formulário de setup (`SetupForm`, T030) — em vez

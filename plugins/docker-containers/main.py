@@ -112,13 +112,62 @@ def handle_widget_get(request: dict) -> dict:
     )
 
 
-def handle_action_invoke(request: dict) -> dict:
-    """`action/invoke` — executa ações sobre containers Docker.
+_ACTION_DISPATCH = {
+    "docker.container.start": docker_cli.start,
+    "docker.container.stop": docker_cli.stop,
+    "docker.container.restart": docker_cli.restart,
+}
 
-    Ainda não implementado nesta subtarefa (Setup/Foundational) — o dispatch real é escopo de
-    T029 (US2), `specs/005-docker-containers-plugin/tasks.md`.
+
+def handle_action_invoke(request: dict) -> dict:
+    """`action/invoke` — executa ações sobre containers Docker (T029).
+
+    Valida `target.type` e resolve `action_id` para um handler de `docker_cli` antes de qualquer
+    subprocess — combinação inválida é erro de uso (`-32602`), nunca `-32011` (que é reservado para
+    falha da própria operação Docker). Usa sempre `target["id"]` (o ID completo de 64 hex), nunca um
+    nome (FR-013) — o `target` é ecoado verbatim pelo core a partir da `ActionDeclaration` que o
+    plugin já declarou (`protocol/schema/v0.4/action.schema.json`).
+
+    `docker_cli.start/stop/restart` nunca lançam (mesmo padrão de `handle_widget_get`): devolvem um
+    dict-marcador `{"error": {"code", "condition", ...}}`, que este handler traduz para o envelope
+    JSON-RPC de erro apropriado — `-32003`/`exec_unavailable` (binário ausente) ou
+    `-32011`/`container_action_failed` (falha da operação ou da releitura pontual pós-sucesso, com
+    `data.detail.docker_condition` carregando a causa específica, catálogo de
+    `protocol/schema/v0.4/error.schema.json`). Em sucesso, devolve
+    `{"container": <ContainerStatusItem>}` — o item inteiro, não só o novo estado, porque `enabled`
+    mudou (`ActionInvokeResultContainer`, D11).
     """
-    raise NotImplementedError("handle_action_invoke será implementado em T029 (US2)")
+    request_id = request.get("id")
+    params = request["params"]
+    action_id = params["action_id"]
+    target = params["target"]
+
+    handler = _ACTION_DISPATCH.get(action_id)
+    if handler is None or target.get("type") != "docker-container":
+        return _error(
+            request_id,
+            -32602,
+            f"ação inválida: action_id={action_id!r} target.type={target.get('type')!r}",
+        )
+
+    result = handler(target["id"])
+
+    error = result.get("error")
+    if error is not None:
+        code = error["code"]
+        if code == -32003:
+            return _error(request_id, -32003, "docker não encontrado no PATH")
+        return _error(
+            request_id,
+            -32011,
+            error["message"],
+            data={
+                "reason": "container_action_failed",
+                "detail": {"docker_condition": error["condition"]},
+            },
+        )
+
+    return _success(request_id, {"container": result["container"]})
 
 
 DISPATCH = {
