@@ -123,12 +123,12 @@ sandbox inclui `~/.config/farol`.
 **Independent Test**: `uptime-kuma` com segredo configurado continua recebendo o valor por env var;
 o arquivo `secrets.toml` não é localizável de dentro do sandbox por nenhum caminho.
 
-- [ ] T022 [US3] Teste de unidade em `crates/farol-core/src/sandbox.rs` auditando os argumentos
+- [X] T022 [US3] Teste de unidade em `crates/farol-core/src/sandbox.rs` auditando os argumentos
       produzidos por `build_bwrap_args` para todos os 4 perfis de `known_plugins()`, confirmando que
       nenhum bind (`--ro-bind`/`--bind`/`--ro-bind-try`/`--bind-try`) tem como `SRC`/`DEST` um
       caminho dentro de `~/.config/farol` (nem `secrets.toml`, nem o `config.toml` de qualquer
       plugin, inclusive o dele mesmo)
-- [ ] T023 [US3] Teste de integração real confirmando que `uptime-kuma` continua recebendo
+- [X] T023 [US3] Teste de integração real confirmando que `uptime-kuma` continua recebendo
       `FAROL_PLUGIN_UPTIME_KUMA_API_KEY` via variável de ambiente normalmente sob sandbox (sem
       regressão do mecanismo de `secrets_store.rs` já existente) e que uma tentativa de abrir
       `secrets.toml` por caminho absoluto de dentro do processo sandboxed falha

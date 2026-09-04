@@ -384,6 +384,98 @@ mod sandbox_unit_tests {
         );
     }
 
+    /// T022 (feature 006, US3/P3, `research.md` D9): confirma — não constrói,
+    /// já é garantido por omissão, já que `known_plugins()` nunca popula
+    /// `extra_binds` com um caminho sob `~/.config/farol` — que **nenhum**
+    /// bind emitido por [`build_bwrap_args`] para os 4 perfis reais de
+    /// `plugin_worker::known_plugins()` aponta para dentro da base de
+    /// configuração/segredos do Farol (`config_store::farol_config_base_dir()`,
+    /// que também é a base de `secrets_store::secrets_path()` — T017/D8 lá).
+    ///
+    /// Não roda `bwrap`: audita só a `Vec<String>` produzida, percorrendo os
+    /// argumentos aos pares sempre que encontra um dos 4 flags de bind
+    /// (`--ro-bind`, `--bind`, `--ro-bind-try`, `--bind-try`) — cada um é
+    /// sempre seguido de `SRC` e depois `DEST` (`SRC == DEST` sempre nesta
+    /// feature, doc de [`BindMount`], mas o teste audita os dois
+    /// independentemente, sem assumir a igualdade).
+    const BIND_FLAGS: [&str; 4] = ["--ro-bind", "--bind", "--ro-bind-try", "--bind-try"];
+
+    /// Um único bind (`SRC`, `DEST`) extraído por [`bind_pairs`] — nome do
+    /// flag mantido só para mensagens de assert legíveis.
+    struct BindPair<'a> {
+        flag: &'a str,
+        src: &'a str,
+        dest: &'a str,
+    }
+
+    /// Percorre `args` aos pares sempre que encontra um dos 4 flags de bind
+    /// (`--ro-bind`, `--bind`, `--ro-bind-try`, `--bind-try`), devolvendo
+    /// `(SRC, DEST)` de cada um — extraído à parte de
+    /// [`no_known_plugin_binds_the_farol_config_base_dir`] só para manter o
+    /// nível de aninhamento do laço principal do teste dentro do limite do
+    /// clippy (`excessive_nesting`).
+    fn bind_pairs<'a>(plugin_name: &str, args: &'a [String]) -> Vec<BindPair<'a>> {
+        let mut pairs = Vec::new();
+        let mut index = 0;
+        while index < args.len() {
+            if !BIND_FLAGS.contains(&args[index].as_str()) {
+                index += 1;
+                continue;
+            }
+            let flag = args[index].as_str();
+            let src = args
+                .get(index + 1)
+                .unwrap_or_else(|| panic!("plugin {plugin_name}: flag {flag:?} sem SRC subsequente: {args:?}"));
+            let dest = args
+                .get(index + 2)
+                .unwrap_or_else(|| panic!("plugin {plugin_name}: flag {flag:?} sem DEST subsequente: {args:?}"));
+            pairs.push(BindPair { flag, src, dest });
+            index += 3;
+        }
+        pairs
+    }
+
+    #[test]
+    fn no_known_plugin_binds_the_farol_config_base_dir() {
+        let base_dir = crate::config_store::farol_config_base_dir();
+        let base_dir_str = base_dir.to_string_lossy().into_owned();
+        assert!(
+            !base_dir_str.is_empty(),
+            "farol_config_base_dir() não deveria resolver para uma string vazia"
+        );
+
+        for spawn_config in crate::plugin_worker::known_plugins() {
+            let args = build_bwrap_args(
+                Path::new("/repo"),
+                Path::new("/usr/bin/python3"),
+                &spawn_config.sandbox_profile,
+                &spawn_config.command,
+                &spawn_config.args,
+            );
+
+            for pair in bind_pairs(&spawn_config.plugin_name, &args) {
+                assert!(
+                    !pair.src.contains(&base_dir_str) && !pair.src.starts_with(&base_dir_str),
+                    "plugin {}: bind {:?} SRC={:?} aponta para dentro de \
+                     farol_config_base_dir()={base_dir_str:?} — segredos/config vazariam \
+                     para o sandbox (research.md D9)",
+                    spawn_config.plugin_name,
+                    pair.flag,
+                    pair.src
+                );
+                assert!(
+                    !pair.dest.contains(&base_dir_str) && !pair.dest.starts_with(&base_dir_str),
+                    "plugin {}: bind {:?} DEST={:?} aponta para dentro de \
+                     farol_config_base_dir()={base_dir_str:?} — segredos/config vazariam \
+                     para o sandbox (research.md D9)",
+                    spawn_config.plugin_name,
+                    pair.flag,
+                    pair.dest
+                );
+            }
+        }
+    }
+
     #[test]
     fn final_segment_uses_absolute_interpreter_path_and_preserves_args() {
         let args = build_bwrap_args(
@@ -849,6 +941,75 @@ mod sandbox_integration_tests {
             stdout.contains("DOCKER_PS_OK"),
             "esperava `docker ps` funcionando sob docker-containers (allow_network=false); \
              stdout={stdout:?} stderr={stderr:?}"
+        );
+    }
+
+    /// T023 (feature 006, US3/P3, `research.md` D9): prova, com `bwrap` real,
+    /// que o processo do plugin `uptime-kuma` (perfil real de
+    /// `plugin_worker::known_plugins()`) não consegue abrir
+    /// `secrets.toml` do Farol de dentro do sandbox — mesmo caminho que
+    /// `crate::secrets_store::secrets_path()` resolveria do lado de fora,
+    /// já que nenhum bind desta feature aponta para
+    /// `config_store::farol_config_base_dir()` (T022 confirma isso
+    /// estaticamente; este teste confirma o efeito real de I/O). Complementa
+    /// (não substitui) T022: T022 audita a `Vec<String>` sem executar nada;
+    /// este teste é o experimento negativo de verdade (D11, mesmo padrão de
+    /// `uptime_kuma_real_profile_denies_exec` acima), incluindo o caso do
+    /// arquivo existir de fato no host (criado pelo próprio teste) — provando
+    /// que não é só "o arquivo não existe", é "o sandbox não enxerga o
+    /// caminho".
+    #[test]
+    fn uptime_kuma_real_profile_cannot_read_farol_secrets() {
+        // Garante que `secrets.toml` existe de verdade no host neste
+        // processo de teste — se o bind vazasse, a leitura teria sucesso
+        // (LEAKED); só um `FileNotFoundError` por caminho inexistente não
+        // provaria isolamento nenhum.
+        let secrets_path = crate::secrets_store::secrets_path();
+        if let Some(parent) = secrets_path.parent() {
+            std::fs::create_dir_all(parent)
+                .expect("criar o diretório pai de secrets.toml no host para o teste");
+        }
+        let secrets_already_existed = secrets_path.exists();
+        if !secrets_already_existed {
+            std::fs::write(&secrets_path, "[uptime-kuma]\nfake = \"nao-deveria-vazar\"\n")
+                .expect("escrever secrets.toml de teste no host");
+        }
+
+        let interpreter = python3_path();
+        let profile = known_profile("uptime-kuma");
+        let args = build_bwrap_args(
+            &repo_root(),
+            &interpreter,
+            &profile,
+            "python3",
+            &[
+                "-c".to_string(),
+                format!(
+                    "try:\n\
+                     \topen({secrets_path:?}).read()\n\
+                     \tprint('LEAKED')\n\
+                     except FileNotFoundError:\n\
+                     \tprint('BLOCKED')\n",
+                    secrets_path = secrets_path.to_string_lossy(),
+                ),
+            ],
+        );
+
+        let output = Command::new("bwrap")
+            .args(&args)
+            .output()
+            .expect("bwrap MUST estar instalado e executável nesta máquina");
+
+        if !secrets_already_existed {
+            let _ = std::fs::remove_file(&secrets_path);
+        }
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("BLOCKED"),
+            "esperava que o sandbox de uptime-kuma não conseguisse abrir secrets.toml do Farol \
+             (BLOCKED, research.md D9); stdout={stdout:?} stderr={:?}",
+            String::from_utf8_lossy(&output.stderr)
         );
     }
 }
