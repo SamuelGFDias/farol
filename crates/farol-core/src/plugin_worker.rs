@@ -139,9 +139,8 @@ pub struct PluginSpawnConfig {
 /// bwrap-invocation-contract.md` § "Perfis resolvidos por plugin")**: cada
 /// entrada ganha `sandbox_profile`, o registro estático que decide o
 /// isolamento real via `bwrap` (D1). `extra_binds` de `git-local` (o
-/// `scan_root`) e de `docker-containers` (o socket Docker) ficam vazios
-/// nesta fase — resolvidos em runtime nas tasks T016/T017 (US2), fora do
-/// escopo desta fase Foundational.
+/// `scan_root`, resolvido por `sandbox::resolve_git_local_scan_root`, T016)
+/// e de `docker-containers` (o socket Docker, T017) são populados aqui.
 pub fn known_plugins() -> Vec<PluginSpawnConfig> {
     vec![
         PluginSpawnConfig {
@@ -151,8 +150,10 @@ pub fn known_plugins() -> Vec<PluginSpawnConfig> {
             sandbox_profile: crate::sandbox::SandboxProfile {
                 allow_network: true,
                 allow_exec: true,
-                // T016/T017 (US2) preenche extra_binds com o scan_root
-                extra_binds: vec![],
+                extra_binds: vec![crate::sandbox::BindMount {
+                    host_path: crate::sandbox::resolve_git_local_scan_root(),
+                    writable: true,
+                }],
             },
         },
         PluginSpawnConfig {
@@ -186,8 +187,10 @@ pub fn known_plugins() -> Vec<PluginSpawnConfig> {
             sandbox_profile: crate::sandbox::SandboxProfile {
                 allow_network: false,
                 allow_exec: true,
-                // T016/T017 (US2) preenche extra_binds com o socket Docker
-                extra_binds: vec![],
+                extra_binds: vec![crate::sandbox::BindMount {
+                    host_path: std::path::PathBuf::from("/var/run/docker.sock"),
+                    writable: true,
+                }],
             },
         },
     ]

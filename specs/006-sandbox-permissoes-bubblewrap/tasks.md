@@ -69,18 +69,18 @@ manifesto que sempre precisou de rede sem nunca ter declarado (`research.md` D7)
 **Independent Test**: `docker-containers` (sem `network`) não alcança rede alguma; `uptime-kuma`
 (com `network`) continua alcançando `/metrics` normalmente.
 
-- [ ] T011 [P] [US1] Corrigir `handshake_hello` em `plugins/git-local/main.py` para declarar
+- [X] T011 [P] [US1] Corrigir `handshake_hello` em `plugins/git-local/main.py` para declarar
       `{"kind": "network"}` além de `{"kind": "exec"}` em `capabilities.capabilities`
       (`research.md` D7)
-- [ ] T012 [P] [US1] Corrigir `handshake_hello` em `plugins/openfortivpn-vpn/main.py` para declarar
+- [X] T012 [P] [US1] Corrigir `handshake_hello` em `plugins/openfortivpn-vpn/main.py` para declarar
       `{"kind": "network"}` além de `{"kind": "exec"}` em `capabilities.capabilities`
       (`research.md` D7)
-- [ ] T013 [US1] Teste de integração real (junto de T010) provando que `docker-containers`
+- [X] T013 [US1] Teste de integração real (junto de T010) provando que `docker-containers`
       (`allow_network: false`) não alcança rede alguma dentro do sandbox
-- [ ] T014 [US1] Teste de integração real provando que `uptime-kuma` (`allow_network: true`)
+- [X] T014 [US1] Teste de integração real provando que `uptime-kuma` (`allow_network: true`)
       continua alcançando um endpoint HTTP local de teste (mesmo padrão de fixture de
       `MetricsFixtureServer` já usado na feature 002) normalmente dentro do sandbox
-- [ ] T015 [US1] Rodar `cargo test --package farol-core e2e_tests` — confirmar que os 4 plugins
+- [X] T015 [US1] Rodar `cargo test --package farol-core e2e_tests` — confirmar que os 4 plugins
       continuam chegando a `Ready` normalmente agora rodando sob sandbox com rede aplicada
       (regressão zero, SC-002/FR-011)
 
@@ -94,22 +94,22 @@ manifesto que sempre precisou de rede sem nunca ter declarado (`research.md` D7)
 **Independent Test**: inspecionar, de dentro do processo sandboxed, quais caminhos estão visíveis;
 `git.fetch` e o widget de containers continuam funcionando.
 
-- [ ] T016 [US2] Implementar em `crates/farol-core/src/sandbox.rs` a resolução do `scan_root` de
+- [X] T016 [US2] Implementar em `crates/farol-core/src/sandbox.rs` a resolução do `scan_root` de
       `git-local` do lado do core (replicar a leitura de `plugins/git-local/config.py::
       load_scan_root` — mesmo caminho de config, mesmo default `~/dev`), usada para popular o
       `extra_binds` desse plugin em `known_plugins()`
-- [ ] T017 [US2] Implementar em `crates/farol-core/src/sandbox.rs`/`known_plugins()` o `extra_binds`
+- [X] T017 [US2] Implementar em `crates/farol-core/src/sandbox.rs`/`known_plugins()` o `extra_binds`
       de `docker-containers` apontando para `/var/run/docker.sock` (bind read-write, tolerante à
       ausência — `--bind-try`)
-- [ ] T018 [US2] Teste de integração real provando que um plugin sem `exec` concedida não consegue
+- [X] T018 [US2] Teste de integração real provando que um plugin sem `exec` concedida não consegue
       iniciar processo filho nenhum (`FileNotFoundError`/equivalente, SC-003) — junto de T010
-- [ ] T019 [US2] Teste de integração real provando que `git-local` continua lendo/escrevendo
+- [X] T019 [US2] Teste de integração real provando que `git-local` continua lendo/escrevendo
       (`git fetch` contra um remote bare local de teste) no `scan_root` bindado, sob sandbox
-- [ ] T020 [US2] Teste de integração real provando que `docker-containers` continua falando com o
+- [X] T020 [US2] Teste de integração real provando que `docker-containers` continua falando com o
       daemon Docker pelo socket, sob sandbox, sem `network` concedida — usar Docker real se
       disponível no ambiente de teste, ou pular graciosamente (`#[ignore]`) se ausente, mesma
       disciplina de `docker_cli.py`/fixture da feature 005
-- [ ] T021 [US2] Rodar `cargo test --package farol-core e2e_tests` e `tests/integration/harness.sh`
+- [X] T021 [US2] Rodar `cargo test --package farol-core e2e_tests` e `tests/integration/harness.sh`
       novamente — confirmar `git-local`/`docker-containers` sem regressão sob os dois `extra_binds`
       novos (SC-002/FR-011)
 

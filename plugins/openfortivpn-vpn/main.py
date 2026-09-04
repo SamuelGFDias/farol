@@ -53,10 +53,11 @@ def _error(request_id, code: int, message: str, data: dict | None = None) -> dic
 def handle_handshake_hello(request: dict) -> dict:
     """`handshake/hello` — declara identidade, `required_config` e `capabilities` (T020).
 
-    `capabilities` declara apenas `exec` — este plugin só invoca o binário `openfortivpn-gui` via
-    subprocess, nunca fala com a rede diretamente (a VPN em si é responsabilidade da CLI, não do
-    plugin; mesmo raciocínio já usado por `plugins/git-local` para o binário `git`, `plan.md` §
-    Constitution Check). `required_config` é sempre `[]` — este plugin não pede nenhuma
+    `capabilities` declara `exec` e `network` — este plugin invoca o binário `openfortivpn-gui` via
+    subprocess, e essa CLI depende de rede para conectar de fato à VPN (mesmo raciocínio já usado
+    por `plugins/git-local`, cujo `git fetch` depende de rede real; `research.md` D7 da feature
+    006).
+    `required_config` é sempre `[]` — este plugin não pede nenhuma
     credencial/configuração ao Farol (`specs/004-vpn-status-plugin/research.md` D6). `actions` é
     sempre `[]` neste handshake: as `ActionDeclaration`s reais (`vpn.connect` por perfil,
     `vpn.disconnect`) só são conhecíveis depois de consultar `openfortivpn-gui status`, o que só
@@ -69,7 +70,7 @@ def handle_handshake_hello(request: dict) -> dict:
     result = {
         "protocol_version": PROTOCOL_VERSION,
         "plugin_name": PLUGIN_NAME,
-        "capabilities": {"capabilities": [{"kind": "exec"}]},
+        "capabilities": {"capabilities": [{"kind": "exec"}, {"kind": "network"}]},
         "required_config": [],
         "widgets": [
             {

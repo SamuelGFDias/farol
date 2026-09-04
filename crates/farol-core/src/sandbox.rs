@@ -59,6 +59,52 @@ pub struct BindMount {
     pub writable: bool,
 }
 
+/// Default de `scan_root` quando o `config.toml` de `git-local` está
+/// ausente, ilegível, malformado ou sem o campo — replica literalmente
+/// `DEFAULT_SCAN_ROOT` de `plugins/git-local/config.py` (T016).
+const GIT_LOCAL_DEFAULT_SCAN_ROOT: &str = "~/dev";
+
+/// Resolve o `scan_root` de `git-local` do lado do core, para popular o
+/// `extra_binds` do `SandboxProfile` desse plugin (`known_plugins()`,
+/// `contracts/bwrap-invocation-contract.md` § "`extra_binds` conhecidos").
+///
+/// Replica EXATAMENTE a mesma lógica de `plugins/git-local/config.py::
+/// load_scan_root`: lê `config.toml` no mesmo caminho resolvido por
+/// [`crate::config_store::plugin_config_path`] (`$XDG_CONFIG_HOME/farol/
+/// plugins/git-local/config.toml`, fallback `~/.config/farol/plugins/
+/// git-local/config.toml`), campo `scan_root` (TOML), default `"~/dev"` se
+/// o arquivo não existir, o campo estiver ausente, ou o parse falhar por
+/// qualquer motivo — **nunca falha**, sempre devolve um `PathBuf` com `~`
+/// expandido.
+pub fn resolve_git_local_scan_root() -> PathBuf {
+    let path = crate::config_store::plugin_config_path("git-local");
+
+    let raw_value = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|content| content.parse::<toml::Table>().ok())
+        .and_then(|table| table.get("scan_root").and_then(|v| v.as_str().map(str::to_string)))
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| GIT_LOCAL_DEFAULT_SCAN_ROOT.to_string());
+
+    expand_tilde(&raw_value)
+}
+
+/// Expande um `~` inicial para o `$HOME` do processo atual — mesma
+/// convenção de `pathlib.Path.expanduser()` do plugin Python original.
+/// Sem `$HOME` definida, devolve o caminho literal (com `~`) sem falhar.
+fn expand_tilde(raw: &str) -> PathBuf {
+    if let Some(rest) = raw.strip_prefix("~/") {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home).join(rest);
+        }
+    } else if raw == "~" {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home);
+        }
+    }
+    PathBuf::from(raw)
+}
+
 /// Resolve o caminho absoluto de `command` (hoje sempre `"python3"`)
 /// procurando nos diretórios de `$PATH` do processo atual do Farol (D10) —
 /// sem depender de nenhuma crate nova (`which`, etc.), só
@@ -471,6 +517,338 @@ mod sandbox_integration_tests {
             stdout.contains("BLOCKED"),
             "esperava exec bloqueado (BLOCKED) sob allow_exec=false; stdout={stdout:?} stderr={:?}",
             String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// Localiza a entrada de `plugin_name` no registro real
+    /// (`plugin_worker::known_plugins()`) — usado pelos testes abaixo (T013/
+    /// T018) para atrelar o teste à configuração real de cada plugin, em vez
+    /// de um `SandboxProfile` sintético construído à mão.
+    fn known_profile(plugin_name: &str) -> SandboxProfile {
+        crate::plugin_worker::known_plugins()
+            .into_iter()
+            .find(|p| p.plugin_name == plugin_name)
+            .unwrap_or_else(|| panic!("known_plugins() MUST conter uma entrada para {plugin_name}"))
+            .sandbox_profile
+    }
+
+    /// T013/T018: perfil REAL de `docker-containers` (`allow_network:
+    /// false`, `contracts/bwrap-invocation-contract.md` § "Perfis
+    /// resolvidos por plugin`) — mesmo experimento negativo de rede que
+    /// `network_denied_blocks_outbound_connection`, mas atrelado à
+    /// configuração real do plugin em vez de um profile sintético.
+    #[test]
+    fn docker_containers_real_profile_denies_network() {
+        let interpreter = python3_path();
+        let profile = known_profile("docker-containers");
+        assert!(
+            !profile.allow_network,
+            "docker-containers MUST ter allow_network=false (contracts/bwrap-invocation-contract.md)"
+        );
+        let args = build_bwrap_args(
+            &repo_root(),
+            &interpreter,
+            &profile,
+            "python3",
+            &[
+                "-c".to_string(),
+                "import socket\n\
+                 try:\n\
+                 \tsocket.create_connection(('1.1.1.1', 80), timeout=2)\n\
+                 \tprint('LEAKED')\n\
+                 except OSError:\n\
+                 \tprint('BLOCKED')\n"
+                    .to_string(),
+            ],
+        );
+
+        let output = Command::new("bwrap")
+            .args(&args)
+            .output()
+            .expect("bwrap MUST estar instalado e executável nesta máquina");
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("BLOCKED"),
+            "esperava rede bloqueada (BLOCKED) sob o perfil real de docker-containers; \
+             stdout={stdout:?} stderr={:?}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// T013/T018: perfil REAL de `uptime-kuma` (`allow_exec: false`) — mesmo
+    /// experimento negativo de exec que `exec_denied_blocks_external_binary`,
+    /// mas atrelado à configuração real do plugin.
+    #[test]
+    fn uptime_kuma_real_profile_denies_exec() {
+        let interpreter = python3_path();
+        let profile = known_profile("uptime-kuma");
+        assert!(
+            !profile.allow_exec,
+            "uptime-kuma MUST ter allow_exec=false (contracts/bwrap-invocation-contract.md)"
+        );
+        let args = build_bwrap_args(
+            &repo_root(),
+            &interpreter,
+            &profile,
+            "python3",
+            &[
+                "-c".to_string(),
+                "import subprocess\n\
+                 try:\n\
+                 \tsubprocess.run(['/usr/bin/true'])\n\
+                 \tprint('LEAKED')\n\
+                 except FileNotFoundError:\n\
+                 \tprint('BLOCKED')\n"
+                    .to_string(),
+            ],
+        );
+
+        let output = Command::new("bwrap")
+            .args(&args)
+            .output()
+            .expect("bwrap MUST estar instalado e executável nesta máquina");
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("BLOCKED"),
+            "esperava exec bloqueado (BLOCKED) sob o perfil real de uptime-kuma; \
+             stdout={stdout:?} stderr={:?}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// T014: prova o lado positivo de `allow_network: true` com um servidor
+    /// TCP local de verdade — não basta provar que a ausência bloqueia
+    /// (`network_denied_blocks_outbound_connection`); este teste prova que a
+    /// concessão realmente libera rede, incluindo destinos locais. Sobe um
+    /// `TcpListener` no próprio processo de teste (fora do sandbox) e conecta
+    /// a ele de dentro do sandbox sob o perfil REAL de `uptime-kuma`
+    /// (`allow_network: true`). `--share-net` (D2) compartilha o namespace de
+    /// rede do host, então `127.0.0.1` dentro do sandbox é o mesmo loopback
+    /// do processo de teste — a porta efêmera é alcançável normalmente.
+    #[test]
+    fn uptime_kuma_real_profile_allows_local_tcp_connection() {
+        use std::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0").expect("bind numa porta efêmera local");
+        let port = listener.local_addr().expect("endereço local do listener").port();
+
+        // Aceita (e descarta) a conexão recebida numa thread separada, só
+        // para que o `connect()` do lado do sandbox complete o three-way
+        // handshake normalmente em vez de ficar só no backlog do kernel.
+        let accept_thread = std::thread::spawn(move || {
+            let _ = listener.accept();
+        });
+
+        let interpreter = python3_path();
+        let profile = known_profile("uptime-kuma");
+        assert!(
+            profile.allow_network,
+            "uptime-kuma MUST ter allow_network=true (contracts/bwrap-invocation-contract.md)"
+        );
+        let args = build_bwrap_args(
+            &repo_root(),
+            &interpreter,
+            &profile,
+            "python3",
+            &[
+                "-c".to_string(),
+                format!(
+                    "import socket\n\
+                     s = socket.create_connection(('127.0.0.1', {port}), timeout=5)\n\
+                     s.close()\n\
+                     print('CONNECTED')\n"
+                ),
+            ],
+        );
+
+        let output = Command::new("bwrap")
+            .args(&args)
+            .output()
+            .expect("bwrap MUST estar instalado e executável nesta máquina");
+
+        accept_thread.join().expect("thread de accept não deve panicar");
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("CONNECTED"),
+            "esperava conexão TCP local bem-sucedida (CONNECTED) sob allow_network=true; \
+             stdout={stdout:?} stderr={:?}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// T019: `git fetch` de verdade sob o perfil de `git-local` com
+    /// `extra_binds` populado (`resolve_git_local_scan_root`, T016/T017).
+    /// Cria um repositório de origem + um clone num diretório temporário sob
+    /// `std::env::temp_dir()` (mesmo padrão já usado por
+    /// `config_store`/`secrets_store`/`e2e_tests`) — funciona mesmo aninhado
+    /// sob `/tmp` porque `extra_binds` já é emitido depois de `--tmpfs /tmp`
+    /// na ordem normativa de `build_bwrap_args` (D5/D14, correção de escopo
+    /// 2026-09-03): não há mais o bug de sombreamento que motivou a correção
+    /// de ordem desta feature. O `SandboxProfile` usado aqui é construído à
+    /// mão (não `known_profile("git-local")`) só para poder apontar
+    /// `extra_binds` para o diretório temporário deste teste em vez do
+    /// `scan_root` real resolvido do host — `allow_network`/`allow_exec`
+    /// continuam idênticos ao perfil real.
+    #[test]
+    fn git_local_profile_allows_git_fetch_via_extra_bind() {
+        use std::process::Command as StdCommand;
+
+        let temp_root = std::env::temp_dir().join(format!(
+            "farol-sandbox-git-local-test-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("relógio do sistema não deve estar antes de UNIX_EPOCH")
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&temp_root).expect("criar diretório temporário do teste");
+
+        let origin_dir = temp_root.join("origin");
+        let clone_dir = temp_root.join("clone");
+
+        let git_env = [
+            ("GIT_AUTHOR_NAME", "Farol Sandbox Test"),
+            ("GIT_AUTHOR_EMAIL", "farol-sandbox-test@example.invalid"),
+            ("GIT_COMMITTER_NAME", "Farol Sandbox Test"),
+            ("GIT_COMMITTER_EMAIL", "farol-sandbox-test@example.invalid"),
+        ];
+
+        let run_git = |args: &[&str], cwd: &Path| {
+            let status = StdCommand::new("git")
+                .args(args)
+                .current_dir(cwd)
+                .envs(git_env)
+                .status()
+                .expect("git MUST estar instalado nesta máquina de desenvolvimento");
+            assert!(status.success(), "git {args:?} falhou em {cwd:?}");
+        };
+
+        // Origem com um primeiro commit.
+        std::fs::create_dir_all(&origin_dir).expect("criar diretório de origem");
+        run_git(&["init", "-q", "-b", "main"], &origin_dir);
+        std::fs::write(origin_dir.join("arquivo1.txt"), "commit1\n").expect("escrever arquivo1");
+        run_git(&["add", "arquivo1.txt"], &origin_dir);
+        run_git(&["commit", "-q", "-m", "commit1"], &origin_dir);
+
+        // Clone (fora do sandbox — só a etapa de `fetch` abaixo roda dentro).
+        run_git(
+            &[
+                "clone",
+                "-q",
+                &origin_dir.to_string_lossy(),
+                &clone_dir.to_string_lossy(),
+            ],
+            &temp_root,
+        );
+
+        // Segundo commit na origem, ainda não presente no clone.
+        std::fs::write(origin_dir.join("arquivo2.txt"), "commit2\n").expect("escrever arquivo2");
+        run_git(&["add", "arquivo2.txt"], &origin_dir);
+        run_git(&["commit", "-q", "-m", "commit2"], &origin_dir);
+
+        let interpreter = python3_path();
+        let profile = SandboxProfile {
+            allow_network: true,
+            allow_exec: true,
+            extra_binds: vec![BindMount {
+                host_path: temp_root.clone(),
+                writable: true,
+            }],
+        };
+        let args = build_bwrap_args(
+            &repo_root(),
+            &interpreter,
+            &profile,
+            "python3",
+            &[
+                "-c".to_string(),
+                format!(
+                    "import subprocess\n\
+                     r = subprocess.run(['git', '-C', {clone_dir:?}, 'fetch', 'origin'], \
+                     capture_output=True, text=True)\n\
+                     assert r.returncode == 0, r.stderr\n\
+                     r2 = subprocess.run(\n\
+                     \t['git', '-C', {clone_dir:?}, 'log', 'origin/main', '--oneline'],\n\
+                     \tcapture_output=True, text=True,\n\
+                     )\n\
+                     assert r2.returncode == 0, r2.stderr\n\
+                     print(r2.stdout)\n",
+                    clone_dir = clone_dir.to_string_lossy(),
+                ),
+            ],
+        );
+
+        let output = Command::new("bwrap")
+            .args(&args)
+            .output()
+            .expect("bwrap MUST estar instalado e executável nesta máquina");
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            output.status.success(),
+            "git fetch sob o sandbox de git-local falhou; stdout={stdout:?} stderr={stderr:?}"
+        );
+        assert!(
+            stdout.contains("commit2"),
+            "esperava que o clone tivesse o commit2 trazido pelo fetch dentro do sandbox; \
+             stdout={stdout:?} stderr={stderr:?}"
+        );
+
+        let _ = std::fs::remove_dir_all(&temp_root);
+    }
+
+    /// T020: `docker ps` de verdade sob o perfil de `docker-containers`
+    /// (`allow_network: false`, socket já bindado por `extra_binds` em
+    /// `known_plugins()`, T017), confirmando que o protocolo do daemon
+    /// Docker via socket Unix funciona mesmo sem rede. Requer Docker
+    /// instalado e o daemon acessível (`docker ps` sem erro) no ambiente onde
+    /// os testes rodam — confirmado presente nesta máquina de desenvolvimento
+    /// (`docker ps` funciona sem erro fora do sandbox). Num ambiente sem
+    /// Docker instalado/daemon acessível, este teste MUST ser marcado
+    /// `#[ignore = "requer Docker instalado e daemon acessível"]` em vez de
+    /// rodar (mesma disciplina já usada na feature 005 para testes que
+    /// dependem de Docker real) — não se aplica aqui porque Docker está
+    /// disponível neste ambiente de execução.
+    #[test]
+    fn docker_containers_real_profile_allows_docker_ps_via_socket() {
+        let interpreter = python3_path();
+        let profile = known_profile("docker-containers");
+        assert!(
+            !profile.allow_network,
+            "docker-containers MUST ter allow_network=false (contracts/bwrap-invocation-contract.md)"
+        );
+        assert!(
+            profile
+                .extra_binds
+                .iter()
+                .any(|b| b.host_path == Path::new("/var/run/docker.sock")),
+            "docker-containers MUST ter o socket Docker em extra_binds (T017)"
+        );
+
+        let args = build_bwrap_args(&repo_root(), &interpreter, &profile, "python3", &[
+            "-c".to_string(),
+            "import subprocess\n\
+             r = subprocess.run(['docker', 'ps'], capture_output=True, text=True)\n\
+             assert r.returncode == 0, r.stderr\n\
+             print('DOCKER_PS_OK')\n"
+                .to_string(),
+        ]);
+
+        let output = Command::new("bwrap")
+            .args(&args)
+            .output()
+            .expect("bwrap MUST estar instalado e executável nesta máquina");
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stdout.contains("DOCKER_PS_OK"),
+            "esperava `docker ps` funcionando sob docker-containers (allow_network=false); \
+             stdout={stdout:?} stderr={stderr:?}"
         );
     }
 }

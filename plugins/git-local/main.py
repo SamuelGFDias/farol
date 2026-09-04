@@ -77,7 +77,7 @@ def handle_handshake_hello(request: dict) -> dict:
     result = {
         "protocol_version": PROTOCOL_VERSION,
         "plugin_name": PLUGIN_NAME,
-        "capabilities": {"capabilities": [{"kind": "exec"}]},
+        "capabilities": {"capabilities": [{"kind": "exec"}, {"kind": "network"}]},
         "required_config": [],
         "widgets": [
             {
