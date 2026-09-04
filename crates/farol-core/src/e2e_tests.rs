@@ -326,10 +326,18 @@ impl HarnessFixture {
             "o `main.py` de {plugin_name} deveria existir em {main_py:?}"
         );
 
+        // Busca o perfil real definido para este plugin em `known_plugins()`
+        let sandbox_profile = crate::plugin_worker::known_plugins()
+            .into_iter()
+            .find(|c| c.plugin_name == plugin_name)
+            .unwrap_or_else(|| panic!("known_plugins() não tem entrada para {plugin_name}"))
+            .sandbox_profile;
+
         PluginSpawnConfig {
             plugin_name: plugin_name.to_string(),
             command: "python3".to_string(),
             args: vec![main_py.to_string_lossy().into_owned()],
+            sandbox_profile,
         }
     }
 }
@@ -1242,20 +1250,110 @@ fn wait_until_passive<P>(
 // T042 — sinalização Unix contra o processo real do plugin
 // ---------------------------------------------------------------------------
 
+/// Todos os processos vivos (não-zumbis) do sistema, como
+/// `(pid, ppid, comm, cmdline)` — base para localizar descendentes
+/// transitivos (não só filhos diretos) do processo de teste. `comm` é o
+/// nome do executável (primeiro campo de `/proc/<pid>/stat`, entre
+/// parênteses), útil para distinguir `bwrap` de `python3` quando ambos
+/// casam pela mesma `cmdline` (feature 006: `bwrap --unshare-all` insere
+/// dois processos `bwrap` — o externo e um reaper interno de PID namespace
+/// — entre o processo de teste e o processo real do plugin, e o `cmdline`
+/// do `bwrap` externo também contém o caminho do script porque ele é
+/// passado como argumento final do sandbox).
+fn all_live_processes() -> Vec<(i32, u32, String, String)> {
+    let Ok(entries) = fs::read_dir("/proc") else {
+        return Vec::new();
+    };
+
+    let mut processes = Vec::new();
+    for entry in entries.flatten() {
+        let Ok(pid) = entry.file_name().to_string_lossy().parse::<i32>() else {
+            continue;
+        };
+        let Ok(stat) = fs::read_to_string(entry.path().join("stat")) else {
+            continue;
+        };
+        // `comm` é o campo entre parênteses; pode conter espaços/parênteses
+        // internos, então usamos o primeiro `(` e o último `)` como bordas.
+        let Some(comm_start) = str::find(&stat, '(') else {
+            continue;
+        };
+        let Some(comm_end) = str::rfind(&stat, ')') else {
+            continue;
+        };
+        if comm_end <= comm_start {
+            continue;
+        }
+        let comm = stat[comm_start + 1..comm_end].to_string();
+        let after_comm = &stat[comm_end + 1..];
+        let mut fields = after_comm.split_whitespace();
+        let (Some(state), Some(ppid)) = (fields.next(), fields.next()) else {
+            continue;
+        };
+        let Ok(ppid) = ppid.parse::<u32>() else {
+            continue;
+        };
+        if state == "Z" {
+            continue;
+        }
+
+        let cmdline = fs::read(entry.path().join("cmdline"))
+            .map(|raw| {
+                String::from_utf8_lossy(&raw)
+                    .split('\0')
+                    .filter(|part| !part.is_empty())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .unwrap_or_default();
+        processes.push((pid, ppid, comm, cmdline));
+    }
+    processes
+}
+
 /// Localiza o PID do processo `uptime-kuma` real spawnado pelo cenário em
-/// andamento (T042), filtrando [`live_child_processes`] (já usado por
-/// [`assert_no_lingering_children`]) pela `cmdline`. Como [`E2E_LOCK`]
-/// serializa os cenários deste módulo e cada um spawna no máximo um plugin,
-/// encontrar mais ou menos de um candidato aqui indicaria um bug de
-/// isolamento entre testes, não uma condição normal deste cenário — falha
-/// alto e claro em vez de escolher um dos candidatos arbitrariamente.
+/// andamento (T042). Diferente de [`live_child_processes`] (que só enxerga
+/// filhos diretos, e é usado por [`assert_no_lingering_children`] para outro
+/// propósito), esta função caminha [`all_live_processes`] pela cadeia de
+/// `ppid` para achar todos os descendentes **transitivos** do processo de
+/// teste — necessário desde a feature 006, que passou a rodar cada plugin
+/// dentro de `bwrap`: a árvore real é processo de teste → `bwrap` externo →
+/// `bwrap` interno/reaper de namespace de PID → `python3` do plugin, então o
+/// processo real não é mais filho direto. Entre os descendentes cuja
+/// `cmdline` contém `"uptime-kuma/main.py"` (o que também casa com os dois
+/// processos `bwrap`, que recebem o caminho do script como argumento),
+/// filtra adicionalmente por `comm == "python3"` para descartar os `bwrap`
+/// intermediários e ficar só com o processo real do plugin. Como
+/// [`E2E_LOCK`] serializa os cenários deste módulo e cada um spawna no
+/// máximo um plugin, encontrar mais ou menos de um candidato aqui indicaria
+/// um bug de isolamento entre testes, não uma condição normal deste cenário
+/// — falha alto e claro em vez de escolher um dos candidatos
+/// arbitrariamente.
 fn find_uptime_kuma_pid() -> i32 {
+    let me = std::process::id();
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
-        let matches: Vec<i32> = live_child_processes()
+        let processes = all_live_processes();
+
+        // Descendentes transitivos de `me`: BFS pela cadeia de `ppid`.
+        let mut descendant_pids: std::collections::HashSet<i32> = std::collections::HashSet::new();
+        let mut frontier: Vec<u32> = vec![me];
+        while let Some(parent) = frontier.pop() {
+            for (pid, ppid, _, _) in &processes {
+                if *ppid == parent && descendant_pids.insert(*pid) {
+                    frontier.push(*pid as u32);
+                }
+            }
+        }
+
+        let matches: Vec<i32> = processes
             .into_iter()
-            .filter(|(_, cmdline)| cmdline.contains("uptime-kuma/main.py"))
-            .map(|(pid, _)| pid)
+            .filter(|(pid, _, comm, cmdline)| {
+                descendant_pids.contains(pid)
+                    && comm == "python3"
+                    && cmdline.contains("uptime-kuma/main.py")
+            })
+            .map(|(pid, _, _, _)| pid)
             .collect();
         match matches.as_slice() {
             [pid] => return *pid,
@@ -1263,8 +1361,8 @@ fn find_uptime_kuma_pid() -> i32 {
                 std::thread::sleep(Duration::from_millis(20));
             }
             other => panic!(
-                "esperava exatamente 1 processo uptime-kuma vivo (filho direto deste processo de \
-                 teste), encontrou {other:?}"
+                "esperava exatamente 1 processo uptime-kuma vivo (descendente transitivo deste \
+                 processo de teste, comm == \"python3\"), encontrou {other:?}"
             ),
         }
     }

@@ -65,6 +65,7 @@
 //! pipelining, o que esta feature não exercita.
 
 use std::io;
+use std::path::Path;
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -109,11 +110,18 @@ use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 /// vez de por uma `String` de `id` montada à mão — ver [`WorkerSubscriptionKey`]
 /// e [`subscription`]. Os três campos (`String`/`Vec<String>`) já implementam
 /// os três traits, então a deriva é direta.
+/// **T006 (feature 006, `specs/006-sandbox-permissoes-bubblewrap/data-model.md`
+/// § `PluginSpawnConfig`)**: ganhou `sandbox_profile` — o perfil de
+/// isolamento resolvido estaticamente para este plugin (D1: fonte de
+/// verdade é este registro, nunca o `CapabilityManifest` que o processo
+/// declara em runtime no handshake). Usado por [`worker`] para compor os
+/// argumentos de `bwrap` via `crate::sandbox::build_bwrap_args`.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PluginSpawnConfig {
     pub plugin_name: String,
     pub command: String,
     pub args: Vec<String>,
+    pub sandbox_profile: crate::sandbox::SandboxProfile,
 }
 
 /// Registro fixo dos plugins conhecidos por este core (T014/T015, correção
@@ -126,17 +134,36 @@ pub struct PluginSpawnConfig {
 /// corretamente se `farol-core` for executado com o `cwd` na raiz do repo
 /// (ex.: via `cargo run` a partir da raiz). Ponto de fragilidade conhecido,
 /// herdado da feature 001, aceitável nesta fase.
+///
+/// **T007 (feature 006, `specs/006-sandbox-permissoes-bubblewrap/contracts/
+/// bwrap-invocation-contract.md` § "Perfis resolvidos por plugin")**: cada
+/// entrada ganha `sandbox_profile`, o registro estático que decide o
+/// isolamento real via `bwrap` (D1). `extra_binds` de `git-local` (o
+/// `scan_root`) e de `docker-containers` (o socket Docker) ficam vazios
+/// nesta fase — resolvidos em runtime nas tasks T016/T017 (US2), fora do
+/// escopo desta fase Foundational.
 pub fn known_plugins() -> Vec<PluginSpawnConfig> {
     vec![
         PluginSpawnConfig {
             plugin_name: "git-local".to_string(),
             command: "python3".to_string(),
             args: vec!["plugins/git-local/main.py".to_string()],
+            sandbox_profile: crate::sandbox::SandboxProfile {
+                allow_network: true,
+                allow_exec: true,
+                // T016/T017 (US2) preenche extra_binds com o scan_root
+                extra_binds: vec![],
+            },
         },
         PluginSpawnConfig {
             plugin_name: "uptime-kuma".to_string(),
             command: "python3".to_string(),
             args: vec!["plugins/uptime-kuma/main.py".to_string()],
+            sandbox_profile: crate::sandbox::SandboxProfile {
+                allow_network: true,
+                allow_exec: false,
+                extra_binds: vec![],
+            },
         },
         // T016 (feature 004, `specs/004-vpn-status-plugin/research.md` D8): terceiro plugin
         // conhecido, envolvendo a CLI `openfortivpn-gui`.
@@ -144,6 +171,11 @@ pub fn known_plugins() -> Vec<PluginSpawnConfig> {
             plugin_name: "openfortivpn-vpn".to_string(),
             command: "python3".to_string(),
             args: vec!["plugins/openfortivpn-vpn/main.py".to_string()],
+            sandbox_profile: crate::sandbox::SandboxProfile {
+                allow_network: true,
+                allow_exec: true,
+                extra_binds: vec![],
+            },
         },
         // T017 (feature 005, `specs/005-docker-containers-plugin/research.md` D8): quarto plugin
         // conhecido, envolvendo a CLI `docker`.
@@ -151,6 +183,12 @@ pub fn known_plugins() -> Vec<PluginSpawnConfig> {
             plugin_name: "docker-containers".to_string(),
             command: "python3".to_string(),
             args: vec!["plugins/docker-containers/main.py".to_string()],
+            sandbox_profile: crate::sandbox::SandboxProfile {
+                allow_network: false,
+                allow_exec: true,
+                // T016/T017 (US2) preenche extra_binds com o socket Docker
+                extra_binds: vec![],
+            },
         },
     ]
 }
@@ -616,9 +654,71 @@ fn worker(config: PluginSpawnConfig) -> impl Stream<Item = WorkerEvent> {
     stream::channel(
         16,
         move |mut output: mpsc::Sender<WorkerEvent>| async move {
-            let mut command = Command::new(&config.command);
+            // T008 (feature 006, `specs/006-sandbox-permissoes-bubblewrap`):
+            // todo plugin spawna sob `bwrap`, não mais diretamente via
+            // `Command::new(&config.command)` — ver `crate::sandbox` para a
+            // composição dos argumentos e `research.md` D1-D12 para o porquê.
+            let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .and_then(Path::parent)
+                .expect("CARGO_MANIFEST_DIR deve ser <raiz-do-repo>/crates/farol-core")
+                .to_path_buf();
+
+            let interpreter_path = match crate::sandbox::resolve_interpreter_path(&config.command)
+            {
+                Some(path) => path,
+                None => {
+                    let _ = output
+                        .send(WorkerEvent::SpawnFailed(format!(
+                            "interpretador '{}' não encontrado no PATH",
+                            config.command
+                        )))
+                        .await;
+                    return;
+                }
+            };
+
+            let mut bwrap_args = crate::sandbox::build_bwrap_args(
+                &repo_root,
+                &interpreter_path,
+                &config.sandbox_profile,
+                &config.command,
+                &config.args,
+            );
+
+            // Escape-hatch SÓ DE TESTE (`research.md` D14, feature 006): o
+            // `harness.sh` de integração (Camada 2) sobe o binário real dentro
+            // do sandbox `bwrap` e precisa que um shim de teste grave a
+            // transcrição JSON-RPC sob um diretório de `/tmp` do host — a
+            // `--tmpfs /tmp` privada do sandbox (propriedade de segurança
+            // desejada) esconde esse caminho por padrão. Se
+            // `FAROL_SANDBOX_TEST_EXTRA_BIND` estiver definida e não vazia,
+            // acrescenta um bind gravável (`--bind-try <valor> <valor>`) para
+            // esse caminho, na mesma posição de `extra_binds` (antes do `--`
+            // que separa o comando final). Nenhum código de produção real
+            // depende disso: nenhum plugin de referência, nenhuma decisão de
+            // `known_plugins()` lê essa variável — ela só existe para o
+            // harness de integração conseguir observar o protocolo.
+            if let Ok(extra_bind) = std::env::var("FAROL_SANDBOX_TEST_EXTRA_BIND") {
+                if !extra_bind.is_empty() {
+                    if let Some(separator_pos) =
+                        bwrap_args.iter().position(|arg| arg == "--")
+                    {
+                        bwrap_args.splice(
+                            separator_pos..separator_pos,
+                            [
+                                "--bind-try".to_string(),
+                                extra_bind.clone(),
+                                extra_bind,
+                            ],
+                        );
+                    }
+                }
+            }
+
+            let mut command = Command::new("bwrap");
             command
-                .args(&config.args)
+                .args(&bwrap_args)
                 .stdin(Stdio::piped())
                 .stdout(Stdio::piped())
                 .stderr(Stdio::null())
@@ -628,7 +728,9 @@ fn worker(config: PluginSpawnConfig) -> impl Stream<Item = WorkerEvent> {
             // variável de ambiente do processo filho — ver a documentação de
             // `stored_plugin_config_values` para a decisão de design completa
             // (por que não filtrado por `required_config`, ainda desconhecido
-            // neste ponto).
+            // neste ponto). Nada muda neste mecanismo com a introdução do
+            // sandbox: `bwrap` propaga o ambiente do processo pai ao filho por
+            // padrão (não usa `--unsetenv`/`--clearenv` nesta feature).
             for (key, value) in stored_plugin_config_values(&config.plugin_name) {
                 command.env(env_var_name(&config.plugin_name, &key), value);
             }
@@ -636,13 +738,23 @@ fn worker(config: PluginSpawnConfig) -> impl Stream<Item = WorkerEvent> {
             let mut child = match command.spawn() {
                 Ok(child) => child,
                 Err(err) => {
-                    let _ = output
-                        .send(WorkerEvent::SpawnFailed(format!(
+                    // T009 (D8): diferencia a mensagem quando a causa raiz é o
+                    // próprio `bwrap` ausente do PATH do processo do Farol — a
+                    // mensagem genérica anterior citava `config.command`/
+                    // `config.args`, que agora seriam os do plugin real, não
+                    // os de `bwrap`, e confundiria o diagnóstico.
+                    let message = if err.kind() == std::io::ErrorKind::NotFound {
+                        "sandbox bubblewrap (bwrap) não encontrado no PATH — instale bubblewrap \
+                         para rodar plugins"
+                            .to_string()
+                    } else {
+                        format!(
                             "falha ao iniciar '{} {}': {err}",
                             config.command,
                             config.args.join(" ")
-                        )))
-                        .await;
+                        )
+                    };
+                    let _ = output.send(WorkerEvent::SpawnFailed(message)).await;
                     return;
                 }
             };

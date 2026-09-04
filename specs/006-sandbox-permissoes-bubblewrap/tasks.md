@@ -18,7 +18,7 @@ delas (o módulo `sandbox.rs` é pré-requisito comum às três).
 
 ## Phase 1: Setup
 
-- [ ] T001 Criar módulo `crates/farol-core/src/sandbox.rs` (arquivo vazio + `mod sandbox;` em
+- [X] T001 Criar módulo `crates/farol-core/src/sandbox.rs` (arquivo vazio + `mod sandbox;` em
       `crates/farol-core/src/main.rs`), sem lógica ainda — só o esqueleto para as tasks seguintes.
 
 ## Phase 2: Foundational (bloqueante para as 3 User Stories)
@@ -26,32 +26,32 @@ delas (o módulo `sandbox.rs` é pré-requisito comum às três).
 **Purpose**: implementar a composição dos argumentos de `bwrap` (`contracts/bwrap-invocation-contract.md`)
 e envolver o spawn já existente em `plugin_worker.rs` — nenhuma User Story é testável sem isso.
 
-- [ ] T002 [P] Implementar `SandboxProfile`/`BindMount` (`data-model.md`) em `crates/farol-core/src/sandbox.rs`
-- [ ] T003 Implementar resolução do caminho absoluto do interpretador (`research.md` D10,
+- [X] T002 [P] Implementar `SandboxProfile`/`BindMount` (`data-model.md`) em `crates/farol-core/src/sandbox.rs`
+- [X] T003 Implementar resolução do caminho absoluto do interpretador (`research.md` D10,
       `resolve_interpreter_path`) em `crates/farol-core/src/sandbox.rs` — busca em `$PATH` do
       processo do Farol, sem crate nova
-- [ ] T004 Implementar `build_bwrap_args(repo_root, interpreter_path, profile, command, args) ->
+- [X] T004 Implementar `build_bwrap_args(repo_root, interpreter_path, profile, command, args) ->
       Vec<String>` em `crates/farol-core/src/sandbox.rs`, seguindo exatamente a ordem normativa de
       `contracts/bwrap-invocation-contract.md` (base → condicional rede → condicional exec → código
       do repo → mounts genéricos → `extra_binds` por último → `--` + comando)
-- [ ] T005 [P] Testes de unidade de `build_bwrap_args` em `crates/farol-core/src/sandbox.rs`: perfil
+- [X] T005 [P] Testes de unidade de `build_bwrap_args` em `crates/farol-core/src/sandbox.rs`: perfil
       sem rede/sem exec, com rede, com exec, com `extra_binds`, e um teste que trava a ordem relativa
       dos blocos (regressão do bug real de ordem encontrado em `research.md` D5)
-- [ ] T006 Estender `PluginSpawnConfig` com o campo `sandbox_profile: SandboxProfile` em
+- [X] T006 Estender `PluginSpawnConfig` com o campo `sandbox_profile: SandboxProfile` em
       `crates/farol-core/src/plugin_worker.rs`
-- [ ] T007 Atualizar `known_plugins()` em `crates/farol-core/src/plugin_worker.rs` com o perfil de
+- [X] T007 Atualizar `known_plugins()` em `crates/farol-core/src/plugin_worker.rs` com o perfil de
       cada um dos 4 plugins, exatamente conforme a tabela "Perfis resolvidos por plugin" de
       `contracts/bwrap-invocation-contract.md` (`git-local`: rede+exec+`scan_root`; `uptime-kuma`:
       rede, sem exec; `openfortivpn-vpn`: rede+exec; `docker-containers`: exec+socket Docker, sem rede)
-- [ ] T008 Alterar `worker()` em `crates/farol-core/src/plugin_worker.rs` para spawnar via
+- [X] T008 Alterar `worker()` em `crates/farol-core/src/plugin_worker.rs` para spawnar via
       `Command::new("bwrap")` com os argumentos de `sandbox::build_bwrap_args(...)` seguidos de `--`
       + `config.command` + `config.args`, preservando `.env(...)` (T018 original, D8/D9 —
       **nenhuma mudança** no mecanismo de env var), `.stdin/.stdout/.stderr/.kill_on_drop` já
       existentes
-- [ ] T009 Diferenciar, em `worker()`, a mensagem de erro quando o processo `bwrap` em si não é
+- [X] T009 Diferenciar, em `worker()`, a mensagem de erro quando o processo `bwrap` em si não é
       encontrado (`std::io::ErrorKind::NotFound` do comando `"bwrap"`) de uma falha do plugin real —
       ambas continuam mapeando para `Unavailable{FailedToStart}` (`research.md` D8), só o texto muda
-- [ ] T010 Testes de integração real com `bwrap` instalado (novo módulo/seção `#[cfg(test)]` em
+- [X] T010 Testes de integração real com `bwrap` instalado (novo módulo/seção `#[cfg(test)]` em
       `crates/farol-core/src/sandbox.rs` ou arquivo próprio, `#[ignore]`able se `bwrap` ausente do
       `PATH` do ambiente, `research.md` D11): reproduzir os dois experimentos negativos já validados
       manualmente nesta sessão (rede negada → `ConnectionRefused`/`Network is unreachable`; exec

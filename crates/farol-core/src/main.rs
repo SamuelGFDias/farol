@@ -21,6 +21,7 @@ mod config_store;
 mod e2e_tests;
 mod model;
 mod plugin_worker;
+mod sandbox;
 mod secrets_store;
 mod update;
 mod view;

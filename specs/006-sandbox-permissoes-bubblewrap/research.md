@@ -124,6 +124,26 @@ plugin (`scan_root`, socket do Docker) MUST vir depois dos mounts base (`--proc`
 (reprodução: bind antes de `--tmpfs /tmp` com `scan_root` sob `/tmp` → `git fetch` falhava com
 "cannot change to ... No such file or directory"; mesmo bind depois de `--tmpfs /tmp` → funciona).
 
+**Correção de escopo desta armadilha (achada só na verificação de Camada 2, `tests/integration/
+harness.sh`, depois da implementação inicial)**: a armadilha acima não é exclusiva de `extra_binds`
+— atinge **qualquer** bind de caminho real aninhado sob `/tmp`, inclusive o bind do próprio
+interpretador. `harness.sh` resolve `python3` para um shim de teste (relé transparente que grava a
+transcrição JSON-RPC) criado sob `$(mktemp -d)`, tipicamente `/tmp/farol-harness-XXXX/bin/python3` —
+com esse bind posicionado antes de `--tmpfs /tmp` (ordem original do contrato, que só corrigia a
+posição de `extra_binds`), `bwrap` falhava com `execvp .../bin/python3: No such file or directory`
+para **todos os 4 plugins** (o mecanismo de shim do harness afeta todos igualmente). Reproduzido e
+confirmado isoladamente nesta sessão: o mesmo bind, movido para depois de `--tmpfs /tmp`, funciona
+(`SHIM RAN OK`). **Regra generalizada e corrigida em `contracts/bwrap-invocation-contract.md`**: os
+três mounts sintéticos genéricos (`--proc`, `--dev`, `--tmpfs /tmp`) passam a vir logo depois das
+flags de namespace, **antes de qualquer bind de caminho real** (interpretador, DNS/TLS, `/usr/bin`,
+raiz do repo, `extra_binds`) — não só antes de `extra_binds` como a primeira versão do contrato
+previa. Esta é a segunda vez, na mesma feature, que uma suposição sobre "onde um caminho pode viver"
+se mostra otimista demais (a primeira foi `scan_root` de teste; a segunda foi o shim de
+`harness.sh`) — reforça que testar só com caminhos fora de `/tmp` (como fiz nas primeiras validações
+manuais de D2/D3) não é suficiente para provar a composição de argumentos correta; a Camada 2
+(binário real, fixture do harness) pegou o que a Camada 1 (`cargo test`, que não usa esse shim) não
+pegava.
+
 **`git-local`/`scan_root`, validado empiricamente** — `git fetch` contra um remote bare local dentro
 do `scan_root` bindado como leitura/escrita funciona normalmente (`git -C <clone> fetch origin`
 trouxe os commits novos do bare remote).
@@ -215,6 +235,55 @@ lado de fora, no host, e bindar exatamente esse arquivo evita essa reabertura.
   sessão) — em CI sem Docker instalado, o `--bind-try` é tolerante (não falha por ausência), e o
   comportamento observável (sem Docker instalado) já é coberto pelo teste de fixture existente da
   feature 005 (que não depende de Docker real).
+
+## D14: Escape-hatch só de teste para o `harness.sh` gravar a transcrição JSON-RPC sob `/tmp`
+
+**Achado durante a verificação de Camada 2** (depois de D5/a correção de ordem acima): mesmo com a
+ordem de binds corrigida, `tests/integration/harness.sh` continua falhando — não mais pelo bind do
+próprio interpretador (esse já fica visível), mas porque o shim de teste (`$WORK/bin/python3`, um
+relé transparente que grava a transcrição JSON-RPC core↔plugin para verificação) escreve em
+`$WORK/rpc/*.ndjson`, um caminho **diferente** do interpretador, também sob `/tmp` (`$WORK =
+$(mktemp -d)`), e esse caminho nunca entra em bind nenhum — continua coberto pela `--tmpfs /tmp`
+vazia e privada do sandbox. Resultado: as threads do shim recebem `FileNotFoundError` ao tentar abrir
+o arquivo de transcrição, morrem antes de repassar qualquer byte do protocolo, e nenhum plugin chega
+a `Ready` sob o harness. (Nota de posição: esta decisão é numerada D14 porque foi documentada depois
+de D12 — não há relação de dependência com D12/D13 além da ordem cronológica de descoberta.)
+
+**Por que isso não é resolvível só com mais binds "de produção"**: a `/tmp` privada por sandbox é uma
+propriedade de segurança desejada (Princípio IV) — plugins não devem compartilhar um `/tmp` gravável
+com processos arbitrários do host. Mover `$WORK` para dentro de `repo_root` não resolve, porque o
+bind de `repo_root` é **read-only** (D4) — o shim precisa **escrever** a transcrição. Generalizar uma
+capability de "diretório de trabalho gravável" para todo plugin também está fora de escopo (nenhum
+dos 4 plugins de referência precisa disso hoje para funcionar de verdade — só a instrumentação de
+teste do harness precisa).
+
+**Decisão**: um escape-hatch **só de teste**, simétrico ao já usado em `e2e_tests.rs` para
+`XDG_CONFIG_HOME`/`PATH` (manipulação de variável de ambiente do processo de teste para fins de
+hermetismo, D2/D3 de `specs/002-uptime-kuma-plugin/research.md`) — uma variável de ambiente lida por
+`worker()` (`plugin_worker.rs`), ex. `FAROL_SANDBOX_TEST_EXTRA_BIND` (nome exato a critério de quem
+implementar, desde que documentado como só-de-teste), que, se presente, adiciona **um** bind
+adicional gravável (`--bind-try <valor> <valor>`) à composição de `build_bwrap_args`, na mesma
+posição de `extra_binds` (depois dos mounts genéricos). `harness.sh` passa a exportar essa variável
+apontando para `$WORK` (ou só `$RPC_DIR`) ao spawnar `$FAROL_BIN`. **Nenhum código de produção real**
+(nenhum dos 4 plugins, nenhuma decisão de `known_plugins()`) passa a depender dessa variável —
+continua não fazendo sentido nenhum fora de um ambiente de teste, e não enfraquece a postura de
+segurança de produção (um plugin de terceiro instalado por um usuário final nunca teria motivo para
+setar essa env var, e mesmo que setasse, só afeta o PRÓPRIO sandbox dele, nunca o de outro plugin).
+
+**Segundo achado, ortogonal, na implementação deste D14**: o bind de `$WORK` (D14) sozinho resolveu
+`git-local`/`openfortivpn-vpn`/`docker-containers`, mas não `uptime-kuma` — o único dos 4 com
+`allow_exec: false`. Causa: o shim de teste (`$WORK/bin/python3`) é um script com shebang
+`#!$REAL_PYTHON` (`$REAL_PYTHON` = caminho absoluto do `python3` real do sistema, ex.
+`/usr/bin/python3`) — `bwrap` resolve esse shebang via `execvp`, o que exige `$REAL_PYTHON` visível
+dentro do sandbox no momento do exec; sem `allow_exec`, `/usr/bin` não é bindado, então o `execvp`
+falha (`ENOENT`). Bindar `/usr/bin` só para contornar isso mudaria o perfil de sandbox REAL de
+`uptime-kuma` (fora de escopo — o objetivo é provar que `allow_exec: false` continua funcionando,
+não contornar). Corrigido inteiramente dentro de `harness.sh`: o interpretador real é copiado para
+dentro do próprio `$WORK` (`$WORK/bin/python3-real`), e essa cópia — já coberta pelo bind de `$WORK`
+que D14 provê — passa a ser o valor de `$REAL_PYTHON` usado tanto no shebang do shim quanto na
+chamada `subprocess.Popen([REAL_PYTHON] + args, ...)` que o shim faz internamente. Nenhum bind novo
+de produção, nenhuma mudança em `sandbox.rs`/`known_plugins()` — só o shim de teste passou a
+depender de uma cópia local do interpretador em vez do caminho original do sistema.
 
 ## D12: Versão mínima de `bwrap` considerada
 

@@ -180,6 +180,27 @@ mkdir -p "$FAROL_CONFIG/plugins/git-local" "$FAROL_CONFIG/plugins/uptime-kuma" \
 
 log "fixture hermética em $WORK (XDG_CONFIG_HOME isolado; ~/.config/farol intocado)"
 
+# O shim de `python3` abaixo é um script com shebang (`#!$REAL_PYTHON`), e
+# `bwrap` o executa via `execvp` direto (sem shell) — a resolução do shebang
+# exige que `$REAL_PYTHON` esteja visível *dentro* do sandbox no momento do
+# exec. Para o plugin `uptime-kuma` (`sandbox_profile.allow_exec = false`,
+# `plugin_worker::known_plugins()`), `/usr/bin` (onde `$REAL_PYTHON` normalmente
+# mora) não é bindado — só `FAROL_SANDBOX_TEST_EXTRA_BIND="$WORK"` (D14) está
+# disponível. Copiar o interpretador real para dentro de `$WORK/bin` e usar
+# essa cópia (em vez do caminho original do sistema) como `$REAL_PYTHON` daqui
+# em diante cobre tanto o `execvp` do shim (shebang) quanto o
+# `subprocess.Popen([REAL_PYTHON] + args, ...)` que o próprio shim faz
+# internamente para invocar o interpretador real — ambos passam a apontar
+# para um caminho já coberto pelo bind de `$WORK`, sem exigir bind de
+# `/usr/bin` (que mudaria o perfil de sandbox real do plugin — fora de
+# escopo). Bibliotecas compartilhadas continuam acessíveis porque
+# `/usr/lib(64)`, `/lib(64)` e `/etc/ld.so.cache` já são bindados
+# incondicionalmente por `sandbox::build_bwrap_args`, independente de
+# `allow_exec`.
+cp "$REAL_PYTHON" "$WORK/bin/python3-real"
+chmod +x "$WORK/bin/python3-real"
+REAL_PYTHON="$WORK/bin/python3-real"
+
 # Repositório git real, com identidade/datas fixas e sem herdar ~/.gitconfig.
 (
     cd "$SCAN_ROOT/exemplo"
@@ -270,7 +291,7 @@ FAROL_LOG="$WORK/farol.log"
 log "subindo target/debug/farol sob xvfb-run (cwd = raiz do repo, exigido por known_plugins())"
 
 set -m   # job control: o job em background vira líder de seu próprio grupo
-env XDG_CONFIG_HOME="$XDG_DIR" PATH="$WORK/bin:$PATH" \
+env XDG_CONFIG_HOME="$XDG_DIR" PATH="$WORK/bin:$PATH" FAROL_SANDBOX_TEST_EXTRA_BIND="$WORK" \
     xvfb-run -a "$FAROL_BIN" > "$FAROL_LOG" 2>&1 &
 FAROL_PID=$!
 set +m
