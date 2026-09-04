@@ -45,6 +45,13 @@ texto completo de cada decisão:
   host; divergência registrada como débito técnico rastreável (FR-010).
 - C3: caso `git-local`/`scan_root` (único plugin com acesso a filesystem além do próprio código) →
   exceção nomeada nesta fase, core replica a leitura do `scan_root` (FR-008).
+- C4 (achado durante o planejamento, retroalimentado na spec): `docker-containers` também precisa
+  de acesso a filesystem além do próprio código (socket Unix do daemon Docker) → segundo caso
+  especial nomeado, mesma disciplina de C3 (FR-008).
+- C5 (achado durante o planejamento, retroalimentado na spec): `git-local`/`openfortivpn-vpn`
+  dependiam de rede real (`git.fetch`/`vpn.connect` contra remote/servidor genuínos) sem declarar a
+  capability `network` → correção de manifesto dentro do escopo desta feature, não scope creep
+  (FR-013).
 
 ## Notes
 

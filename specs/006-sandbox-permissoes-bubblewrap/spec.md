@@ -50,6 +50,28 @@ agora"). Base de cada decisão: leitura direta do código atual (`plugin_worker.
   do lado Rust só para calcular o bind adicional de leitura/escrita daquele diretório para esse
   plugin especificamente. Generalizar isso para uma capability de filesystem declarável por
   qualquer plugin fica fora de escopo (ver Out of Scope).
+- Q: Investigação técnica durante o planejamento (não prevista ao escrever a primeira versão desta
+  spec) achou mais dois casos de plugin de referência cujo funcionamento real depende de acesso que
+  o manifesto atual não declara — o que fazer? → A: dois achados, duas respostas diferentes:
+  1. `docker-containers` fala com o daemon Docker por um socket Unix local
+     (`/var/run/docker.sock` ou o equivalente rootless), não por rede — é o **mesmo tipo de lacuna**
+     de `git-local`/`scan_root` (acesso a um caminho de filesystem específico fora do próprio código
+     do plugin, hoje não coberto por nenhuma capability declarada), não uma questão de rede. Tratado
+     como um segundo caso especial nomeado, mesma disciplina do `scan_root` (FR-008 passa a cobrir
+     os dois).
+  2. `git-local` (ação `git.fetch`, contra um remote de verdade, não local) e `openfortivpn-vpn`
+     (ação `vpn.connect`, para abrir o túnel de verdade) dependem de rede real para funcionar contra
+     um remote/servidor genuíno — e nenhum dos dois declara a capability `network` hoje. Esta é uma
+     inconsistência pré-existente do manifesto, exposta agora porque é a primeira vez que o
+     manifesto passa a ser realmente aplicado — corrigi-la está dentro do escopo desta feature (é
+     exatamente o problema que ela existe para resolver), não é scope creep: os dois manifestos
+     passam a declarar `network` também (FR-013). **Ressalva de verificação**: a suíte automatizada
+     de regressão dos dois plugins (fixtures/harness) não exercita rede real hoje (`git-local` testa
+     contra remote local em disco; `openfortivpn-vpn` testa contra um binário fixture que não abre
+     túnel de verdade) — então SC-002/FR-011 continuam verificáveis sem depender de rede real
+     disponível no ambiente de teste; o cenário de uso real contra um servidor genuíno permanece
+     validável só manualmente, mesma ressalva já registrada em `quickstart.md` da feature 004 para
+     o Cenário 3.
 
 ## User Scenarios & Testing *(mandatory)*
 
@@ -144,8 +166,12 @@ consegue ler o valor via variável de ambiente, mas não consegue localizar nem 
 
 - O que acontece quando `bwrap` não está instalado na máquina? → resolvido em Clarifications: falha
   fechada, plugin não inicia, estado de erro claro (não é um "modo degradado sem sandbox").
-- Como o sandbox concilia com o caso especial de `git-local` e seu `scan_root` configurável? →
-  resolvido em Clarifications: caso especial nomeado, core replica a leitura de `scan_root`.
+- Como o sandbox concilia com o caso especial de `git-local` e seu `scan_root` configurável, e com
+  `docker-containers` e o socket Unix do daemon Docker? → resolvido em Clarifications: dois casos
+  especiais nomeados, cada um com seu bind adicional específico.
+- `git-local`/`openfortivpn-vpn` declaravam manifesto sem `network`, apesar de suas ações reais
+  (`git.fetch` contra remote real, `vpn.connect`) dependerem de rede → resolvido em Clarifications:
+  correção do manifesto (FR-013), dentro do escopo desta feature.
 - Um plugin com a capability `exec` declarada (todos os 4 de referência hoje) precisa continuar
   conseguindo localizar e executar os binários externos específicos de que já depende (`git`,
   `docker`, `openfortivpn-gui`) de dentro do sandbox, sem regressão nas features 001/004/005.
@@ -184,11 +210,13 @@ consegue ler o valor via variável de ambiente, mas não consegue localizar nem 
   o(s) plugin(s) afetado(s) e reportar um estado de erro claro e distinto dos já existentes
   (`FailedToStart`/`Crashed`/`Unresponsive`/`VersionIncompatible`) — MUST NOT executar o plugin sem
   sandbox como fallback silencioso.
-- **FR-008**: `git-local` MUST continuar conseguindo ler e escrever (via `git fetch`) no diretório
-  configurável `scan_root` (`~/dev` por padrão) mesmo dentro do sandbox — hoje o único plugin de
-  referência com necessidade de acesso a filesystem além do próprio código; o core resolve esse
-  diretório do mesmo jeito que o próprio plugin já faz hoje (mesmo caminho de config, mesmo default)
-  para computar o bind adicional.
+- **FR-008**: dois casos especiais nomeados de acesso a filesystem além do próprio código do plugin
+  MUST continuar funcionando dentro do sandbox, sem capability genérica nova: (a) `git-local` MUST
+  continuar conseguindo ler e escrever (via `git fetch`) no diretório configurável `scan_root`
+  (`~/dev` por padrão) — o core resolve esse diretório do mesmo jeito que o próprio plugin já faz
+  hoje (mesmo caminho de config, mesmo default); (b) `docker-containers` MUST continuar conseguindo
+  falar com o daemon Docker pelo socket Unix local (`/var/run/docker.sock` ou o equivalente
+  rootless) — o core bind-monta esse socket especificamente para esse plugin.
 - **FR-009**: O core MUST continuar detectando `Crashed`/`Unresponsive`/`FailedToStart` normalmente
   para um plugin rodando dentro do sandbox, e a mensagem de erro MUST diferenciar uma falha de
   configuração do próprio sandbox de uma falha genuína do plugin.
@@ -204,6 +232,13 @@ consegue ler o valor via variável de ambiente, mas não consegue localizar nem 
   no spawn, exatamente como hoje (`secrets_store.rs`/`config_store.rs`) — esta feature não MUST
   alterar esse mecanismo, só garantir (US3) que o sandboxing não abre um caminho adicional de
   vazamento desses arquivos.
+- **FR-013**: os manifestos de `git-local` e `openfortivpn-vpn` MUST passar a declarar também a
+  capability `network` — achado do planejamento desta feature (não previsto na primeira versão desta
+  spec): as ações `git.fetch` (contra um remote real) e `vpn.connect` (para abrir o túnel de verdade)
+  já dependiam de rede antes desta feature, só que o manifesto nunca refletiu isso porque nunca foi
+  aplicado de verdade. Corrigir essa inconsistência está dentro do escopo desta feature — é o
+  problema central que ela resolve — e MUST acontecer antes ou junto da ativação do sandbox para
+  esses dois plugins, para não regredir (FR-011) o uso real (não-fixture) dessas duas ações.
 
 ### Key Entities
 
@@ -254,8 +289,14 @@ consegue ler o valor via variável de ambiente, mas não consegue localizar nem 
   ausência com falha fechada, não com instalação automática).
 - Os 4 plugins de referência existentes continuam sendo processos Python3 puro (`command: "python3"`
   em `known_plugins()`) — nenhum plugin novo é adicionado nesta feature.
-- `git-local` continua sendo o único plugin de referência que precisa de acesso a filesystem além do
-  próprio diretório de código (FR-008); nenhum outro plugin existente hoje tem essa necessidade.
+- `git-local` (diretório `scan_root`) e `docker-containers` (socket Unix do daemon Docker) são os
+  dois casos especiais nomeados de acesso a filesystem além do próprio código do plugin (FR-008);
+  nenhum outro plugin existente hoje tem necessidade equivalente.
+- A verificação automatizada desta feature (testes/harness) não depende de rede real disponível no
+  ambiente: nenhuma suíte de regressão hoje exercita `git.fetch` contra um remote de verdade nem
+  `vpn.connect` contra um túnel de verdade (ambos usam fixture/remote local em disco) — a correção
+  do manifesto (FR-013) é validável automaticamente pela declaração em si (capability presente) e
+  manualmente, por leitura de código, quanto ao uso real contra rede/servidor genuínos.
 - Ambiente Linux com suporte a namespaces do kernel (user/mount/network) — pré-requisito do próprio
   `bwrap`, já coberto pelo Princípio I da constitution (app nativo Linux, sem navegador).
 - O mecanismo de resolução de segredos/config por variável de ambiente no spawn (`secrets_store.rs`/
