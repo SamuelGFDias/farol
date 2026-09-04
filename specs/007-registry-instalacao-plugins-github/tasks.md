@@ -18,7 +18,7 @@ User Stories, independentes entre si.
 
 ## Phase 1: Setup
 
-- [ ] T001 Criar `crates/farol-core/src/plugin_manifest.rs` (vazio) e `crates/farol-core/src/
+- [X] T001 Criar `crates/farol-core/src/plugin_manifest.rs` (vazio) e `crates/farol-core/src/
       install.rs` (vazio), declarar `mod plugin_manifest;`/`mod install;` em
       `crates/farol-core/src/main.rs` (ordem alfabética, entre `plugin_worker` e `sandbox`/`secrets_store`)
 
@@ -27,29 +27,29 @@ User Stories, independentes entre si.
 **Purpose**: manifesto (`PluginManifest`/`parse_manifest`), diretório de dados, e a generalização de
 `code_root` no sandbox — pré-requisito comum.
 
-- [ ] T002 [P] Implementar `PluginManifest`/`ManifestError`/`parse_manifest` (`data-model.md`,
+- [X] T002 [P] Implementar `PluginManifest`/`ManifestError`/`parse_manifest` (`data-model.md`,
       `contracts/plugin-manifest-and-install-contract.md`) em `crates/farol-core/src/
       plugin_manifest.rs` — desserialização TOML tolerante a campo desconhecido, validação exata da
       tabela de `ManifestError` do contrato
-- [ ] T003 [P] Testes de unidade de `parse_manifest` em `plugin_manifest.rs`: arquivo ausente, TOML
+- [X] T003 [P] Testes de unidade de `parse_manifest` em `plugin_manifest.rs`: arquivo ausente, TOML
       inválido, `plugin_name` ausente/vazio, `command` ausente, `args` ausente (`args = []` válido),
       `capabilities` ausente (default `false`/`false`), campo desconhecido ignorado, caso de sucesso
       completo
-- [ ] T004 Implementar `farol_data_base_dir()`/`installed_plugin_dir(nome)` (`research.md` D2) em
+- [X] T004 Implementar `farol_data_base_dir()`/`installed_plugin_dir(nome)` (`research.md` D2) em
       `plugin_manifest.rs` (ou módulo próprio `data_store.rs`, à sua escolha — documentar a decisão),
       mesma convenção de `config_store::farol_config_base_dir()` mas para `XDG_DATA_HOME`/
       `~/.local/share`
-- [ ] T005 Estender `PluginSpawnConfig` com o campo `code_root: PathBuf` em
+- [X] T005 Estender `PluginSpawnConfig` com o campo `code_root: PathBuf` em
       `crates/farol-core/src/plugin_worker.rs`; atualizar `known_plugins()` para preencher esse
       campo com a raiz do repositório Farol (mesmo cálculo que `worker()` já fazia via
       `env!("CARGO_MANIFEST_DIR")`, movido para o ponto de construção de `known_plugins()` ou
       calculado uma vez e reutilizado)
-- [ ] T006 Alterar `worker()` (`plugin_worker.rs`) para usar `config.code_root` diretamente em vez de
+- [X] T006 Alterar `worker()` (`plugin_worker.rs`) para usar `config.code_root` diretamente em vez de
       calcular `repo_root` internamente — mesma chamada a `sandbox::build_bwrap_args`, só a origem
       do parâmetro muda; `sandbox.rs` não precisa mudar de assinatura (o parâmetro já se chamava
       `repo_root: &Path` — pode ser renomeado para `code_root: &Path` por clareza, mas isso é
       cosmético, não funcional)
-- [ ] T007 Testes de unidade/integração confirmando que a mudança de T005/T006 não altera o
+- [X] T007 Testes de unidade/integração confirmando que a mudança de T005/T006 não altera o
       comportamento dos 4 plugins de referência (regressão) — reaproveitar/ajustar os testes já
       existentes de `sandbox_integration_tests` que usam os perfis reais de `known_plugins()`
 

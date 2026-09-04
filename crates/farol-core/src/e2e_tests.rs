@@ -338,6 +338,7 @@ impl HarnessFixture {
             command: "python3".to_string(),
             args: vec![main_py.to_string_lossy().into_owned()],
             sandbox_profile,
+            code_root: repo_root().to_path_buf(),
         }
     }
 }

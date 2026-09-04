@@ -19,8 +19,10 @@
 mod config_store;
 #[cfg(test)]
 mod e2e_tests;
+mod install;
 mod model;
 mod plugin_worker;
+mod plugin_manifest;
 mod sandbox;
 mod secrets_store;
 mod update;

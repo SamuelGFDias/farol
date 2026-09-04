@@ -65,7 +65,7 @@
 //! pipelining, o que esta feature não exercita.
 
 use std::io;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::time::Duration;
 
@@ -116,12 +116,19 @@ use tokio::process::{Child, ChildStdin, ChildStdout, Command};
 /// verdade é este registro, nunca o `CapabilityManifest` que o processo
 /// declara em runtime no handshake). Usado por [`worker`] para compor os
 /// argumentos de `bwrap` via `crate::sandbox::build_bwrap_args`.
+/// **T005 (feature 007, `specs/007-registry-instalacao-plugins-github/data-model.md`
+/// § "Extensão de `PluginSpawnConfig`")**: ganhou `code_root` — generaliza o antigo cálculo
+/// interno de `repo_root` em `worker()` (D4 de `research.md`). Para os 4 plugins de referência
+/// (`known_plugins`), é a raiz do repositório Farol (mesmo valor de antes); para um plugin
+/// descoberto (`discover_installed_plugins`, US1, fora do escopo desta subtarefa), é o próprio
+/// diretório de instalação (`plugin_manifest::installed_plugin_dir`).
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PluginSpawnConfig {
     pub plugin_name: String,
     pub command: String,
     pub args: Vec<String>,
     pub sandbox_profile: crate::sandbox::SandboxProfile,
+    pub code_root: PathBuf,
 }
 
 /// Registro fixo dos plugins conhecidos por este core (T014/T015, correção
@@ -142,6 +149,7 @@ pub struct PluginSpawnConfig {
 /// `scan_root`, resolvido por `sandbox::resolve_git_local_scan_root`, T016)
 /// e de `docker-containers` (o socket Docker, T017) são populados aqui.
 pub fn known_plugins() -> Vec<PluginSpawnConfig> {
+    let code_root = farol_repo_root();
     vec![
         PluginSpawnConfig {
             plugin_name: "git-local".to_string(),
@@ -155,6 +163,7 @@ pub fn known_plugins() -> Vec<PluginSpawnConfig> {
                     writable: true,
                 }],
             },
+            code_root: code_root.clone(),
         },
         PluginSpawnConfig {
             plugin_name: "uptime-kuma".to_string(),
@@ -165,6 +174,7 @@ pub fn known_plugins() -> Vec<PluginSpawnConfig> {
                 allow_exec: false,
                 extra_binds: vec![],
             },
+            code_root: code_root.clone(),
         },
         // T016 (feature 004, `specs/004-vpn-status-plugin/research.md` D8): terceiro plugin
         // conhecido, envolvendo a CLI `openfortivpn-gui`.
@@ -177,6 +187,7 @@ pub fn known_plugins() -> Vec<PluginSpawnConfig> {
                 allow_exec: true,
                 extra_binds: vec![],
             },
+            code_root: code_root.clone(),
         },
         // T017 (feature 005, `specs/005-docker-containers-plugin/research.md` D8): quarto plugin
         // conhecido, envolvendo a CLI `docker`.
@@ -192,8 +203,22 @@ pub fn known_plugins() -> Vec<PluginSpawnConfig> {
                     writable: true,
                 }],
             },
+            code_root,
         },
     ]
+}
+
+/// Raiz do repositório Farol — `code_root` (T005) dos 4 plugins de referência de
+/// [`known_plugins`]. Movido de dentro de `worker()` (era calculado a cada spawn) para cá,
+/// calculado uma vez por chamada de `known_plugins()` e clonado nas 4 entradas (D4 de
+/// `specs/007-registry-instalacao-plugins-github/research.md`) — mesmo cálculo de antes, via
+/// `CARGO_MANIFEST_DIR` (`<raiz-do-repo>/crates/farol-core`, dois níveis acima).
+fn farol_repo_root() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .and_then(Path::parent)
+        .expect("CARGO_MANIFEST_DIR deve ser <raiz-do-repo>/crates/farol-core")
+        .to_path_buf()
 }
 
 /// Orçamento de timeout para chamadas de controle (`handshake/hello` e
@@ -661,12 +686,9 @@ fn worker(config: PluginSpawnConfig) -> impl Stream<Item = WorkerEvent> {
             // todo plugin spawna sob `bwrap`, não mais diretamente via
             // `Command::new(&config.command)` — ver `crate::sandbox` para a
             // composição dos argumentos e `research.md` D1-D12 para o porquê.
-            let repo_root = Path::new(env!("CARGO_MANIFEST_DIR"))
-                .parent()
-                .and_then(Path::parent)
-                .expect("CARGO_MANIFEST_DIR deve ser <raiz-do-repo>/crates/farol-core")
-                .to_path_buf();
-
+            // T006 (feature 007, `research.md` D4): `code_root` já vem pronto em `config` —
+            // raiz do repositório Farol para os 4 plugins de referência (`known_plugins`,
+            // via `farol_repo_root()`), diretório de instalação para um plugin descoberto.
             let interpreter_path = match crate::sandbox::resolve_interpreter_path(&config.command)
             {
                 Some(path) => path,
@@ -682,7 +704,7 @@ fn worker(config: PluginSpawnConfig) -> impl Stream<Item = WorkerEvent> {
             };
 
             let mut bwrap_args = crate::sandbox::build_bwrap_args(
-                &repo_root,
+                &config.code_root,
                 &interpreter_path,
                 &config.sandbox_profile,
                 &config.command,
