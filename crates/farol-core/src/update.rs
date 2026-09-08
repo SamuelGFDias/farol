@@ -71,27 +71,64 @@ const VPN_WIDGET_KIND: &str = "vpn-status";
 const CONTAINER_WIDGET_KIND: &str = "container-status-grid";
 
 impl Farol {
-    pub(crate) fn update(&mut self, message: Message) {
+    /// **Feature 008, US4 (T014)**: retorno mudou de `()` para
+    /// `iced::Task<Message>` — necessário para `InstallByNameSubmitted`
+    /// disparar `install::run_by_name` (bloqueante: `curl`/`tar`/`sh -c`) via
+    /// `tokio::task::spawn_blocking` dentro de `iced::Task::perform`, sem
+    /// travar a UI durante o download/build (D5 de `plan.md`). Mudança
+    /// compatível com o `iced::application(boot, Farol::update, Farol::view)`
+    /// existente (`main.rs::program`): o `UpdateFn` do `iced` 0.14 aceita
+    /// qualquer `C: Into<Task<Message>>`, e todo braço pré-existente abaixo
+    /// devolve `()`, que tem `impl<T> From<()> for Task<T>` — só o braço novo
+    /// de fato produz uma `Task` não-trivial.
+    pub(crate) fn update(&mut self, message: Message) -> iced::Task<Message> {
         match message {
-            Message::Worker { plugin_name, event } => self.handle_worker_event(&plugin_name, event),
-            Message::RefreshTick { plugin_name } => self.handle_refresh_tick(&plugin_name),
+            Message::Worker { plugin_name, event } => {
+                self.handle_worker_event(&plugin_name, event);
+                iced::Task::none()
+            }
+            Message::RefreshTick { plugin_name } => {
+                self.handle_refresh_tick(&plugin_name);
+                iced::Task::none()
+            }
             Message::ActionInvokeRequested {
                 plugin_name,
                 action_id,
                 target,
                 timeout_hint_ms,
-            } => self.handle_action_invoke_requested(
-                &plugin_name,
-                action_id,
-                target,
-                timeout_hint_ms,
-            ),
+            } => {
+                self.handle_action_invoke_requested(&plugin_name, action_id, target, timeout_hint_ms);
+                iced::Task::none()
+            }
             Message::SetupFieldChanged {
                 plugin_name,
                 field_name,
                 value,
-            } => self.handle_setup_field_changed(&plugin_name, &field_name, value),
-            Message::SetupSubmitted { plugin_name } => self.handle_setup_submitted(&plugin_name),
+            } => {
+                self.handle_setup_field_changed(&plugin_name, &field_name, value);
+                iced::Task::none()
+            }
+            Message::SetupSubmitted { plugin_name } => {
+                self.handle_setup_submitted(&plugin_name);
+                iced::Task::none()
+            }
+            Message::InstallFormNameChanged(value) => {
+                self.handle_install_form_name_changed(value);
+                iced::Task::none()
+            }
+            Message::InstallByNameSubmitted => self.handle_install_by_name_submitted(),
+            Message::InstallOutcomeReceived { success, message } => {
+                self.handle_install_outcome_received(success, message);
+                iced::Task::none()
+            }
+            Message::ItemDetailRequested { plugin_name, items } => {
+                self.handle_item_detail_requested(plugin_name, items);
+                iced::Task::none()
+            }
+            Message::ItemDetailClosed => {
+                self.handle_item_detail_closed();
+                iced::Task::none()
+            }
         }
     }
 
@@ -838,6 +875,175 @@ impl Farol {
         slot.connection.identity = None;
         slot.worker_sender = None;
     }
+
+    /// Feature 008, US4 (T014): usuário editou o campo de nome do formulário
+    /// de instalação in-app — mesmo padrão de `handle_setup_field_changed`,
+    /// mas sem `plugin_name`/lookup de slot (o formulário não pertence a
+    /// nenhuma conexão já existente). Editar o nome depois de um resultado
+    /// anterior (`InstallFormStatus::Success`/`Error`) volta o status para
+    /// `Idle` — sem isso, uma segunda tentativa com um nome diferente
+    /// continuaria mostrando o resultado da tentativa anterior até o novo
+    /// `Task::perform` completar.
+    fn handle_install_form_name_changed(&mut self, value: String) {
+        self.install_form.name_input = value;
+        if !matches!(self.install_form.status, model::InstallFormStatus::InProgress) {
+            self.install_form.status = model::InstallFormStatus::Idle;
+        }
+    }
+
+    /// Feature 008, US4 (T014): submissão do formulário de instalação
+    /// in-app. Nome vazio (após `trim`) falha imediatamente sem tentar rede,
+    /// mesma disciplina de `main.rs::handle_install_subcommand` para
+    /// `owner/repo` malformado. Nome não-vazio marca `InProgress` e devolve
+    /// um `iced::Task::perform` que roda `install::run_by_name` (bloqueante:
+    /// `curl`/`tar`/`sh -c`) dentro de `tokio::task::spawn_blocking`, para a
+    /// UI continuar respondendo durante o download/build (D5 de `plan.md`).
+    /// O resultado (já traduzido para `(bool, String)` por
+    /// `describe_install_by_name_outcome`, porque `InstallByNameOutcome`/
+    /// `InstallOutcome` não são `Clone` e `Message` precisa ser) chega depois
+    /// como `Message::InstallOutcomeReceived`.
+    fn handle_install_by_name_submitted(&mut self) -> iced::Task<Message> {
+        let name = self.install_form.name_input.trim().to_string();
+        if name.is_empty() {
+            self.install_form.status = model::InstallFormStatus::Error(
+                "digite um nome de plugin (do índice) antes de instalar".to_string(),
+            );
+            return iced::Task::none();
+        }
+
+        self.install_form.status = model::InstallFormStatus::InProgress;
+        let task_name = name.clone();
+        iced::Task::perform(
+            tokio::task::spawn_blocking(move || {
+                let outcome = crate::install::run_by_name(&task_name);
+                describe_install_by_name_outcome(&task_name, outcome)
+            }),
+            |join_result| match join_result {
+                Ok((success, message)) => Message::InstallOutcomeReceived { success, message },
+                Err(join_err) => Message::InstallOutcomeReceived {
+                    success: false,
+                    message: format!("falha interna ao instalar: {join_err}"),
+                },
+            },
+        )
+    }
+
+    /// Feature 008, US4 (T014/T016): aplica o resultado (já traduzido) de uma
+    /// instalação in-app. Em caso de sucesso, também descobre plugins recém-
+    /// instalados (`add_newly_installed_plugin_slots`) — é isso que faz o
+    /// plugin aparecer na lista sem reiniciar o app: `Farol::subscription`
+    /// (acima) reconstrói a lista de `Subscription`s a cada chamada a partir
+    /// de `self.plugins`, então um novo `PluginSlot` nesta coleção já
+    /// spawna/handshake o worker daquele plugin no próximo ciclo do event
+    /// loop, sem nenhum outro mecanismo dedicado de "hot reload".
+    fn handle_install_outcome_received(&mut self, success: bool, message: String) {
+        self.install_form.status = if success {
+            model::InstallFormStatus::Success(message)
+        } else {
+            model::InstallFormStatus::Error(message)
+        };
+
+        if success {
+            self.add_newly_installed_plugin_slots();
+        }
+    }
+
+    /// Feature 008, US4 (T016): reexecuta a descoberta dinâmica
+    /// (`plugin_worker::discover_installed_plugins`, já usada por
+    /// `plugin_worker::all_plugins`/`Farol::default`) e adiciona a
+    /// `self.plugins` qualquer `PluginSpawnConfig` cujo `plugin_name` ainda
+    /// não tenha slot — nunca substitui um slot já existente (uma
+    /// reinstalação do mesmo plugin, por exemplo, não deveria reiniciar uma
+    /// conexão já `Ready`; o efeito de uma reinstalação nesse caso já é fora
+    /// do escopo de US4, e este método só cobre "plugin novo apareceu").
+    fn add_newly_installed_plugin_slots(&mut self) {
+        let existing_names: std::collections::HashSet<String> = self
+            .plugins
+            .iter()
+            .map(|slot| slot.spawn_config.plugin_name.clone())
+            .collect();
+
+        for spawn_config in plugin_worker::discover_installed_plugins() {
+            if existing_names.contains(&spawn_config.plugin_name) {
+                continue;
+            }
+            self.plugins.push(PluginSlot {
+                spawn_config,
+                connection: model::PluginConnection::default(),
+                worker_sender: None,
+            });
+        }
+    }
+
+    /// Feature 010, US2 (T016): abre o painel de detalhe genérico para o item
+    /// que a `view` acabou de reportar (`Message::ItemDetailRequested`) —
+    /// substitui incondicionalmente qualquer `detail_panel` já aberto (nunca
+    /// há navegação multi-nível, `spec.md` § Out of Scope: "Navegação
+    /// multi-nível (detalhe de detalhe)"), sem tocar em nenhum outro campo de
+    /// `Farol`/`PluginConnection` — a lista do widget de origem continua
+    /// intacta por baixo do overlay (FR-007).
+    fn handle_item_detail_requested(
+        &mut self,
+        plugin_name: String,
+        items: farol_protocol::messages::WidgetItems,
+    ) {
+        self.detail_panel = Some(model::DetailPanelState { plugin_name, items });
+    }
+
+    /// Feature 010, US2 (T016): fecha o painel de detalhe
+    /// (`Message::ItemDetailClosed`) — só limpa `detail_panel`, preservando
+    /// 100% do resto do `Model` (FR-007).
+    fn handle_item_detail_closed(&mut self) {
+        self.detail_panel = None;
+    }
+}
+
+/// Feature 008, US4 (T014): traduz o resultado de `install::run_by_name` para
+/// um par `(sucesso, mensagem legível)` — extraída como função livre (não
+/// método de `Farol`) porque roda dentro do closure de
+/// `tokio::task::spawn_blocking` em `handle_install_by_name_submitted`, sem
+/// acesso a `&self`/`&mut self`. Espelha o vocabulário de mensagens já usado
+/// por `main.rs::handle_install_subcommand` para `InstallOutcome` (mesmas
+/// frases em português), evitando duas mensagens diferentes para o mesmo
+/// resultado dependendo do caminho (CLI `farol install owner/repo` vs. UI
+/// in-app por nome) — mas não reaproveita aquele `match` diretamente porque
+/// ele vive em `main.rs`, que faz `std::process::exit` logo depois (não
+/// reutilizável como função pura).
+fn describe_install_by_name_outcome(
+    name: &str,
+    outcome: crate::install::InstallByNameOutcome,
+) -> (bool, String) {
+    use crate::install::{InstallByNameOutcome, InstallOutcome};
+
+    match outcome {
+        InstallByNameOutcome::Resolved(InstallOutcome::Installed { plugin_name, path }) => (
+            true,
+            format!("plugin \"{plugin_name}\" instalado em {}", path.display()),
+        ),
+        InstallByNameOutcome::Resolved(InstallOutcome::NoRelease) => {
+            (false, format!("nenhuma release encontrada para \"{name}\""))
+        }
+        InstallByNameOutcome::Resolved(InstallOutcome::DownloadFailed(detail)) => {
+            (false, format!("falha ao instalar \"{name}\": {detail}"))
+        }
+        InstallByNameOutcome::Resolved(InstallOutcome::ManifestInvalid(err)) => (
+            false,
+            format!("manifesto de plugin inválido para \"{name}\": {err:?}"),
+        ),
+        InstallByNameOutcome::Resolved(InstallOutcome::NameCollision(plugin_name)) => (
+            false,
+            format!(
+                "\"{plugin_name}\" colide com um plugin de referência já existente — instalação cancelada"
+            ),
+        ),
+        InstallByNameOutcome::NameNotFoundInIndex(name) => (
+            false,
+            format!("\"{name}\" não encontrado no índice de plugins"),
+        ),
+        InstallByNameOutcome::RegistryIndexUnavailable(detail) => {
+            (false, format!("índice de plugins indisponível: {detail}"))
+        }
+    }
 }
 
 /// Intervalo efetivo do refresh periódico de uma conexão (data-model.md
@@ -1201,7 +1407,7 @@ fn merge_widget_items(
 // mudou, nenhuma lógica nova foi adicionada.
 pub(crate) mod tests {
     use super::*;
-    use farol_protocol::messages::{Capability, KnownCapability, WidgetItems};
+    use farol_protocol::messages::{Capability, KnownCapability, WidgetItemKind, WidgetItems};
     use farol_protocol::{CapabilityManifest, ProtocolVersion};
 
     /// Constrói um `Farol` de teste com uma única entrada (`plugin_name`
@@ -1439,6 +1645,7 @@ pub(crate) mod tests {
 
         let result = farol_protocol::WidgetGetResult {
             widget_id: "repo-status".to_string(),
+            kind: WidgetItemKind::Git,
             items: WidgetItems::Git(vec![sample_widget_item("farol")]),
         };
         app.handle_widget_outcome("git-local", WidgetOutcome::Success(result));
@@ -1822,6 +2029,7 @@ pub(crate) mod tests {
 
         let result = farol_protocol::WidgetGetResult {
             widget_id: "repo-status".to_string(),
+            kind: WidgetItemKind::Git,
             items: WidgetItems::Git(vec![sample_widget_item("farol")]),
         };
         app.handle_widget_outcome("git-local", WidgetOutcome::Success(result));
@@ -2019,6 +2227,7 @@ pub(crate) mod tests {
 
         let result = farol_protocol::WidgetGetResult {
             widget_id: "uptime-kuma-monitors".to_string(),
+            kind: WidgetItemKind::Monitor,
             items: WidgetItems::Monitor(vec![sample_monitor_item("api")]),
         };
         app.handle_widget_outcome("uptime-kuma", WidgetOutcome::Success(result));
@@ -2289,6 +2498,7 @@ pub(crate) mod tests {
 
         let result = farol_protocol::WidgetGetResult {
             widget_id: "docker-containers".to_string(),
+            kind: WidgetItemKind::Container,
             items: WidgetItems::Container(vec![sample_container_item("abc123", "web")]),
         };
         app.handle_widget_outcome("docker-containers", WidgetOutcome::Success(result));
@@ -2357,6 +2567,7 @@ pub(crate) mod tests {
         // Refresh chega com o mesmo container (`id` igual), dado atualizado.
         let result = farol_protocol::WidgetGetResult {
             widget_id: "docker-containers".to_string(),
+            kind: WidgetItemKind::Container,
             items: WidgetItems::Container(vec![sample_container_item("abc123", "web")]),
         };
         app.handle_widget_outcome("docker-containers", WidgetOutcome::Success(result));
@@ -2401,6 +2612,7 @@ pub(crate) mod tests {
         // Refresh chega só com "db" — "web" (que tinha `action_in_flight`) sumiu.
         let result = farol_protocol::WidgetGetResult {
             widget_id: "docker-containers".to_string(),
+            kind: WidgetItemKind::Container,
             items: WidgetItems::Container(vec![sample_container_item("def456", "db")]),
         };
         app.handle_widget_outcome("docker-containers", WidgetOutcome::Success(result));

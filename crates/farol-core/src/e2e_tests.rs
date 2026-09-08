@@ -1541,7 +1541,7 @@ fn emulator_runs_the_real_subscription_until_a_plugin_reaches_ready() {
     assert_eq!(
         observed,
         PluginState::Ready,
-        "esperava que uptime-kuma alcançasse Ready pelo Emulator (handshake 0.4 + \
+        "esperava que uptime-kuma alcançasse Ready pelo Emulator (handshake 0.5 + \
          required_config resolvido pela fixture), obteve {observed:?}"
     );
 }
@@ -1652,7 +1652,7 @@ fn emulator_takes_plugin_template_through_a_real_handshake_to_ready() {
     assert_eq!(
         observed,
         PluginState::Ready,
-        "esperava que o template de plugin alcançasse Ready pelo Emulator (handshake 0.4, sem \
+        "esperava que o template de plugin alcançasse Ready pelo Emulator (handshake 0.5, sem \
          widgets/ações), obteve {observed:?}"
     );
 }
@@ -1669,7 +1669,7 @@ fn emulator_takes_plugin_template_through_a_real_handshake_to_ready() {
 ///
 /// Fixture mínima criada em runtime pelo próprio teste, mesmo espírito do exemplo do Cenário 1 de
 /// `quickstart.md`: `<tmp>/xdg-data/farol/plugins/exemplo/{farol-plugin.toml,main.py}`, onde
-/// `main.py` responde ao `handshake/hello` com sucesso, protocolo `"0.4"`
+/// `main.py` responde ao `handshake/hello` com sucesso, protocolo `"0.5"`
 /// (`plugin_worker::CORE_PROTOCOL_VERSION`), zero widgets/ações/`required_config` — o contrato
 /// mínimo do protocolo, nada além disso (mesmo formato do `templates/plugin-template/main.py`
 /// exercitado pelo teste acima, só que escrito à mão aqui em vez de reaproveitado, porque a
@@ -1719,7 +1719,7 @@ fn discovered_plugin_reaches_ready_through_the_real_state_machine() {
          \x20\x20\x20\x20if not line:\n\
          \x20\x20\x20\x20\x20\x20\x20\x20continue\n\
          \x20\x20\x20\x20req = json.loads(line)\n\
-         \x20\x20\x20\x20result = {\"protocol_version\": \"0.4\", \"plugin_name\": \"exemplo\",\n\
+         \x20\x20\x20\x20result = {\"protocol_version\": \"0.5\", \"plugin_name\": \"exemplo\",\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\"capabilities\": {\"capabilities\": []}, \
          \"required_config\": [],\n\
          \x20\x20\x20\x20\x20\x20\x20\x20\"widgets\": [], \"actions\": []}\n\
@@ -1831,7 +1831,7 @@ fn uptime_kuma_reaches_ready_and_populates_the_monitor_grid() {
     // A conexão saiu de Starting/Handshaking — e chegou a `Ready`, não a um
     // `Unavailable`: só `view_ready` renderiza esta linha.
     assert!(
-        harness.screen_shows("Plugin: uptime-kuma (protocolo 0.4)"),
+        harness.screen_shows("Plugin: uptime-kuma (protocolo 0.5)"),
         "uptime-kuma deveria estar Ready antes de qualquer ciclo de widget/get"
     );
 
@@ -1995,7 +1995,7 @@ fn setup_form_filled_via_ui_reaches_ready_with_real_data_and_persists_across_res
     harness.settle();
 
     assert!(
-        harness.screen_shows("Plugin: uptime-kuma (protocolo 0.4)"),
+        harness.screen_shows("Plugin: uptime-kuma (protocolo 0.5)"),
         "depois de confirmar a tela de setup, uptime-kuma deveria estar Ready"
     );
 
@@ -2055,7 +2055,7 @@ fn setup_form_filled_via_ui_reaches_ready_with_real_data_and_persists_across_res
     );
     restarted.settle();
     assert!(
-        restarted.screen_shows("Plugin: uptime-kuma (protocolo 0.4)"),
+        restarted.screen_shows("Plugin: uptime-kuma (protocolo 0.5)"),
         "reabrir o Farol com config/secrets já persistidos deveria ir direto a Ready, sem a tela \
          de setup"
     );
@@ -2165,7 +2165,7 @@ fn uptime_kuma_reports_metrics_unreachable_for_an_invalid_base_url_but_stays_rea
     );
     harness.settle();
     assert!(
-        harness.screen_shows("Plugin: uptime-kuma (protocolo 0.4)"),
+        harness.screen_shows("Plugin: uptime-kuma (protocolo 0.5)"),
         "required_config presente (mesmo com base_url inacessível) deveria levar a Ready, nunca a \
          NotConfigured"
     );
@@ -2229,7 +2229,7 @@ fn uptime_kuma_widget_reports_empty_items_when_instance_has_no_monitors() {
         fixture.spawn_config("uptime-kuma"),
     );
     harness.settle();
-    assert!(harness.screen_shows("Plugin: uptime-kuma (protocolo 0.4)"));
+    assert!(harness.screen_shows("Plugin: uptime-kuma (protocolo 0.5)"));
 
     wait_until(
         &mut harness,
@@ -2287,7 +2287,7 @@ fn uptime_kuma_recovers_after_instance_becomes_unreachable_without_restarting_fa
         fixture.spawn_config("uptime-kuma"),
     );
     harness.settle();
-    assert!(harness.screen_shows("Plugin: uptime-kuma (protocolo 0.4)"));
+    assert!(harness.screen_shows("Plugin: uptime-kuma (protocolo 0.5)"));
 
     // (a) widget populado antes de derrubar a instância — mesmo padrão de T006.
     let expected = expected_monitors();
@@ -2316,7 +2316,7 @@ fn uptime_kuma_recovers_after_instance_becomes_unreachable_without_restarting_fa
         );
     }
     assert!(
-        harness.screen_shows("Plugin: uptime-kuma (protocolo 0.4)"),
+        harness.screen_shows("Plugin: uptime-kuma (protocolo 0.5)"),
         "a janela/conexão continua Ready — um erro pontual de leitura nunca vira Unavailable"
     );
 
@@ -2363,7 +2363,7 @@ fn uptime_kuma_reports_metrics_parse_error_for_a_non_metrics_response_without_cr
         fixture.spawn_config("uptime-kuma"),
     );
     harness.settle();
-    assert!(harness.screen_shows("Plugin: uptime-kuma (protocolo 0.4)"));
+    assert!(harness.screen_shows("Plugin: uptime-kuma (protocolo 0.5)"));
 
     let error_text =
         "Falha ao consultar monitores: falha ao consultar /metrics da instância Uptime Kuma configurada";
@@ -2402,7 +2402,7 @@ fn uptime_kuma_process_killed_becomes_crashed_without_taking_down_the_core() {
         fixture.spawn_config("uptime-kuma"),
     );
     harness.settle();
-    assert!(harness.screen_shows("Plugin: uptime-kuma (protocolo 0.4)"));
+    assert!(harness.screen_shows("Plugin: uptime-kuma (protocolo 0.5)"));
 
     let pid = find_uptime_kuma_pid();
     send_signal(pid, "-9");
@@ -2410,7 +2410,7 @@ fn uptime_kuma_process_killed_becomes_crashed_without_taking_down_the_core() {
     wait_until_passive(
         &mut harness,
         "saída de Ready após kill -9",
-        |h| !h.screen_shows("Plugin: uptime-kuma (protocolo 0.4)"),
+        |h| !h.screen_shows("Plugin: uptime-kuma (protocolo 0.5)"),
         STATE_TIMEOUT,
     );
 
@@ -2447,7 +2447,7 @@ fn uptime_kuma_process_frozen_becomes_unresponsive_without_taking_down_the_core(
         fixture.spawn_config("uptime-kuma"),
     );
     harness.settle();
-    assert!(harness.screen_shows("Plugin: uptime-kuma (protocolo 0.4)"));
+    assert!(harness.screen_shows("Plugin: uptime-kuma (protocolo 0.5)"));
 
     let pid = find_uptime_kuma_pid();
     send_signal(pid, "-STOP");
@@ -2458,7 +2458,7 @@ fn uptime_kuma_process_frozen_becomes_unresponsive_without_taking_down_the_core(
     wait_until_passive(
         &mut harness,
         "saída de Ready após kill -STOP",
-        |h| !h.screen_shows("Plugin: uptime-kuma (protocolo 0.4)"),
+        |h| !h.screen_shows("Plugin: uptime-kuma (protocolo 0.5)"),
         STATE_TIMEOUT,
     );
 
@@ -2535,7 +2535,7 @@ fn openfortivpn_vpn_reaches_ready_and_populates_the_vpn_widget() {
     // A conexão saiu de Starting/Handshaking — e chegou a `Ready` (sem tela de setup: D6, sem
     // required_config): só `view_ready` renderiza esta linha.
     assert!(
-        harness.screen_shows("Plugin: openfortivpn-vpn (protocolo 0.4)"),
+        harness.screen_shows("Plugin: openfortivpn-vpn (protocolo 0.5)"),
         "openfortivpn-vpn deveria estar Ready assim que o handshake completa (sem required_config, \
          D6)"
     );
@@ -2655,7 +2655,7 @@ fn openfortivpn_vpn_widget_get_error_reaches_vpn_widget_last_error() {
     );
     harness.settle();
     assert!(
-        harness.screen_shows("Plugin: openfortivpn-vpn (protocolo 0.4)"),
+        harness.screen_shows("Plugin: openfortivpn-vpn (protocolo 0.5)"),
         "required_config vazio (D6) deveria levar a Ready mesmo com o binário simulando erro no \
          primeiro widget/get"
     );
@@ -2735,7 +2735,7 @@ fn docker_containers_reaches_ready_and_populates_the_container_grid() {
     // A conexão saiu de Starting/Handshaking — e chegou a `Ready` (sem tela de setup: D9, sem
     // required_config): só `view_ready` renderiza esta linha.
     assert!(
-        harness.screen_shows("Plugin: docker-containers (protocolo 0.4)"),
+        harness.screen_shows("Plugin: docker-containers (protocolo 0.5)"),
         "docker-containers deveria estar Ready assim que o handshake completa (sem \
          required_config, D9)"
     );
@@ -2895,7 +2895,7 @@ fn docker_container_start_action_succeeds_and_flips_the_row_to_running() {
     harness.settle();
 
     assert!(
-        harness.screen_shows("Plugin: docker-containers (protocolo 0.4)"),
+        harness.screen_shows("Plugin: docker-containers (protocolo 0.5)"),
         "docker-containers deveria estar Ready assim que o handshake completa (sem \
          required_config, D9)"
     );
@@ -3029,7 +3029,7 @@ fn docker_container_start_action_failure_shows_translated_error_without_dropping
     );
     harness.settle();
 
-    assert!(harness.screen_shows("Plugin: docker-containers (protocolo 0.4)"));
+    assert!(harness.screen_shows("Plugin: docker-containers (protocolo 0.5)"));
 
     wait_until(
         &mut harness,
@@ -3120,4 +3120,361 @@ fn docker_container_start_action_failure_shows_translated_error_without_dropping
 
     drop(app);
     assert_no_lingering_children();
+}
+
+// ---------------------------------------------------------------------------
+// T016 (feature 008, US4) — instalação de plugin in-app através da UI real
+// ---------------------------------------------------------------------------
+
+/// Uma rota servida por [`InstallFixtureServer`]: corpo de resposta fixo para
+/// um caminho exato — mesmo padrão de `install.rs::tests::FixtureRoute`
+/// (privado àquele módulo, não reaproveitável daqui: T016 replica a mínima
+/// fração necessária).
+enum InstallFixtureRoute {
+    Response {
+        status: u16,
+        content_type: &'static str,
+        body: Vec<u8>,
+    },
+}
+
+/// Servidor HTTP local de fixture que serve, na MESMA porta efêmera, tanto o
+/// índice central (`registry_index::resolve_name`, rota `/index.toml`)
+/// quanto a API do GitHub (`install::run`, rotas
+/// `/repos/{owner}/{repo}/releases/latest` e o tarball) — as rotas nunca
+/// colidem por caminho, então um único servidor cobre os dois papéis
+/// (`FAROL_REGISTRY_INDEX_URL` e `FAROL_GITHUB_API_BASE` do teste abaixo
+/// apontam para a mesma `base_url`). Mesmo padrão de `TcpListener`/thread
+/// própria/laço de `accept` não-bloqueante até `shutdown` de
+/// [`MetricsFixtureServer`] acima.
+///
+/// `start` recebe uma factory (`base_url -> rotas`), não as rotas prontas,
+/// porque a rota de release referencia a URL do tarball, que por sua vez
+/// referencia a própria porta efêmera deste servidor — só conhecida depois
+/// de `TcpListener::bind` reservá-la, antes de qualquer rota existir.
+struct InstallFixtureServer {
+    base_url: String,
+    shutdown: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl InstallFixtureServer {
+    fn start(build_routes: impl FnOnce(&str) -> Vec<(String, InstallFixtureRoute)>) -> Self {
+        let listener = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0)))
+            .expect("bind da fixture de instalação em 127.0.0.1:0");
+        let port = listener
+            .local_addr()
+            .expect("porta efêmera da fixture de instalação")
+            .port();
+        listener
+            .set_nonblocking(true)
+            .expect("listener não-bloqueante (para o laço observar o shutdown)");
+
+        let base_url = format!("http://127.0.0.1:{port}");
+        let routes = Arc::new(build_routes(&base_url));
+        let shutdown = Arc::new(AtomicBool::new(false));
+
+        let thread = {
+            let shutdown = Arc::clone(&shutdown);
+            let routes = Arc::clone(&routes);
+            std::thread::spawn(move || {
+                while !shutdown.load(Ordering::Relaxed) {
+                    match listener.accept() {
+                        Ok((stream, _)) => serve_install_fixture_connection(stream, &routes),
+                        Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => {
+                            std::thread::sleep(Duration::from_millis(5));
+                        }
+                        Err(_) => break,
+                    }
+                }
+            })
+        };
+
+        Self {
+            base_url,
+            shutdown,
+            thread: Some(thread),
+        }
+    }
+}
+
+impl Drop for InstallFixtureServer {
+    fn drop(&mut self) {
+        self.shutdown.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+fn serve_install_fixture_connection(mut stream: TcpStream, routes: &[(String, InstallFixtureRoute)]) {
+    let _ = stream.set_nonblocking(false);
+    let _ = stream.set_read_timeout(Some(Duration::from_secs(5)));
+
+    let mut request = Vec::new();
+    let mut buffer = [0_u8; 1024];
+    loop {
+        match stream.read(&mut buffer) {
+            Ok(0) => break,
+            Ok(n) => {
+                request.extend_from_slice(&buffer[..n]);
+                if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    break;
+                }
+            }
+            Err(_) => return,
+        }
+    }
+
+    let request = String::from_utf8_lossy(&request);
+    let request_line = request.lines().next().unwrap_or_default();
+    let path = request_line.split_whitespace().nth(1).unwrap_or_default();
+
+    match routes.iter().find(|(route_path, _)| route_path == path) {
+        Some((_, InstallFixtureRoute::Response { status, content_type, body })) => {
+            let reason = if *status == 200 { "OK" } else { "Error" };
+            let header = format!(
+                "HTTP/1.1 {status} {reason}\r\nContent-Type: {content_type}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(header.as_bytes());
+            let _ = stream.write_all(body);
+        }
+        None => {
+            let body = b"not found";
+            let header = format!(
+                "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(header.as_bytes());
+            let _ = stream.write_all(body);
+        }
+    }
+    let _ = stream.flush();
+}
+
+/// Monta um tarball `.tar.gz` real (via `tar` do sistema, nunca bytes
+/// escritos à mão) com um único diretório-raiz (removido por
+/// `--strip-components=1` em `install::extract_tarball`) contendo o
+/// manifesto e um script mínimo de handshake do plugin de fixture — mesmo
+/// padrão de `install.rs::tests::build_fixture_tarball` (privado àquele
+/// módulo, T016 replica a mínima fração necessária). Mesmo script de
+/// handshake (loop de leitura, não um único `readline` — ver a docstring de
+/// `discovered_plugin_reaches_ready_through_the_real_state_machine` acima
+/// para o porquê) daquele teste, só com `plugin_name` parametrizado.
+fn build_install_fixture_tarball(work_dir: &Path, plugin_name: &str) -> Vec<u8> {
+    let source_root = work_dir.join("source");
+    let inner_dir = source_root.join("instalavel-fixture-abc123");
+    fs::create_dir_all(&inner_dir).expect("criar diretório-fonte da fixture de instalação");
+
+    fs::write(
+        inner_dir.join("farol-plugin.toml"),
+        format!(
+            "plugin_name = {plugin_name:?}\ncommand = \"python3\"\nargs = [\"main.py\"]\n\n\
+             [capabilities]\nexec = false\nnetwork = false\n"
+        ),
+    )
+    .expect("escrever farol-plugin.toml da fixture de instalação");
+
+    fs::write(
+        inner_dir.join("main.py"),
+        format!(
+            "import json, sys\n\
+             for raw_line in sys.stdin:\n\
+             \x20\x20\x20\x20line = raw_line.strip()\n\
+             \x20\x20\x20\x20if not line:\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20continue\n\
+             \x20\x20\x20\x20req = json.loads(line)\n\
+             \x20\x20\x20\x20result = {{\"protocol_version\": \"0.5\", \"plugin_name\": {plugin_name:?},\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20\"capabilities\": {{\"capabilities\": []}}, \
+             \"required_config\": [],\n\
+             \x20\x20\x20\x20\x20\x20\x20\x20\"widgets\": [], \"actions\": []}}\n\
+             \x20\x20\x20\x20print(json.dumps({{\"jsonrpc\": \"2.0\", \"id\": req[\"id\"], \
+             \"result\": result}}))\n\
+             \x20\x20\x20\x20sys.stdout.flush()\n"
+        ),
+    )
+    .expect("escrever main.py da fixture de instalação");
+
+    let archive_path = work_dir.join("archive.tar.gz");
+    let status = Command::new("tar")
+        .arg("-czf")
+        .arg(&archive_path)
+        .arg("-C")
+        .arg(&source_root)
+        .arg("instalavel-fixture-abc123")
+        .status()
+        .expect("tar deve estar disponível para construir a fixture de instalação");
+    assert!(status.success(), "tar da fixture de instalação falhou");
+
+    fs::read(&archive_path).expect("ler tarball da fixture de instalação")
+}
+
+/// Como [`start_scenario`], mas com **zero** plugins conhecidos no boot — o
+/// cenário de T016 instala um plugin novo pela UI durante o próprio teste,
+/// então não há nenhum `PluginSpawnConfig` para passar de antemão.
+/// `diagnostic_plugin_name` vira `Scenario::plugin_name`, usado só para
+/// diagnóstico (`fail_with_observed_state`) e para localizar o slot depois
+/// da instalação (`plugin_state`) — não precisa (e não deve) já existir em
+/// `Farol::plugins` no boot.
+fn start_install_scenario(
+    scenario: &'static str,
+    diagnostic_plugin_name: &str,
+) -> Scenario<impl Program<State = Farol, Message = Message>> {
+    let budget = ScenarioBudget::start(scenario);
+    let plugin_name = diagnostic_plugin_name.to_string();
+    let program = crate::program(|| Farol::with_plugins(vec![]));
+
+    let (sender, mut receiver) = mpsc::channel(100);
+    let mut emulator = Emulator::new(sender, &program, Mode::Immediate, VIEWPORT);
+
+    // Mesma ressalva de `start_scenario` sobre consumir o `Event::Ready` do
+    // boot antes de qualquer `screen_shows`.
+    consume_ready(&program, &mut emulator, &mut receiver);
+
+    Scenario {
+        program,
+        emulator: Some(emulator),
+        receiver,
+        plugin_name,
+        budget,
+    }
+}
+
+/// **T016 (feature 008, US4)** — instalar um plugin pela UI in-app
+/// (`view_install_form`) faz esse plugin aparecer na lista e alcançar
+/// `Ready`, **sem reiniciar a aplicação**: um único `Program`/`Emulator` do
+/// início ao fim do teste (`start_install_scenario` chamado exatamente uma
+/// vez) — a prova de "sem restart" é estrutural, não uma asserção à parte.
+///
+/// Dirige o formulário pela mesma DSL de interação que os outros cenários de
+/// Camada 1 usam para o formulário de setup
+/// (`click_setup_field`/`type_text`/`click_text`) — `TextInputByText`
+/// encontra o campo de nome pelo seu placeholder (`"nome do plugin
+/// (índice)"`, `view_install_form`), exatamente como já faz para os campos
+/// de `SetupForm`. O resultado assíncrono do `Task::perform`
+/// (`install::run_by_name` dentro de `tokio::task::spawn_blocking`) chega
+/// pelo mesmo mecanismo de bombeamento de `Event::Action` que qualquer outra
+/// mensagem produzida por uma `Subscription`/`Task` em voo — daí
+/// `wait_until_passive` (T042, acima) em vez de um sleep fixo: sem
+/// `RefreshTick` nenhum sentido aqui (nada a atualizar antes do plugin
+/// existir), só bombear a fila até a mensagem de sucesso aparecer na tela.
+#[test]
+fn installing_a_plugin_via_the_ui_makes_it_appear_ready_without_restarting() {
+    let _guard = e2e_guard();
+
+    const PLUGIN_NAME: &str = "instalavel";
+    const OWNER: &str = "exemplo-owner";
+    const REPO: &str = "exemplo-repo";
+
+    let base = std::env::temp_dir().join(format!(
+        "farol-e2e-install-ui-{}",
+        std::process::id()
+    ));
+    let _ = fs::remove_dir_all(&base);
+    fs::create_dir_all(&base).expect("criar diretório-base da fixture de instalação");
+
+    let xdg_data_home = base.join("xdg-data");
+    let xdg_config_home = base.join("xdg-config");
+    fs::create_dir_all(&xdg_config_home).expect("criar XDG_CONFIG_HOME vazio da fixture");
+
+    let tarball_bytes = build_install_fixture_tarball(&base, PLUGIN_NAME);
+    let index_toml = format!("[[plugin]]\nname = {PLUGIN_NAME:?}\nowner = {OWNER:?}\nrepo = {REPO:?}\n");
+
+    let server = InstallFixtureServer::start(move |base_url| {
+        vec![
+            (
+                "/index.toml".to_string(),
+                InstallFixtureRoute::Response {
+                    status: 200,
+                    content_type: "application/toml",
+                    body: index_toml.into_bytes(),
+                },
+            ),
+            (
+                format!("/repos/{OWNER}/{REPO}/releases/latest"),
+                InstallFixtureRoute::Response {
+                    status: 200,
+                    content_type: "application/json",
+                    body: format!(
+                        "{{\"tag_name\":\"v1.0.0\",\"tarball_url\":\"{base_url}/tarball.tar.gz\"}}"
+                    )
+                    .into_bytes(),
+                },
+            ),
+            (
+                "/tarball.tar.gz".to_string(),
+                InstallFixtureRoute::Response {
+                    status: 200,
+                    content_type: "application/gzip",
+                    body: tarball_bytes,
+                },
+            ),
+        ]
+    });
+
+    // `set_var` é global ao processo — seguro aqui porque este teste segura
+    // `E2E_LOCK`, mesma disciplina de `HarnessFixture`/
+    // `discovered_plugin_reaches_ready_through_the_real_state_machine` acima
+    // para `XDG_CONFIG_HOME`/`XDG_DATA_HOME`. `FAROL_REGISTRY_INDEX_URL`/
+    // `FAROL_GITHUB_API_BASE` são os mesmos escape-hatches só-de-teste já
+    // usados pelos testes de `registry_index.rs`/`install.rs` (D8/D9),
+    // apontados aqui para o mesmo `InstallFixtureServer`.
+    std::env::set_var("XDG_DATA_HOME", &xdg_data_home);
+    std::env::set_var("XDG_CONFIG_HOME", &xdg_config_home);
+    std::env::set_var("FAROL_REGISTRY_INDEX_URL", &server.base_url);
+    std::env::set_var("FAROL_GITHUB_API_BASE", &server.base_url);
+
+    let mut harness =
+        start_install_scenario("instalar plugin pela UI faz aparecer sem reiniciar", PLUGIN_NAME);
+
+    harness.click_setup_field("nome do plugin (índice)");
+    assert!(
+        harness.type_text(PLUGIN_NAME),
+        "digitar o nome do plugin deveria ter sucesso"
+    );
+    assert!(
+        harness.click_text("Instalar"),
+        "clique em \"Instalar\" deveria ter sucesso"
+    );
+
+    let expected_path = xdg_data_home.join("farol").join("plugins").join(PLUGIN_NAME);
+    let expected_success_text =
+        format!("plugin \"{PLUGIN_NAME}\" instalado em {}", expected_path.display());
+
+    wait_until_passive(
+        &mut harness,
+        "instalação in-app concluir com sucesso",
+        |scenario| scenario.screen_shows(&expected_success_text),
+        STATE_TIMEOUT,
+    );
+
+    // A partir daqui, `add_newly_installed_plugin_slots` (update.rs) já
+    // empurrou o novo `PluginSlot` — `settle()` espera esse plugin sair de
+    // `Starting`/`Handshaking` pelo mesmo mecanismo real de handshake que
+    // qualquer outro cenário desta camada usa (nenhuma simulação: processo
+    // filho de verdade, spawnado pela `Subscription` reconstruída por
+    // `Farol::subscription`).
+    harness.settle();
+
+    let plugin_name = harness.plugin_name.clone();
+    let app = harness.finish();
+    let state = plugin_state(&app, &plugin_name);
+    drop(app);
+
+    std::env::remove_var("XDG_DATA_HOME");
+    std::env::remove_var("XDG_CONFIG_HOME");
+    std::env::remove_var("FAROL_REGISTRY_INDEX_URL");
+    std::env::remove_var("FAROL_GITHUB_API_BASE");
+    drop(server);
+    let _ = fs::remove_dir_all(&base);
+
+    assert_no_lingering_children();
+
+    assert_eq!(
+        state,
+        PluginState::Ready,
+        "esperava que o plugin instalado pela UI alcançasse Ready sem reiniciar o app, obteve \
+         {state:?}"
+    );
 }

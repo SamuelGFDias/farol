@@ -22,7 +22,7 @@ use farol_protocol::RemoteStatus;
 use farol_protocol::messages::{
     Capability, ContainerState, KnownCapability, MonitorStatus, VpnConnectionState,
 };
-use iced::widget::{button, column, container, row, text, text_input, Column};
+use iced::widget::{button, column, container, row, scrollable, text, text_input, Column};
 use iced::{Element, Length};
 
 use crate::model::{self, PluginState, RepositoryViewModel, UnavailableReason};
@@ -46,6 +46,11 @@ const CONTAINER_WIDGET_KIND: &str = "container-status-grid";
 impl Farol {
     pub(crate) fn view(&self) -> Element<'_, Message> {
         let mut sections: Column<Message> = column![].spacing(24);
+        // Feature 008, US4 (T015): formulário de instalação in-app sempre
+        // visível, acima das seções por plugin — não pertence a nenhum
+        // `PluginSlot` (`view_install_form` não recebe um), mesmo raciocínio
+        // de `Farol::install_form` viver diretamente em `Farol` (main.rs).
+        sections = sections.push(view_install_form(&self.install_form));
         for slot in &self.plugins {
             sections = sections.push(view_plugin_slot(slot));
         }
@@ -55,6 +60,40 @@ impl Farol {
             .height(Length::Fill)
             .into()
     }
+}
+
+/// Feature 008, US4 (T015): formulário de instalação in-app por nome de
+/// plugin do índice central — reaproveita o padrão visual de
+/// `view_setup_form` (campo de texto + botão de confirmar, coluna com
+/// espaçamento igual), mas sem `plugin_name`/loop de itens (um único campo
+/// fixo, "nome", em vez de um por `RequiredConfigItem`).
+///
+/// Botão desabilitado (`on_press_maybe(None)`) enquanto
+/// `InstallFormStatus::InProgress` — mesma disciplina de
+/// `view_vpn_widget`/`view_container_grid` para não deixar a UI disparar uma
+/// segunda instalação sobreposta à primeira antes da resposta do
+/// `Task::perform` em voo chegar.
+fn view_install_form(form: &model::InstallForm) -> Column<'_, Message> {
+    let mut content: Column<Message> = column![text("Instalar plugin").size(18)].spacing(8);
+
+    let in_progress = matches!(form.status, model::InstallFormStatus::InProgress);
+
+    let field = text_input("nome do plugin (índice)", &form.name_input)
+        .width(Length::Fill)
+        .on_input(Message::InstallFormNameChanged);
+    content = content.push(field);
+
+    let on_press = (!in_progress).then_some(Message::InstallByNameSubmitted);
+    content = content.push(button(text("Instalar")).on_press_maybe(on_press));
+
+    match &form.status {
+        model::InstallFormStatus::Idle => {}
+        model::InstallFormStatus::InProgress => content = content.push(text("Instalando...")),
+        model::InstallFormStatus::Success(message) => content = content.push(text(message.clone())),
+        model::InstallFormStatus::Error(message) => content = content.push(text(message.clone())),
+    }
+
+    content
 }
 
 /// Renderiza a seção de um único plugin conhecido (T015) — mesmo `match`

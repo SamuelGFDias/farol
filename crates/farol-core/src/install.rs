@@ -14,6 +14,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use crate::plugin_manifest::{self, ManifestError};
+use crate::registry_index::{self, RegistryIndexError};
 
 /// Resultado do fluxo de instalação (`data-model.md` § `InstallOutcome`) — traduzido para código
 /// de saída do processo por [`crate::main`] (T014), não persistido em lugar nenhum.
@@ -79,6 +80,13 @@ pub fn run(owner: &str, repo: &str) -> InstallOutcome {
         return InstallOutcome::NameCollision(manifest.plugin_name);
     }
 
+    if let Some(build_command) = &manifest.build {
+        if let Err(message) = run_build_command(build_command, &staging_dir) {
+            let _ = std::fs::remove_dir_all(&staging_dir);
+            return InstallOutcome::DownloadFailed(message);
+        }
+    }
+
     let destination = plugin_manifest::installed_plugin_dir(&manifest.plugin_name);
     if destination.exists() {
         // FR-008: substituição limpa de uma instalação anterior do mesmo plugin.
@@ -102,6 +110,48 @@ pub fn run(owner: &str, repo: &str) -> InstallOutcome {
     InstallOutcome::Installed {
         plugin_name: manifest.plugin_name,
         path: destination,
+    }
+}
+
+/// Resultado de [`run_by_name`] (feature 008, US1, T006) — **não** estende [`InstallOutcome`]
+/// deliberadamente: um erro de resolução de nome (`registry_index`) acontece antes mesmo de
+/// existir um `owner/repo` para seguir o fluxo de `run` já existente (feature 007), e é uma
+/// categoria de falha distinta o bastante para não caber nas variantes já existentes de
+/// `InstallOutcome` sem forçar `main.rs::handle_install_subcommand` (que hoje faz `match`
+/// exaustivo sobre `InstallOutcome`, T014 da feature 007) a ganhar um braço novo fora do escopo
+/// desta subtarefa (Foundational, T001-T007 — a integração de `farol install <nome>` na CLI/UI é
+/// US4, fora daqui). `Resolved` carrega o `InstallOutcome` de sempre para o caso feliz (nome
+/// resolvido com sucesso), preservando FR-003 ("nenhuma duplicação de lógica de instalação entre o
+/// caminho por nome e o caminho por `owner/repo` direto" — `run_by_name` só resolve o nome e
+/// delega para [`run`]).
+#[derive(Debug)]
+#[allow(dead_code)]
+pub enum InstallByNameOutcome {
+    /// Nome resolvido com sucesso contra o índice — resultado idêntico ao de `run(owner, repo)`
+    /// (feature 007), sem nenhuma lógica de instalação duplicada (FR-003).
+    Resolved(InstallOutcome),
+    /// `name` não existe no índice central — distinto de `RegistryIndexUnavailable` (edge case de
+    /// `spec.md`: indisponibilidade do índice MUST NUNCA ser interpretada como "plugin não
+    /// existe").
+    NameNotFoundInIndex(String),
+    /// Índice central inacessível ou malformado (rede, rate limit, `index.toml` inválido) — MUST
+    /// NOT ser confundido com `NameNotFoundInIndex`.
+    RegistryIndexUnavailable(String),
+}
+
+/// Resolve `name` contra o repositório-índice central (`registry_index::resolve_name`) e, em caso
+/// de sucesso, repassa o `owner`/`repo` encontrado para [`run`] — o mesmo fluxo de instalação já
+/// definido pela feature 007 (FR-003 de `specs/008-registry-hardening/spec.md`). Erro de resolução
+/// de nome vira uma variante de [`InstallByNameOutcome`] distinta de `Resolved`, nunca uma
+/// tentativa de seguir adiante com dados incompletos.
+#[allow(dead_code)]
+pub fn run_by_name(name: &str) -> InstallByNameOutcome {
+    match registry_index::resolve_name(name, &registry_index::default_index_url_base()) {
+        Ok(entry) => InstallByNameOutcome::Resolved(run(&entry.owner, &entry.repo)),
+        Err(RegistryIndexError::NotFound(name)) => InstallByNameOutcome::NameNotFoundInIndex(name),
+        Err(RegistryIndexError::FetchFailed(detail)) | Err(RegistryIndexError::MalformedIndex(detail)) => {
+            InstallByNameOutcome::RegistryIndexUnavailable(detail)
+        }
     }
 }
 
@@ -190,6 +240,30 @@ fn extract_tarball(tarball_path: &std::path::Path, staging_dir: &std::path::Path
         return Err(format!(
             "extração de {tarball_path:?} falhou: {}",
             String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    Ok(())
+}
+
+/// Passo opcional do contrato (feature 008, US2, FR-005/FR-006): quando o manifesto declara
+/// `build`, executa esse comando via `sh -c` dentro de `staging_dir` — mesmo diretório onde o
+/// manifesto já foi validado, antes do `rename` atômico para o diretório final. Código de saída
+/// diferente de `0` (ou falha ao sequer executar o `sh`, ex. ausência do próprio interpretador)
+/// aborta a instalação com uma mensagem específica identificando que a falha veio do build, nunca
+/// da extração ou validação de manifesto (FR-006) — a limpeza do `staging_dir` fica a cargo do
+/// chamador, mesmo mecanismo já usado para `ManifestInvalid`/`NameCollision`.
+fn run_build_command(build_command: &str, staging_dir: &std::path::Path) -> Result<(), String> {
+    let status = Command::new("sh")
+        .arg("-c")
+        .arg(build_command)
+        .current_dir(staging_dir)
+        .status()
+        .map_err(|err| format!("comando de build falhou: falha ao executar sh: {err}"))?;
+
+    if !status.success() {
+        return Err(format!(
+            "comando de build falhou: código de saída {:?}",
+            status.code()
         ));
     }
     Ok(())
@@ -388,6 +462,32 @@ mod tests {
             std::env::remove_var("FAROL_GITHUB_API_BASE");
             std::env::remove_var("XDG_DATA_HOME");
             let _ = std::fs::remove_dir_all(&self.xdg_data_home);
+        }
+    }
+
+    /// Guarda de ambiente para `FAROL_REGISTRY_INDEX_URL` (T007, `registry_index::resolve_name` é
+    /// chamado por `run_by_name` através de `registry_index::default_index_url_base()`, que lê
+    /// essa variável) — restaura o valor anterior no `Drop`, mesmo padrão de `InstallTestEnv`
+    /// acima. Serializado pelo mesmo `install_test_guard()` (ambos mutam variáveis de ambiente
+    /// globais ao processo).
+    struct RegistryIndexTestEnv {
+        prev: Option<String>,
+    }
+
+    impl RegistryIndexTestEnv {
+        fn set(index_url_base: &str) -> Self {
+            let prev = std::env::var("FAROL_REGISTRY_INDEX_URL").ok();
+            std::env::set_var("FAROL_REGISTRY_INDEX_URL", index_url_base);
+            Self { prev }
+        }
+    }
+
+    impl Drop for RegistryIndexTestEnv {
+        fn drop(&mut self) {
+            match &self.prev {
+                Some(value) => std::env::set_var("FAROL_REGISTRY_INDEX_URL", value),
+                None => std::env::remove_var("FAROL_REGISTRY_INDEX_URL"),
+            }
         }
     }
 
@@ -636,6 +736,108 @@ mod tests {
         drop(server);
     }
 
+    /// T009 (feature 008, US2): manifesto com `build = "true"` (comando de fixture, nunca
+    /// toolchain real) executa com sucesso e a instalação publica o plugin normalmente — mesmo
+    /// contrato de `install_succeeds_and_publishes_the_plugin`, só com o campo `build` novo.
+    #[test]
+    fn install_with_successful_build_publishes_the_plugin() {
+        let _guard = install_test_guard();
+        let work_dir = temp_test_dir("successful-build-tarball");
+        let manifest = "plugin_name = \"exemplo-com-build\"\ncommand = \"python3\"\n\
+                         args = [\"main.py\"]\nbuild = \"true\"\n";
+        let tarball_bytes = build_fixture_tarball(&work_dir, Some(manifest));
+
+        let port_probe = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
+        let port = port_probe.local_addr().unwrap().port();
+        drop(port_probe);
+        let server_base = format!("http://127.0.0.1:{port}");
+
+        let server = start_fixture_on_port(
+            port,
+            vec![
+                (
+                    "/repos/owner/repo/releases/latest".to_string(),
+                    release_json_route(&server_base, "v1.0.0"),
+                ),
+                (
+                    "/tarball".to_string(),
+                    FixtureRoute::Response {
+                        status: 200,
+                        content_type: "application/gzip",
+                        body: tarball_bytes,
+                    },
+                ),
+            ],
+        );
+
+        let _env = InstallTestEnv::set(&server.base_url, "successful-build");
+
+        let outcome = run("owner", "repo");
+        match outcome {
+            InstallOutcome::Installed { plugin_name, path } => {
+                assert_eq!(plugin_name, "exemplo-com-build");
+                assert!(path.join("farol-plugin.toml").exists());
+            }
+            other => panic!("esperava Installed, obteve {other:?}"),
+        }
+
+        drop(server);
+    }
+
+    /// T009 (feature 008, US2): manifesto com `build = "false"` (código de saída != 0) aborta a
+    /// instalação inteira — nada é publicado em `installed_plugin_dir`, e o `staging_dir` não fica
+    /// visível para a descoberta de plugins (FR-006/FR-007).
+    #[test]
+    fn install_with_failing_build_does_not_publish_and_cleans_up() {
+        let _guard = install_test_guard();
+        let work_dir = temp_test_dir("failing-build-tarball");
+        let manifest = "plugin_name = \"exemplo-build-falho\"\ncommand = \"python3\"\n\
+                         args = [\"main.py\"]\nbuild = \"exit 1\"\n";
+        let tarball_bytes = build_fixture_tarball(&work_dir, Some(manifest));
+
+        let port_probe = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
+        let port = port_probe.local_addr().unwrap().port();
+        drop(port_probe);
+        let server_base = format!("http://127.0.0.1:{port}");
+
+        let server = start_fixture_on_port(
+            port,
+            vec![
+                (
+                    "/repos/owner/repo/releases/latest".to_string(),
+                    release_json_route(&server_base, "v1.0.0"),
+                ),
+                (
+                    "/tarball".to_string(),
+                    FixtureRoute::Response {
+                        status: 200,
+                        content_type: "application/gzip",
+                        body: tarball_bytes,
+                    },
+                ),
+            ],
+        );
+
+        let _env = InstallTestEnv::set(&server.base_url, "failing-build");
+
+        let outcome = run("owner", "repo");
+        match outcome {
+            InstallOutcome::DownloadFailed(detail) => {
+                assert!(
+                    detail.contains("comando de build falhou"),
+                    "mensagem não identifica falha de build: {detail}"
+                );
+            }
+            other => panic!("esperava DownloadFailed (build falho), obteve {other:?}"),
+        }
+        assert!(
+            !plugin_manifest::installed_plugin_dir("exemplo-build-falho").exists(),
+            "plugin não deveria ter sido publicado após falha de build"
+        );
+
+        drop(server);
+    }
+
     #[test]
     fn reinstalling_over_a_previous_install_replaces_it_cleanly() {
         let _guard = install_test_guard();
@@ -716,6 +918,139 @@ mod tests {
 
         drop(server_v2);
         drop(env);
+    }
+
+    /// T007 (feature 008, US1): `run_by_name` resolvendo com sucesso contra um índice de fixture
+    /// e seguindo para o mesmo fluxo de `run` já testado acima — dois servidores HTTP locais
+    /// distintos (índice + "GitHub"), reaproveitando `GithubFixtureServer`/`start_fixture_on_port`
+    /// para ambos (infraestrutura genérica por rota exata, nome herdado do uso original).
+    #[test]
+    fn install_by_name_resolves_successfully_and_installs() {
+        let _guard = install_test_guard();
+        let work_dir = temp_test_dir("by-name-success-tarball");
+        let manifest =
+            "plugin_name = \"exemplo-por-nome\"\ncommand = \"python3\"\nargs = [\"main.py\"]\n";
+        let tarball_bytes = build_fixture_tarball(&work_dir, Some(manifest));
+
+        let github_port_probe = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
+        let github_port = github_port_probe.local_addr().unwrap().port();
+        drop(github_port_probe);
+        let github_base = format!("http://127.0.0.1:{github_port}");
+
+        let github_server = start_fixture_on_port(
+            github_port,
+            vec![
+                (
+                    "/repos/owner-do-indice/repo-do-indice/releases/latest".to_string(),
+                    release_json_route(&github_base, "v1.0.0"),
+                ),
+                (
+                    "/tarball".to_string(),
+                    FixtureRoute::Response {
+                        status: 200,
+                        content_type: "application/gzip",
+                        body: tarball_bytes,
+                    },
+                ),
+            ],
+        );
+
+        let index_port_probe = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
+        let index_port = index_port_probe.local_addr().unwrap().port();
+        drop(index_port_probe);
+        let index_base = format!("http://127.0.0.1:{index_port}");
+        let index_toml = "[[plugin]]\nname = \"exemplo-por-nome\"\nowner = \"owner-do-indice\"\n\
+                           repo = \"repo-do-indice\"\n";
+        let index_server = start_fixture_on_port(
+            index_port,
+            vec![(
+                "/index.toml".to_string(),
+                FixtureRoute::Response {
+                    status: 200,
+                    content_type: "text/plain",
+                    body: index_toml.as_bytes().to_vec(),
+                },
+            )],
+        );
+
+        let _github_env = InstallTestEnv::set(&github_base, "by-name-success");
+        let _index_env = RegistryIndexTestEnv::set(&index_base);
+
+        let outcome = run_by_name("exemplo-por-nome");
+        match outcome {
+            InstallByNameOutcome::Resolved(InstallOutcome::Installed { plugin_name, .. }) => {
+                assert_eq!(plugin_name, "exemplo-por-nome");
+            }
+            other => panic!("esperava Resolved(Installed), obteve {other:?}"),
+        }
+
+        drop(github_server);
+        drop(index_server);
+    }
+
+    #[test]
+    fn install_by_name_with_unknown_name_returns_name_not_found_in_index() {
+        let _guard = install_test_guard();
+
+        let index_port_probe = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
+        let index_port = index_port_probe.local_addr().unwrap().port();
+        drop(index_port_probe);
+        let index_base = format!("http://127.0.0.1:{index_port}");
+        let index_toml = "[[plugin]]\nname = \"outro-plugin\"\nowner = \"dono\"\nrepo = \"repo\"\n";
+        let index_server = start_fixture_on_port(
+            index_port,
+            vec![(
+                "/index.toml".to_string(),
+                FixtureRoute::Response {
+                    status: 200,
+                    content_type: "text/plain",
+                    body: index_toml.as_bytes().to_vec(),
+                },
+            )],
+        );
+
+        let _index_env = RegistryIndexTestEnv::set(&index_base);
+
+        let outcome = run_by_name("nome-inexistente");
+        match outcome {
+            InstallByNameOutcome::NameNotFoundInIndex(name) => {
+                assert_eq!(name, "nome-inexistente")
+            }
+            other => panic!("esperava NameNotFoundInIndex, obteve {other:?}"),
+        }
+
+        drop(index_server);
+    }
+
+    #[test]
+    fn install_by_name_with_malformed_index_returns_registry_index_unavailable() {
+        let _guard = install_test_guard();
+
+        let index_port_probe = TcpListener::bind(SocketAddr::from((Ipv4Addr::LOCALHOST, 0))).unwrap();
+        let index_port = index_port_probe.local_addr().unwrap().port();
+        drop(index_port_probe);
+        let index_base = format!("http://127.0.0.1:{index_port}");
+        let index_server = start_fixture_on_port(
+            index_port,
+            vec![(
+                "/index.toml".to_string(),
+                FixtureRoute::Response {
+                    status: 200,
+                    content_type: "text/plain",
+                    body: b"isto nao e [ toml valido".to_vec(),
+                },
+            )],
+        );
+
+        let _index_env = RegistryIndexTestEnv::set(&index_base);
+
+        let outcome = run_by_name("qualquer-nome");
+        assert!(
+            matches!(outcome, InstallByNameOutcome::RegistryIndexUnavailable(_)),
+            "obteve {outcome:?}"
+        );
+
+        drop(index_server);
     }
 
     /// Variante de [`GithubFixtureServer::start`] que faz o `bind` numa porta já conhecida (em

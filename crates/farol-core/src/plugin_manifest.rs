@@ -41,6 +41,19 @@ pub struct PluginManifest {
     pub allow_network: bool,
     /// De `[capabilities].exec` — ausência da seção inteira equivale a `false` (D1).
     pub allow_exec: bool,
+    /// Comando de build (feature 008, US2, campo `build` na raiz do manifesto) — `MAY` estar
+    /// ausente (`None`), preservando o comportamento da feature 007 para manifesto sem passo de
+    /// build. Quando presente, executado pelo instalador (`install::run`, fora do escopo desta
+    /// subtarefa) no diretório de código-fonte extraído, antes do rename atômico.
+    pub build: Option<String>,
+    /// Caminhos absolutos de filesystem concedidos em modo leitura (feature 008, US3, campo
+    /// `filesystem_read` na raiz do manifesto) — default vazio (retrocompatível com manifestos da
+    /// feature 007). Cada entrada já passou por [`validate_filesystem_paths`] em
+    /// [`parse_manifest`].
+    pub filesystem_read: Vec<String>,
+    /// Mesma semântica de [`PluginManifest::filesystem_read`], em modo leitura/escrita (campo
+    /// `filesystem_read_write`).
+    pub filesystem_read_write: Vec<String>,
 }
 
 /// Erros de validação de `parse_manifest` (`data-model.md` § `ManifestError`, D7). Consumido
@@ -53,6 +66,13 @@ pub enum ManifestError {
     InvalidToml(String),
     MissingField(&'static str),
     EmptyPluginName,
+    /// Caminho de `filesystem_read`/`filesystem_read_write` que não é absoluto (feature 008, US3,
+    /// FR-009) — carrega o caminho exato declarado, para a mensagem de erro identificar qual
+    /// entrada falhou.
+    RelativeFilesystemPath(String),
+    /// Caminho de `filesystem_read`/`filesystem_read_write` que cai na denylist de caminhos
+    /// sensíveis (feature 008, US3, FR-008/FR-009) — carrega o caminho exato declarado.
+    DenylistedFilesystemPath(String),
 }
 
 /// Forma bruta desserializada do TOML antes da validação — todos os campos opcionais na struct
@@ -66,6 +86,14 @@ struct RawManifest {
     args: Option<Vec<String>>,
     #[serde(default)]
     capabilities: RawCapabilities,
+    /// Feature 008, US2 — ausente equivale a `None` (retrocompatível com feature 007).
+    build: Option<String>,
+    /// Feature 008, US3 — ausente equivale a lista vazia (retrocompatível com feature 007).
+    #[serde(default)]
+    filesystem_read: Vec<String>,
+    /// Feature 008, US3 — ausente equivale a lista vazia (retrocompatível com feature 007).
+    #[serde(default)]
+    filesystem_read_write: Vec<String>,
 }
 
 /// `[capabilities]` ausente equivale a `{ network: false, exec: false }` (D1) — daí `#[serde(default)]`
@@ -97,13 +125,63 @@ pub fn parse_manifest(path: &Path) -> Result<PluginManifest, ManifestError> {
     let command = raw.command.ok_or(ManifestError::MissingField("command"))?;
     let args = raw.args.ok_or(ManifestError::MissingField("args"))?;
 
+    validate_filesystem_paths(&raw.filesystem_read)?;
+    validate_filesystem_paths(&raw.filesystem_read_write)?;
+
     Ok(PluginManifest {
         plugin_name,
         command,
         args,
         allow_network: raw.capabilities.network,
         allow_exec: raw.capabilities.exec,
+        build: raw.build,
+        filesystem_read: raw.filesystem_read,
+        filesystem_read_write: raw.filesystem_read_write,
     })
+}
+
+/// Denylist estática de caminhos sensíveis nunca concedidos a um plugin de terceiro via
+/// capability de filesystem genérica (feature 008, US3) — resolve `$HOME`/`$XDG_CONFIG_HOME` no
+/// momento da validação (edge case de `spec.md`: a denylist MUST cobrir variação de localização
+/// por ambiente, nunca comparar contra caminho literal hardcoded que assuma localização default).
+/// Cobre, no mínimo (`spec.md` § Assumptions): `~/.ssh`, `/etc`, e o diretório de segredos/
+/// configuração do próprio Farol (`config_store`/`secrets_store`, feature 002) — `$XDG_CONFIG_HOME/
+/// farol` (fallback `~/.config/farol`).
+///
+/// Lógica de resolução de `$XDG_CONFIG_HOME`/`$HOME` duplicada deliberadamente de
+/// `config_store::farol_config_base_dir()` (privada ao módulo dela), seguindo a mesma disciplina
+/// já praticada por [`home_dir`] neste arquivo — mesma lógica mínima, sem acoplar os dois módulos
+/// por um detalhe interno.
+fn filesystem_capability_denylist() -> Vec<PathBuf> {
+    let home = home_dir();
+    let config_base = match std::env::var_os("XDG_CONFIG_HOME") {
+        Some(value) if !value.is_empty() => PathBuf::from(value),
+        _ => home.join(".config"),
+    };
+
+    vec![home.join(".ssh"), PathBuf::from("/etc"), config_base.join("farol")]
+}
+
+/// Valida cada caminho de `filesystem_read`/`filesystem_read_write` do manifesto (feature 008,
+/// US3): rejeita caminho relativo ([`ManifestError::RelativeFilesystemPath`]) e caminho contido na
+/// denylist de caminhos sensíveis ([`ManifestError::DenylistedFilesystemPath`]) —
+/// "contido" inclui o próprio caminho denylistado e qualquer caminho descendente dele
+/// (`Path::starts_with`), para que um caminho como `~/.ssh/id_rsa` também seja rejeitado, não só
+/// `~/.ssh` exato. Lista vazia é sempre válida (retrocompatível com manifesto sem capability de
+/// filesystem, feature 007).
+#[allow(dead_code)]
+pub fn validate_filesystem_paths(paths: &[String]) -> Result<(), ManifestError> {
+    let denylist = filesystem_capability_denylist();
+    for raw_path in paths {
+        let path = Path::new(raw_path);
+        if !path.is_absolute() {
+            return Err(ManifestError::RelativeFilesystemPath(raw_path.clone()));
+        }
+        if denylist.iter().any(|denied| path.starts_with(denied)) {
+            return Err(ManifestError::DenylistedFilesystemPath(raw_path.clone()));
+        }
+    }
+    Ok(())
 }
 
 /// Diretório base de dados do Farol: `$XDG_DATA_HOME/farol`, com fallback para
@@ -285,7 +363,216 @@ mod tests {
                 args: vec!["main.py".to_string()],
                 allow_network: false,
                 allow_exec: true,
+                build: None,
+                filesystem_read: Vec::new(),
+                filesystem_read_write: Vec::new(),
             }
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn manifest_without_build_or_filesystem_fields_defaults_to_empty() {
+        let dir = temp_manifest_dir("no-build-no-filesystem");
+        let path = write_manifest(
+            &dir,
+            "plugin_name = \"exemplo\"\ncommand = \"python3\"\nargs = [\"main.py\"]\n",
+        );
+        let manifest = parse_manifest(&path).unwrap();
+        assert_eq!(manifest.build, None);
+        assert_eq!(manifest.filesystem_read, Vec::<String>::new());
+        assert_eq!(manifest.filesystem_read_write, Vec::<String>::new());
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn manifest_with_build_command_is_parsed() {
+        let dir = temp_manifest_dir("with-build");
+        let path = write_manifest(
+            &dir,
+            "plugin_name = \"exemplo\"\ncommand = \"python3\"\nargs = [\"main.py\"]\nbuild = \"cargo build --release\"\n",
+        );
+        let manifest = parse_manifest(&path).unwrap();
+        assert_eq!(manifest.build, Some("cargo build --release".to_string()));
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn relative_filesystem_read_path_is_rejected() {
+        let dir = temp_manifest_dir("relative-fs-path");
+        let path = write_manifest(
+            &dir,
+            "plugin_name = \"exemplo\"\ncommand = \"python3\"\nargs = [\"main.py\"]\nfilesystem_read = [\"relativo/sem/barra\"]\n",
+        );
+        assert_eq!(
+            parse_manifest(&path),
+            Err(ManifestError::RelativeFilesystemPath(
+                "relativo/sem/barra".to_string()
+            ))
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn denylisted_etc_filesystem_read_write_path_is_rejected() {
+        let dir = temp_manifest_dir("denylisted-etc");
+        let path = write_manifest(
+            &dir,
+            "plugin_name = \"exemplo\"\ncommand = \"python3\"\nargs = [\"main.py\"]\nfilesystem_read_write = [\"/etc\"]\n",
+        );
+        assert_eq!(
+            parse_manifest(&path),
+            Err(ManifestError::DenylistedFilesystemPath("/etc".to_string()))
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn denylisted_etc_descendant_path_is_also_rejected() {
+        let dir = temp_manifest_dir("denylisted-etc-descendant");
+        let path = write_manifest(
+            &dir,
+            "plugin_name = \"exemplo\"\ncommand = \"python3\"\nargs = [\"main.py\"]\nfilesystem_read = [\"/etc/passwd\"]\n",
+        );
+        assert_eq!(
+            parse_manifest(&path),
+            Err(ManifestError::DenylistedFilesystemPath(
+                "/etc/passwd".to_string()
+            ))
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Guarda de ambiente para os testes de denylist que dependem de `$HOME`/`$XDG_CONFIG_HOME`
+    /// (edge case do `spec.md`: a denylist MUST resolver essas variáveis, não assumir localização
+    /// default) — restaura o valor anterior no `Drop`, mesmo padrão de `install::tests::InstallTestEnv`.
+    /// Serializado por [`fs_denylist_test_guard`] porque `$HOME`/`$XDG_CONFIG_HOME` são globais ao
+    /// processo e `cargo test` roda testes deste módulo em threads concorrentes por padrão.
+    static FS_DENYLIST_ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn fs_denylist_test_guard() -> std::sync::MutexGuard<'static, ()> {
+        FS_DENYLIST_ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+
+    struct FsDenylistTestEnv {
+        prev_home: Option<std::ffi::OsString>,
+        prev_xdg_config_home: Option<std::ffi::OsString>,
+    }
+
+    impl FsDenylistTestEnv {
+        fn set(home: &Path, xdg_config_home: &Path) -> Self {
+            let prev_home = std::env::var_os("HOME");
+            let prev_xdg_config_home = std::env::var_os("XDG_CONFIG_HOME");
+            std::env::set_var("HOME", home);
+            std::env::set_var("XDG_CONFIG_HOME", xdg_config_home);
+            Self {
+                prev_home,
+                prev_xdg_config_home,
+            }
+        }
+    }
+
+    impl Drop for FsDenylistTestEnv {
+        fn drop(&mut self) {
+            match &self.prev_home {
+                Some(value) => std::env::set_var("HOME", value),
+                None => std::env::remove_var("HOME"),
+            }
+            match &self.prev_xdg_config_home {
+                Some(value) => std::env::set_var("XDG_CONFIG_HOME", value),
+                None => std::env::remove_var("XDG_CONFIG_HOME"),
+            }
+        }
+    }
+
+    #[test]
+    fn denylisted_home_ssh_path_is_rejected_resolving_custom_home() {
+        let _guard = fs_denylist_test_guard();
+        let dir = temp_manifest_dir("denylisted-home-ssh");
+        let fake_home = dir.join("fake-home");
+        let fake_xdg_config = dir.join("fake-xdg-config");
+        fs::create_dir_all(&fake_home).unwrap();
+        fs::create_dir_all(&fake_xdg_config).unwrap();
+        let _env = FsDenylistTestEnv::set(&fake_home, &fake_xdg_config);
+
+        let ssh_path = fake_home.join(".ssh").join("id_rsa");
+        let content = format!(
+            "plugin_name = \"exemplo\"\ncommand = \"python3\"\nargs = [\"main.py\"]\nfilesystem_read = [\"{}\"]\n",
+            ssh_path.display()
+        );
+        let path = write_manifest(&dir, &content);
+
+        assert_eq!(
+            parse_manifest(&path),
+            Err(ManifestError::DenylistedFilesystemPath(
+                ssh_path.display().to_string()
+            ))
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn denylisted_custom_xdg_config_home_farol_path_is_rejected() {
+        let _guard = fs_denylist_test_guard();
+        let dir = temp_manifest_dir("denylisted-xdg-config");
+        let fake_home = dir.join("fake-home");
+        let fake_xdg_config = dir.join("fake-xdg-config");
+        fs::create_dir_all(&fake_home).unwrap();
+        fs::create_dir_all(&fake_xdg_config).unwrap();
+        let _env = FsDenylistTestEnv::set(&fake_home, &fake_xdg_config);
+
+        let secrets_path = fake_xdg_config.join("farol").join("secrets.toml");
+        let content = format!(
+            "plugin_name = \"exemplo\"\ncommand = \"python3\"\nargs = [\"main.py\"]\nfilesystem_read_write = [\"{}\"]\n",
+            secrets_path.display()
+        );
+        let path = write_manifest(&dir, &content);
+
+        assert_eq!(
+            parse_manifest(&path),
+            Err(ManifestError::DenylistedFilesystemPath(
+                secrets_path.display().to_string()
+            ))
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn absolute_path_outside_denylist_is_accepted() {
+        let dir = temp_manifest_dir("valid-absolute-path");
+        let allowed_dir = dir.join("dados-do-plugin");
+        fs::create_dir_all(&allowed_dir).unwrap();
+        let content = format!(
+            "plugin_name = \"exemplo\"\ncommand = \"python3\"\nargs = [\"main.py\"]\nfilesystem_read = [\"{}\"]\n",
+            allowed_dir.display()
+        );
+        let path = write_manifest(&dir, &content);
+
+        let manifest = parse_manifest(&path).unwrap();
+        assert_eq!(manifest.filesystem_read, vec![allowed_dir.display().to_string()]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn multiple_valid_filesystem_paths_are_accepted() {
+        let dir = temp_manifest_dir("multiple-valid-paths");
+        let first = dir.join("primeiro");
+        let second = dir.join("segundo");
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+        let content = format!(
+            "plugin_name = \"exemplo\"\ncommand = \"python3\"\nargs = [\"main.py\"]\nfilesystem_read_write = [\"{}\", \"{}\"]\n",
+            first.display(),
+            second.display()
+        );
+        let path = write_manifest(&dir, &content);
+
+        let manifest = parse_manifest(&path).unwrap();
+        assert_eq!(
+            manifest.filesystem_read_write,
+            vec![first.display().to_string(), second.display().to_string()]
         );
         let _ = fs::remove_dir_all(&dir);
     }

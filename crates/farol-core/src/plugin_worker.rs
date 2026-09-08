@@ -259,17 +259,34 @@ pub fn discover_installed_plugins() -> Vec<PluginSpawnConfig> {
         }
 
         match crate::plugin_manifest::parse_manifest(&subdir.join("farol-plugin.toml")) {
-            Ok(manifest) => discovered.push(PluginSpawnConfig {
-                plugin_name: manifest.plugin_name,
-                command: manifest.command,
-                args: manifest.args,
-                sandbox_profile: crate::sandbox::SandboxProfile {
-                    allow_network: manifest.allow_network,
-                    allow_exec: manifest.allow_exec,
-                    extra_binds: vec![],
-                },
-                code_root: subdir,
-            }),
+            Ok(manifest) => {
+                let mut extra_binds: Vec<crate::sandbox::BindMount> = manifest
+                    .filesystem_read
+                    .iter()
+                    .map(|path| crate::sandbox::BindMount {
+                        host_path: PathBuf::from(path),
+                        writable: false,
+                    })
+                    .collect();
+                extra_binds.extend(manifest.filesystem_read_write.iter().map(|path| {
+                    crate::sandbox::BindMount {
+                        host_path: PathBuf::from(path),
+                        writable: true,
+                    }
+                }));
+
+                discovered.push(PluginSpawnConfig {
+                    plugin_name: manifest.plugin_name,
+                    command: manifest.command,
+                    args: manifest.args,
+                    sandbox_profile: crate::sandbox::SandboxProfile {
+                        allow_network: manifest.allow_network,
+                        allow_exec: manifest.allow_exec,
+                        extra_binds,
+                    },
+                    code_root: subdir,
+                })
+            }
             Err(err) => {
                 eprintln!(
                     "plugin instalado em {subdir:?} ignorado — manifesto inválido: {err:?}"
@@ -361,7 +378,10 @@ pub const RPC_TIMEOUT_ACTION: Duration = Duration::from_secs(120);
 /// `Container`); os quatro plugins conhecidos (`git-local`/`uptime-kuma`/`openfortivpn-vpn`/
 /// `docker-containers`) migram a constante equivalente para `"0.4"` na mesma feature (T014-T016),
 /// mesmo raciocínio de não repetir a dívida técnica da migração `0.1→0.2`.
-const CORE_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 0, minor: 4 };
+/// **Feature 010**: `"0.4"` → `"0.5"` — bump aditivo normativo (campo `kind: WidgetItemKind`
+/// obrigatório em `WidgetGetResult`, issue #9); os quatro plugins de referência migram a
+/// constante equivalente para `"0.5"` na mesma feature, mesmo raciocínio das migrações anteriores.
+const CORE_PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion { major: 0, minor: 5 };
 
 /// Identificação informativa deste core no handshake (`HandshakeHello.core_name`).
 const CORE_NAME: &str = "farol-core";
@@ -1213,7 +1233,10 @@ mod tests {
     /// módulo `#[cfg(test)]` irmão, não acessível daqui).
     static XDG_DATA_HOME_LOCK: Mutex<()> = Mutex::new(());
 
-    fn xdg_data_home_guard() -> std::sync::MutexGuard<'static, ()> {
+    /// `pub(crate)`: reaproveitada por `filesystem_capability_integration_tests` (T012, feature
+    /// 008) para serializar contra `XDG_DATA_HOME`, evitando que os dois módulos de teste mutem a
+    /// variável de ambiente global concorrentemente.
+    pub(crate) fn xdg_data_home_guard() -> std::sync::MutexGuard<'static, ()> {
         XDG_DATA_HOME_LOCK
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1288,6 +1311,80 @@ mod tests {
                 .join("plugins")
                 .join("exemplo-instalado")
         );
+        std::env::remove_var("XDG_DATA_HOME");
+        let _ = std::fs::remove_dir_all(&xdg_data_home);
+    }
+
+    /// T011 (feature 008, US3): manifesto sem capability de filesystem continua
+    /// produzindo `extra_binds` vazio — regressão do comportamento anterior a esta
+    /// subtarefa, já coberta acima por `discover_returns_one_config_for_one_valid_plugin`
+    /// (`VALID_MANIFEST` não declara nenhum campo de filesystem), mas repetida aqui de
+    /// forma explícita para nomear a garantia de regressão.
+    #[test]
+    fn discover_without_filesystem_capability_yields_empty_extra_binds() {
+        let _guard = xdg_data_home_guard();
+        let xdg_data_home = temp_xdg_data_home("no-filesystem-capability");
+        write_installed_manifest(&xdg_data_home, "exemplo-instalado", VALID_MANIFEST);
+        std::env::set_var("XDG_DATA_HOME", &xdg_data_home);
+
+        let discovered = discover_installed_plugins();
+
+        assert_eq!(discovered.len(), 1);
+        assert!(discovered[0].sandbox_profile.extra_binds.is_empty());
+        std::env::remove_var("XDG_DATA_HOME");
+        let _ = std::fs::remove_dir_all(&xdg_data_home);
+    }
+
+    /// T011 (feature 008, US3): `filesystem_read` do manifesto vira um `BindMount`
+    /// somente-leitura (`writable: false`) em `extra_binds`.
+    #[test]
+    fn discover_with_filesystem_read_produces_a_read_only_bind_mount() {
+        let _guard = xdg_data_home_guard();
+        let xdg_data_home = temp_xdg_data_home("filesystem-read");
+        let allowed_dir = xdg_data_home.join("dados-liberados-leitura");
+        std::fs::create_dir_all(&allowed_dir).unwrap();
+        let manifest = format!(
+            "plugin_name = \"exemplo-fs-read\"\ncommand = \"python3\"\nargs = [\"main.py\"]\n\
+             filesystem_read = [\"{}\"]\n",
+            allowed_dir.display()
+        );
+        write_installed_manifest(&xdg_data_home, "exemplo-fs-read", &manifest);
+        std::env::set_var("XDG_DATA_HOME", &xdg_data_home);
+
+        let discovered = discover_installed_plugins();
+
+        assert_eq!(discovered.len(), 1, "obteve {discovered:?}");
+        let extra_binds = &discovered[0].sandbox_profile.extra_binds;
+        assert_eq!(extra_binds.len(), 1);
+        assert_eq!(extra_binds[0].host_path, allowed_dir);
+        assert!(!extra_binds[0].writable, "filesystem_read deveria virar bind somente-leitura");
+        std::env::remove_var("XDG_DATA_HOME");
+        let _ = std::fs::remove_dir_all(&xdg_data_home);
+    }
+
+    /// T011 (feature 008, US3): `filesystem_read_write` do manifesto vira um
+    /// `BindMount` gravável (`writable: true`) em `extra_binds`.
+    #[test]
+    fn discover_with_filesystem_read_write_produces_a_writable_bind_mount() {
+        let _guard = xdg_data_home_guard();
+        let xdg_data_home = temp_xdg_data_home("filesystem-read-write");
+        let allowed_dir = xdg_data_home.join("dados-liberados-leitura-escrita");
+        std::fs::create_dir_all(&allowed_dir).unwrap();
+        let manifest = format!(
+            "plugin_name = \"exemplo-fs-rw\"\ncommand = \"python3\"\nargs = [\"main.py\"]\n\
+             filesystem_read_write = [\"{}\"]\n",
+            allowed_dir.display()
+        );
+        write_installed_manifest(&xdg_data_home, "exemplo-fs-rw", &manifest);
+        std::env::set_var("XDG_DATA_HOME", &xdg_data_home);
+
+        let discovered = discover_installed_plugins();
+
+        assert_eq!(discovered.len(), 1, "obteve {discovered:?}");
+        let extra_binds = &discovered[0].sandbox_profile.extra_binds;
+        assert_eq!(extra_binds.len(), 1);
+        assert_eq!(extra_binds[0].host_path, allowed_dir);
+        assert!(extra_binds[0].writable, "filesystem_read_write deveria virar bind gravável");
         std::env::remove_var("XDG_DATA_HOME");
         let _ = std::fs::remove_dir_all(&xdg_data_home);
     }
@@ -1402,6 +1499,134 @@ mod tests {
             "esperava os 4 de referência + 1 sobrevivente, obteve {plugins:?}"
         );
         std::env::remove_var("XDG_DATA_HOME");
+        let _ = std::fs::remove_dir_all(&xdg_data_home);
+    }
+}
+
+/// T012 (feature 008, `specs/008-registry-hardening/tasks.md`, US3) — teste de integração
+/// real com `bwrap` de verdade (exige `bwrap` instalado no `PATH`, mesmo padrão de
+/// `sandbox::sandbox_integration_tests`, `crates/farol-core/src/sandbox.rs:563+`): um plugin de
+/// fixture descoberto via [`discover_installed_plugins`] com `filesystem_read_write` escreve
+/// dentro do caminho liberado (confirmado pelo processo pai, fora do sandbox) e falha ao
+/// escrever fora dele.
+///
+/// Vive em `plugin_worker.rs` (não em `sandbox.rs`) porque esta subtarefa está autorizada só a
+/// tocar este arquivo — o teste importa `crate::sandbox::build_bwrap_args`/`BindMount` (já
+/// públicos) em vez de acrescentar uma função nova em `sandbox.rs`. O caminho até o `Vec<String>`
+/// de argumentos do `bwrap` é o mesmo produzido em produção: monta o `PluginSpawnConfig` via
+/// [`discover_installed_plugins`] (T010, o código sob teste) a partir de um manifesto real escrito
+/// em disco, depois chama `crate::sandbox::build_bwrap_args` com o `sandbox_profile` resultante —
+/// nada de `SandboxProfile`/`BindMount` sintético construído à mão só para o teste.
+#[cfg(test)]
+mod filesystem_capability_integration_tests {
+    use super::tests::xdg_data_home_guard;
+    use super::*;
+    use std::process::Command;
+
+    fn python3_path() -> PathBuf {
+        crate::sandbox::resolve_interpreter_path("python3").expect(
+            "python3 MUST estar no PATH desta máquina de desenvolvimento para este teste rodar",
+        )
+    }
+
+    fn temp_xdg_data_home() -> PathBuf {
+        std::env::temp_dir().join(format!(
+            "farol-plugin-worker-fs-capability-integration-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ))
+    }
+
+    #[test]
+    fn discovered_plugin_with_filesystem_read_write_can_write_inside_and_not_outside_the_allowed_path()
+    {
+        let _guard = xdg_data_home_guard();
+        let xdg_data_home = temp_xdg_data_home();
+
+        // Caminho liberado (dentro do escopo do teste) e um segundo caminho, fora dele, que MUST
+        // permanecer inacessível ao plugin apesar de existir de verdade no host.
+        let allowed_dir = xdg_data_home.join("allowed");
+        let forbidden_dir = xdg_data_home.join("forbidden");
+        std::fs::create_dir_all(&allowed_dir).unwrap();
+        std::fs::create_dir_all(&forbidden_dir).unwrap();
+
+        let manifest = format!(
+            "plugin_name = \"exemplo-fs-integration\"\ncommand = \"python3\"\nargs = []\n\
+             filesystem_read_write = [\"{}\"]\n",
+            allowed_dir.display()
+        );
+        let plugin_dir = xdg_data_home
+            .join("farol")
+            .join("plugins")
+            .join("exemplo-fs-integration");
+        std::fs::create_dir_all(&plugin_dir).unwrap();
+        std::fs::write(plugin_dir.join("farol-plugin.toml"), manifest).unwrap();
+        std::env::set_var("XDG_DATA_HOME", &xdg_data_home);
+
+        let discovered = discover_installed_plugins();
+        std::env::remove_var("XDG_DATA_HOME");
+
+        assert_eq!(discovered.len(), 1, "obteve {discovered:?}");
+        let config = &discovered[0];
+        assert_eq!(config.sandbox_profile.extra_binds.len(), 1);
+        assert!(config.sandbox_profile.extra_binds[0].writable);
+
+        let inside_path = allowed_dir.join("escrita-dentro.txt");
+        let outside_path = forbidden_dir.join("escrita-fora.txt");
+        let script = format!(
+            "with open({inside:?}, 'w') as f:\n\
+             \tf.write('ok')\n\
+             print('INSIDE_OK')\n\
+             try:\n\
+             \twith open({outside:?}, 'w') as f:\n\
+             \t\tf.write('vazou')\n\
+             \tprint('OUTSIDE_LEAKED')\n\
+             except OSError:\n\
+             \tprint('OUTSIDE_BLOCKED')\n",
+            inside = inside_path.display().to_string(),
+            outside = outside_path.display().to_string(),
+        );
+
+        let interpreter = python3_path();
+        let args = crate::sandbox::build_bwrap_args(
+            &config.code_root,
+            &interpreter,
+            &config.sandbox_profile,
+            "python3",
+            &["-c".to_string(), script],
+        );
+
+        let output = Command::new("bwrap")
+            .args(&args)
+            .output()
+            .expect("bwrap MUST estar instalado e executável nesta máquina");
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("INSIDE_OK"),
+            "esperava escrita dentro do caminho liberado com sucesso; stdout={stdout:?} stderr={:?}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            stdout.contains("OUTSIDE_BLOCKED"),
+            "esperava escrita fora do caminho liberado bloqueada; stdout={stdout:?} stderr={:?}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        // Confirmação fora do sandbox (processo pai): o arquivo dentro do caminho liberado
+        // existe de verdade no host, com o conteúdo esperado — não é só o `stdout` do plugin
+        // afirmando sucesso.
+        let written = std::fs::read_to_string(&inside_path)
+            .unwrap_or_else(|err| panic!("arquivo {inside_path:?} deveria existir no host: {err}"));
+        assert_eq!(written, "ok");
+        assert!(
+            !outside_path.exists(),
+            "arquivo fora do caminho liberado não deveria existir no host: {outside_path:?}"
+        );
+
         let _ = std::fs::remove_dir_all(&xdg_data_home);
     }
 }

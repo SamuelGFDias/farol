@@ -23,7 +23,10 @@ mod install;
 mod model;
 mod plugin_worker;
 mod plugin_manifest;
+mod registry_index;
 mod sandbox;
+mod sandbox_network;
+mod sandbox_seccomp;
 mod secrets_store;
 mod update;
 mod view;
@@ -149,6 +152,18 @@ pub(crate) fn program(
 /// próprio canal de entrada de worker.
 pub(crate) struct Farol {
     plugins: Vec<PluginSlot>,
+    /// Estado do formulário de instalação in-app por nome (feature 008, US4,
+    /// T013) — não pertence a nenhum `PluginSlot` específico (a instalação
+    /// ainda não tem um plugin conectado quando começa), por isso vive
+    /// diretamente aqui, ao lado de `plugins`.
+    install_form: model::InstallForm,
+    /// Painel de detalhe genérico de um item de widget (feature 010, US2,
+    /// T015) — `Some` enquanto o overlay de detalhe está aberto sobre a view
+    /// principal (`view::view_detail_panel`), `None` no estado normal. Mesmo
+    /// raciocínio de `install_form` acima para viver diretamente em `Farol`
+    /// em vez de dentro de um `PluginSlot`: o painel não pertence a nenhuma
+    /// conexão específica (ver `model::DetailPanelState`).
+    detail_panel: Option<model::DetailPanelState>,
 }
 
 impl Default for Farol {
@@ -185,6 +200,8 @@ impl Farol {
                     worker_sender: None,
                 })
                 .collect(),
+            install_form: model::InstallForm::default(),
+            detail_panel: None,
         }
     }
 }
@@ -255,4 +272,46 @@ pub(crate) enum Message {
     /// persiste os valores em `config.toml`/`secrets.toml` e dispara a
     /// reconexão do worker (`Farol::handle_setup_submitted`, update.rs).
     SetupSubmitted { plugin_name: String },
+    /// Feature 008, US4 (T014): usuário editou o campo de nome do formulário
+    /// de instalação in-app (`view_install_form`, view.rs) — atualiza
+    /// `Farol::install_form.name_input` (`Farol::handle_install_form_name_changed`,
+    /// update.rs). Mesmo padrão de `SetupFieldChanged`, sem `plugin_name`
+    /// porque este formulário não pertence a nenhuma conexão já existente.
+    InstallFormNameChanged(String),
+    /// Feature 008, US4 (T014): usuário confirmou o formulário de instalação
+    /// in-app — dispara `install::run_by_name` em segundo plano
+    /// (`tokio::task::spawn_blocking` dentro de um `iced::Task::perform`,
+    /// `Farol::handle_install_by_name_submitted`, update.rs), sem bloquear a
+    /// UI enquanto o download/build roda.
+    InstallByNameSubmitted,
+    /// Feature 008, US4 (T014): resultado (sucesso ou falha, já traduzido
+    /// para texto legível — `InstallByNameOutcome`/`InstallOutcome` não são
+    /// `Clone`, então não podem viajar direto num `Message`, que precisa
+    /// ser) de uma instalação in-app disparada por `InstallByNameSubmitted`.
+    /// `success == true` também dispara a descoberta de plugins recém-
+    /// instalados (`Farol::add_newly_installed_plugin_slots`, update.rs),
+    /// fazendo o novo plugin aparecer na lista sem reiniciar o app.
+    InstallOutcomeReceived { success: bool, message: String },
+    /// Feature 010, US2 (T016): usuário pediu para ver o detalhe de um item
+    /// específico de um widget (ex.: o botão "Detalhe" de uma linha de
+    /// container, `view_item_detail_control`, view.rs) — abre
+    /// `Farol::detail_panel` (`Farol::handle_item_detail_requested`,
+    /// update.rs). Mensagem genérica, reutilizável por qualquer `kind` de
+    /// widget existente ou futuro (D4/D5 de `plan.md`): não é uma ação que
+    /// muda estado do plugin, é puramente uma interação de UI local — nunca
+    /// dispara `action/invoke`.
+    ///
+    /// `items` reaproveita `farol_protocol::messages::WidgetItems` como um
+    /// vetor de exatamente um elemento (o item clicado) — ver a docstring de
+    /// `model::DetailPanelState` para o raciocínio completo.
+    ItemDetailRequested {
+        plugin_name: String,
+        items: farol_protocol::messages::WidgetItems,
+    },
+    /// Feature 010, US2 (T016): usuário fechou o painel de detalhe (botão
+    /// "Fechar", `view_detail_panel`) — limpa `Farol::detail_panel`
+    /// (`Farol::handle_item_detail_closed`, update.rs), sem afetar nenhum
+    /// outro estado (FR-007: o painel principal volta ao estado anterior sem
+    /// perda de estado dos demais widgets).
+    ItemDetailClosed,
 }

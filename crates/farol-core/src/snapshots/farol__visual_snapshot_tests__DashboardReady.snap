@@ -2,6 +2,9 @@
 source: crates/farol-core/src/visual_snapshot_tests.rs
 expression: extract_visible_text(app.view())
 ---
+Instalar plugin
+nome do plugin (índice)
+Instalar
 git-local
 Iniciando plugin...
 uptime-kuma

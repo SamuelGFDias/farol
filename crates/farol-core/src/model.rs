@@ -402,6 +402,76 @@ pub struct SetupForm {
     pub fields: Vec<(farol_protocol::messages::RequiredConfigItem, String)>,
 }
 
+/// Estado de progresso de uma instalação disparada pelo formulário in-app
+/// (feature 008, US4, T013) — espelha as três fases de
+/// `install::run_by_name`, que roda em segundo plano (`update.rs`,
+/// `tokio::task::spawn_blocking`) sem bloquear a UI.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub enum InstallFormStatus {
+    /// Nenhuma instalação em andamento — estado inicial, e também o estado
+    /// após o usuário editar o nome de novo depois de um resultado anterior
+    /// (`update::handle_install_form_name_changed`).
+    #[default]
+    Idle,
+    /// `install::run_by_name` disparado, aguardando o `Task::perform`
+    /// concluir — a `view` MUST desabilitar o botão de confirmar enquanto
+    /// este estado estiver ativo, para não disparar uma segunda instalação
+    /// sobreposta à primeira.
+    InProgress,
+    /// Instalação concluída com sucesso — mensagem legível para exibição
+    /// direta (já traduzida de `InstallOutcome::Installed`).
+    Success(String),
+    /// Instalação falhou — mensagem legível para exibição direta (já
+    /// traduzida de qualquer variante de erro de `InstallByNameOutcome`/
+    /// `InstallOutcome`).
+    Error(String),
+}
+
+/// Estado do formulário de instalação in-app por nome de plugin do índice
+/// central (feature 008, US4, T013) — segue o mesmo padrão de [`SetupForm`]
+/// acima, mas vive diretamente em `Farol` (main.rs) em vez de dentro de uma
+/// `PluginConnection`: esta instalação não pertence a nenhum plugin já
+/// conectado, é o que cria um novo `PluginSlot` quando bem-sucedida
+/// (`update::add_newly_installed_plugin_slots`).
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct InstallForm {
+    /// Nome digitado pelo usuário, a resolver contra o índice central via
+    /// `registry_index::resolve_name` (dentro de `install::run_by_name`).
+    pub name_input: String,
+    pub status: InstallFormStatus,
+}
+
+/// Estado da superfície de detalhe genérica de um item de widget
+/// (`specs/010-widget-detail-surface/spec.md` US2, T015) — presente quando o painel/overlay de
+/// detalhe está aberto (`view::view_detail_panel`), `None` no estado normal.
+/// `Farol::handle_item_detail_requested`/`handle_item_detail_closed` (update.rs) são os únicos
+/// pontos que escrevem este campo.
+///
+/// **Desvio de local documentado** (mesmo padrão já registrado para [`InstallForm`], que vive
+/// diretamente em `Farol`, `main.rs`, em vez de dentro de uma `PluginConnection`): o campo raiz
+/// (`Farol::detail_panel`) também vive diretamente em `Farol` — o painel de detalhe não pertence
+/// a nenhuma conexão específica (é uma interação de UI local, D5 de `plan.md`), só referencia uma
+/// via `plugin_name` para fins de cabeçalho/exibição. Este tipo, aqui em `model.rs`, define só a
+/// *forma* do estado; `tasks.md` T015 previa o campo em "`Model`" — o `Farol` de `main.rs` é o
+/// nome real da struct raiz de estado deste projeto (não existe tipo `Model`), mesmo raciocínio
+/// já registrado na docstring de [`SetupForm`] acima para o desvio equivalente daquela subtarefa.
+///
+/// `items` reaproveita `farol_protocol::messages::WidgetItems` — o mesmo enum fechado que já
+/// discrimina as 4 variantes de item conhecidas (`Git`/`Monitor`/`Vpn`/`Container`, feature 010
+/// US1/`kind` explícito) — em vez de um enum paralelo só para "um item de qualquer tipo". Por
+/// convenção, este campo sempre carrega um vetor de **exatamente um** elemento (o item que o
+/// usuário clicou) — `view::format_item_detail` (T017) só examina o primeiro elemento de cada
+/// variante, documentando essa invariante no próprio código.
+#[derive(Debug, Clone, PartialEq)]
+pub struct DetailPanelState {
+    /// Plugin dono do item exibido — usado só para o cabeçalho do painel
+    /// (`view::view_detail_panel`); fechar o painel (`Message::ItemDetailClosed`) não depende
+    /// dele.
+    pub plugin_name: String,
+    /// O item selecionado, envelopado como `WidgetItems` de um único elemento — ver nota acima.
+    pub items: farol_protocol::messages::WidgetItems,
+}
+
 impl From<farol_protocol::WidgetItem> for RepositoryViewModel {
     /// Converte um item recém-chegado de `widget/get` sem nenhum estado de
     /// UI anterior (`fetch_in_flight: false`, `last_error: None`) — quem
