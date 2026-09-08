@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plugin de referência `git-local` — o lado "servidor" do protocolo Farol v0.4.
+"""Plugin de referência `git-local` — o lado "servidor" do protocolo Farol v0.5.
 
 Prova que o protocolo (`protocol/SPEC.md`) é agnóstico de linguagem (D3 de `research.md`): este
 arquivo não importa nem depende do crate Rust `farol-protocol` em nenhum momento — é uma
@@ -16,6 +16,10 @@ credencial/configuração a declarar. `widgets`/`actions` permanecem exatamente 
 Migrado novamente para `"0.3"` como parte da feature 004 (`specs/004-vpn-status-plugin/research.md` D2)
 — mudança mecânica, nenhum campo novo usado por este plugin.
 Migrado novamente para `"0.4"` como parte da feature 005 (`specs/005-docker-containers-plugin/research.md` D2) — mudança mecânica, nenhum campo novo usado por este plugin.
+Migrado novamente para `"0.5"` como parte da feature 010 (`specs/010-widget-detail-surface`,
+issue #9): `widget/get` passa a devolver o campo `kind` (aqui sempre `"Git"`) no envelope de
+resultado, junto de `items` — discriminador explícito que substitui a antiga dependência de
+disjunção incidental de campos entre os quatro vocabulários de item do protocolo.
 
 Transporte: JSON-RPC 2.0 sobre NDJSON em stdin/stdout (`protocol/SPEC.md` §2-§4). O core é sempre
 quem inicia cada requisição; este processo nunca escreve nada em stdout antes de receber e
@@ -35,12 +39,15 @@ import config
 import scan
 
 JSONRPC_VERSION = "2.0"
-PROTOCOL_VERSION = "0.4"
+PROTOCOL_VERSION = "0.5"
 PLUGIN_NAME = "git-local"
 
 WIDGET_ID = "repo-status"
 WIDGET_KIND = "status-grid"
 WIDGET_TITLE = "Repositórios Git"
+# Discriminador explícito de `WidgetGetResult.items` (novo em v0.5, issue #9) — espelha o nome de
+# variante `WidgetItems::Git` do lado Rust (`crates/farol-protocol/src/messages.rs`).
+WIDGET_ITEMS_KIND = "Git"
 
 METHOD_HANDSHAKE_HELLO = "handshake/hello"
 METHOD_WIDGET_GET = "widget/get"
@@ -124,7 +131,10 @@ def handle_widget_get(request: dict) -> dict:
             {"reason": "scan_root_unreadable"},
         )
 
-    return _success(request_id, {"widget_id": WIDGET_ID, "items": items})
+    return _success(
+        request_id,
+        {"widget_id": WIDGET_ID, "kind": WIDGET_ITEMS_KIND, "items": items},
+    )
 
 
 def handle_action_invoke(request: dict) -> dict:

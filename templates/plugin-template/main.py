@@ -30,7 +30,7 @@ JSONRPC_VERSION = "2.0"
 # `CORE_PROTOCOL_VERSION` do core (`crates/farol-core/src/plugin_worker.rs`) —
 # o core recusa, por igualdade exata, qualquer versão diferente
 # (`protocol/SPEC.md` §6.4).
-PROTOCOL_VERSION = "0.4"
+PROTOCOL_VERSION = "0.5"
 
 # Ajuste para o mesmo valor de `plugin_name` no `farol-plugin.toml` ao lado.
 PLUGIN_NAME = "meu-plugin"

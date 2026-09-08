@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plugin `openfortivpn-vpn` — o lado "servidor" do protocolo Farol v0.4.
+"""Plugin `openfortivpn-vpn` — o lado "servidor" do protocolo Farol v0.5.
 
 Prova que o protocolo (`protocol/SPEC.md`) é agnóstico de linguagem: este arquivo não importa nem
 depende do crate Rust `farol-protocol` em nenhum momento — é uma implementação independente lendo
@@ -17,6 +17,10 @@ Apenas biblioteca padrão — `json`, `sys`.
 Migrado para `"0.4"` como parte da feature 005
 (`specs/005-docker-containers-plugin/research.md` D2) — mudança mecânica, nenhum
 campo novo usado por este plugin.
+Migrado novamente para `"0.5"` como parte da feature 010 (`specs/010-widget-detail-surface`,
+issue #9): `widget/get` passa a devolver o campo `kind` (aqui sempre `"Vpn"`) no envelope de
+resultado, junto de `items` — discriminador explícito que substitui a antiga dependência de
+disjunção incidental de campos entre os quatro vocabulários de item do protocolo.
 """
 
 from __future__ import annotations
@@ -27,12 +31,15 @@ import sys
 import vpn_cli
 
 JSONRPC_VERSION = "2.0"
-PROTOCOL_VERSION = "0.4"
+PROTOCOL_VERSION = "0.5"
 PLUGIN_NAME = "openfortivpn-vpn"
 
 WIDGET_ID = "vpn-connection"
 WIDGET_KIND = "vpn-status"
 WIDGET_TITLE = "VPN"
+# Discriminador explícito de `WidgetGetResult.items` (novo em v0.5, issue #9) — espelha o nome de
+# variante `WidgetItems::Vpn` do lado Rust (`crates/farol-protocol/src/messages.rs`).
+WIDGET_ITEMS_KIND = "Vpn"
 
 METHOD_HANDSHAKE_HELLO = "handshake/hello"
 METHOD_WIDGET_GET = "widget/get"
@@ -113,7 +120,11 @@ def handle_widget_get(request: dict) -> dict:
 
     return _success(
         request_id,
-        {"widget_id": request["params"]["widget_id"], "items": [status]},
+        {
+            "widget_id": request["params"]["widget_id"],
+            "kind": WIDGET_ITEMS_KIND,
+            "items": [status],
+        },
     )
 
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Plugin `docker-containers` — o lado "servidor" do protocolo Farol v0.4.
+"""Plugin `docker-containers` — o lado "servidor" do protocolo Farol v0.5.
 
 Prova que o protocolo (`protocol/SPEC.md`) é agnóstico de linguagem: este arquivo não importa nem
 depende do crate Rust `farol-protocol` em nenhum momento — é uma implementação independente lendo
@@ -14,6 +14,10 @@ quem inicia cada requisição; este processo nunca escreve nada em stdout antes 
 nunca faz parte do protocolo em si.
 
 Apenas biblioteca padrão — `json`, `sys`.
+Migrado para `"0.5"` como parte da feature 010 (`specs/010-widget-detail-surface`, issue #9):
+`widget/get` passa a devolver o campo `kind` (aqui sempre `"Container"`) no envelope de resultado,
+junto de `items` — discriminador explícito que substitui a antiga dependência de disjunção
+incidental de campos entre os quatro vocabulários de item do protocolo.
 """
 
 from __future__ import annotations
@@ -24,12 +28,15 @@ import sys
 import docker_cli
 
 JSONRPC_VERSION = "2.0"
-PROTOCOL_VERSION = "0.4"
+PROTOCOL_VERSION = "0.5"
 PLUGIN_NAME = "docker-containers"
 
 WIDGET_ID = "docker-containers"
 WIDGET_KIND = "container-status-grid"
 WIDGET_TITLE = "Containers Docker"
+# Discriminador explícito de `WidgetGetResult.items` (novo em v0.5, issue #9) — espelha o nome de
+# variante `WidgetItems::Container` do lado Rust (`crates/farol-protocol/src/messages.rs`).
+WIDGET_ITEMS_KIND = "Container"
 
 METHOD_HANDSHAKE_HELLO = "handshake/hello"
 METHOD_WIDGET_GET = "widget/get"
@@ -108,7 +115,11 @@ def handle_widget_get(request: dict) -> dict:
 
     return _success(
         request_id,
-        {"widget_id": request["params"]["widget_id"], "items": result["items"]},
+        {
+            "widget_id": request["params"]["widget_id"],
+            "kind": WIDGET_ITEMS_KIND,
+            "items": result["items"],
+        },
     )
 
 
