@@ -20,7 +20,7 @@ use farol_protocol::RemoteStatus;
 // fora do escopo desta subtarefa corrigir (`farol-protocol` é off-limits). Referenciados via
 // `farol_protocol::messages::*` (módulo e tipos ambos `pub`).
 use farol_protocol::messages::{
-    Capability, ContainerState, KnownCapability, MonitorStatus, VpnConnectionState,
+    Capability, ContainerState, KnownCapability, MonitorStatus, VpnConnectionState, WidgetItems,
 };
 use iced::widget::{button, column, container, row, scrollable, text, text_input, Column};
 use iced::{Element, Length};
@@ -55,10 +55,20 @@ impl Farol {
             sections = sections.push(view_plugin_slot(slot));
         }
 
-        container(sections.padding(16))
+        let main_view: Element<'_, Message> = container(sections.padding(16))
             .width(Length::Fill)
             .height(Length::Fill)
-            .into()
+            .into();
+
+        // Feature 010, US2 (T018): painel de detalhe genérico como overlay sobre a view
+        // principal via `iced::widget::stack` — sem introduzir um sistema de rotas/telas
+        // novo no `iced` (FR-006, D4/D5 de `plan.md`). A view principal continua sendo
+        // renderizada por baixo (preserva o estado de todos os widgets, FR-007); o painel
+        // só é empilhado por cima quando `detail_panel.is_some()`.
+        match &self.detail_panel {
+            Some(detail) => iced::widget::stack![main_view, view_detail_panel(detail)].into(),
+            None => main_view,
+        }
     }
 }
 
@@ -531,16 +541,7 @@ fn view_container_row<'a>(
     container: &'a model::ContainerViewModel,
 ) -> Element<'a, Message> {
     let item = &container.item;
-    let state_label = match item.state {
-        ContainerState::Created => "criado",
-        ContainerState::Running => "rodando",
-        ContainerState::Restarting => "reiniciando",
-        ContainerState::Paused => "pausado",
-        ContainerState::Removing => "em remoção",
-        ContainerState::Exited => "parado",
-        ContainerState::Dead => "morto",
-        ContainerState::Unknown => "desconhecido",
-    };
+    let state_label = container_state_label(item.state);
 
     let action_in_flight = container.action_in_flight.is_some();
 
@@ -551,6 +552,7 @@ fn view_container_row<'a>(
         view_container_action_control(plugin_name, &item.start_action, action_in_flight),
         view_container_action_control(plugin_name, &item.stop_action, action_in_flight),
         view_container_action_control(plugin_name, &item.restart_action, action_in_flight),
+        view_item_detail_control(plugin_name, item),
     ]
     .spacing(8)]
     .spacing(4);
@@ -590,6 +592,173 @@ fn view_container_action_control<'a>(
     button(text(action.label.clone()))
         .width(Length::FillPortion(1))
         .on_press_maybe(on_press)
+        .into()
+}
+
+/// Rótulo PT-BR de `ContainerState`, extraído de `view_container_row` (T019, feature 010) para
+/// ser reaproveitado também por `format_item_detail` sem duplicar o `match` — mesmo vocabulário
+/// exato de antes, só compartilhado entre as duas funções.
+fn container_state_label(state: ContainerState) -> &'static str {
+    match state {
+        ContainerState::Created => "criado",
+        ContainerState::Running => "rodando",
+        ContainerState::Restarting => "reiniciando",
+        ContainerState::Paused => "pausado",
+        ContainerState::Removing => "em remoção",
+        ContainerState::Exited => "parado",
+        ContainerState::Dead => "morto",
+        ContainerState::Unknown => "desconhecido",
+    }
+}
+
+/// Feature 010, US2 (T019): gatilho de abertura do painel de detalhe genérico para um item de
+/// container — mesmo padrão visual de `view_container_action_control` (botão simples), mas
+/// dispara `Message::ItemDetailRequested` em vez de `Message::ActionInvokeRequested` (D5 de
+/// `plan.md`): não é uma ação que muda estado do plugin, é puramente uma interação de UI local,
+/// por isso sempre habilitado (sem depender de `ActionDeclaration.enabled`/`action_in_flight`).
+fn view_item_detail_control<'a>(
+    plugin_name: &'a str,
+    item: &'a farol_protocol::messages::ContainerStatusItem,
+) -> Element<'a, Message> {
+    button(text("Detalhe"))
+        .width(Length::FillPortion(1))
+        .on_press(Message::ItemDetailRequested {
+            plugin_name: plugin_name.to_string(),
+            items: WidgetItems::Container(vec![item.clone()]),
+        })
+        .into()
+}
+
+/// Feature 010, US2 (T017): converte o item selecionado do painel de detalhe (`DetailPanelState`,
+/// model.rs) em pares label/valor genéricos, um por campo relevante da variante correspondente de
+/// `WidgetItems` — consumido por `view_detail_panel` (T018). Por convenção, documentada na
+/// docstring de `DetailPanelState`, o vetor sempre carrega exatamente um elemento; só o primeiro
+/// item de cada variante é examinado (vetor vazio produz nenhum par, sem entrar em pânico).
+fn format_item_detail(items: &WidgetItems) -> Vec<(String, String)> {
+    match items {
+        WidgetItems::Git(items) => match items.first() {
+            Some(item) => {
+                let remote_label = match &item.repo.remote_status {
+                    RemoteStatus::Tracked { ahead, behind } => {
+                        format!("{ahead} à frente / {behind} atrás")
+                    }
+                    RemoteStatus::NoRemote => "sem remoto".to_string(),
+                    RemoteStatus::NoUpstreamTracking => {
+                        "sem tracking configurado (ahead/behind desconhecido)".to_string()
+                    }
+                };
+                vec![
+                    ("Nome".to_string(), item.repo.name.clone()),
+                    ("Caminho".to_string(), item.repo.path.clone()),
+                    (
+                        "Working tree".to_string(),
+                        if item.repo.dirty {
+                            "suja (mudanças pendentes)".to_string()
+                        } else {
+                            "limpa".to_string()
+                        },
+                    ),
+                    ("Remoto".to_string(), remote_label),
+                ]
+            }
+            None => Vec::new(),
+        },
+        WidgetItems::Monitor(items) => match items.first() {
+            Some(item) => {
+                let status_label = match item.status {
+                    MonitorStatus::Up => "up",
+                    MonitorStatus::Down => "down",
+                    MonitorStatus::Pending => "pending",
+                    MonitorStatus::Maintenance => "maintenance",
+                };
+                let response_label = match item.response_time_ms {
+                    Some(ms) => format!("{ms} ms"),
+                    None => "—".to_string(),
+                };
+                vec![
+                    ("Nome".to_string(), item.name.clone()),
+                    ("Status".to_string(), status_label.to_string()),
+                    ("Tempo de resposta".to_string(), response_label),
+                ]
+            }
+            None => Vec::new(),
+        },
+        WidgetItems::Vpn(items) => match items.first() {
+            Some(item) => {
+                let state_label = match item.state {
+                    VpnConnectionState::Disconnected => "desconectado",
+                    VpnConnectionState::Connecting => "conectando",
+                    VpnConnectionState::Connected => "conectado",
+                };
+                let elapsed_label = item
+                    .elapsed_seconds
+                    .map(format_elapsed)
+                    .unwrap_or_else(|| "—".to_string());
+                vec![
+                    ("Estado".to_string(), state_label.to_string()),
+                    (
+                        "Perfil ativo".to_string(),
+                        item.active_profile.clone().unwrap_or_else(|| "—".to_string()),
+                    ),
+                    ("Conectado há".to_string(), elapsed_label),
+                    (
+                        "Perfis disponíveis".to_string(),
+                        item.available_profiles.len().to_string(),
+                    ),
+                ]
+            }
+            None => Vec::new(),
+        },
+        WidgetItems::Container(items) => match items.first() {
+            Some(item) => vec![
+                ("Nome".to_string(), item.name.clone()),
+                ("Imagem".to_string(), item.image.clone()),
+                (
+                    "Estado".to_string(),
+                    container_state_label(item.state).to_string(),
+                ),
+                (
+                    "Texto de status".to_string(),
+                    item.status_text.clone().unwrap_or_else(|| "—".to_string()),
+                ),
+                ("ID".to_string(), item.id.clone()),
+            ],
+            None => Vec::new(),
+        },
+    }
+}
+
+/// Feature 010, US2 (T018): painel/overlay genérico de detalhe — cabeçalho com o
+/// `plugin_name` do item, os pares label/valor de `format_item_detail` (T017) numa
+/// coluna rolável (`scrollable`, preparando o terreno para a futura tela de logs de
+/// container, FR-006) e um botão "Fechar" disparando `Message::ItemDetailClosed`
+/// (`Farol::handle_item_detail_closed`, update.rs). Chamada por `Farol::view` via
+/// `iced::widget::stack![...]` quando `Farol::detail_panel.is_some()` — nunca chamada
+/// diretamente pelo `update.rs`.
+fn view_detail_panel(state: &model::DetailPanelState) -> Element<'_, Message> {
+    let mut content: Column<Message> = column![text(format!(
+        "Detalhe — {}",
+        state.plugin_name
+    ))
+    .size(20)]
+    .spacing(8);
+
+    for (label, value) in format_item_detail(&state.items) {
+        content = content.push(
+            row![
+                text(label).width(Length::FillPortion(1)),
+                text(value).width(Length::FillPortion(2)),
+            ]
+            .spacing(8),
+        );
+    }
+
+    content = content.push(button(text("Fechar")).on_press(Message::ItemDetailClosed));
+
+    container(scrollable(content.padding(16)))
+        .width(Length::Fill)
+        .height(Length::Fill)
+        .style(container::bordered_box)
         .into()
 }
 

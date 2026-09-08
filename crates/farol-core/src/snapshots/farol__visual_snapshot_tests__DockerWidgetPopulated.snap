@@ -23,6 +23,7 @@ parado
 Iniciar
 Parar
 Reiniciar
+Detalhe
 Iniciando...
 mystery
 sha256:deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef
@@ -30,9 +31,11 @@ desconhecido
 Iniciar
 Parar
 Reiniciar
+Detalhe
 web
 nginx:latest
 rodando
 Iniciar
 Parar
 Reiniciar
+Detalhe

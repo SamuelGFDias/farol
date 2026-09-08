@@ -2854,6 +2854,127 @@ fn docker_containers_reaches_ready_and_populates_the_container_grid() {
     assert_no_lingering_children();
 }
 
+/// **T020 [US2, feature 010] — clicar "Detalhe" num item de container abre o painel de detalhe
+/// genérico com o conteúdo esperado; fechar o painel restaura a view normal sem perder o estado
+/// da lista de containers já carregada** (`specs/010-widget-detail-surface/tasks.md` T020).
+///
+/// Mesma fixture/cenário `multi_state` de
+/// [`docker_containers_reaches_ready_and_populates_the_container_grid`] (T026b) — três containers
+/// já carregados na tela antes do clique. `click_text("Detalhe")` (`Scenario::click_text`) clica
+/// no primeiro widget com esse texto exato na árvore — como `view_container_grid` (view.rs)
+/// itera `widget.docker_widget.containers` (já ordenado por `(name, id)`, `research.md` D10), o
+/// primeiro botão "Detalhe" pertence à linha de `db` (`postgres:16`, `exited`).
+///
+/// O painel exibido é verificado por conteúdo específico de `format_item_detail`/
+/// `view_detail_panel` (view.rs) que NÃO aparece em nenhum outro lugar da tela — o cabeçalho
+/// "Detalhe — docker-containers" e o texto de status bruto ("Exited (0) 3 days ago", só
+/// exposto no painel, nunca na linha resumida do grid) — para não confundir com texto que já
+/// estava na tela antes do clique (ex.: "Imagem"/"postgres:16" já aparecem no cabeçalho/linha do
+/// grid principal, que continua na árvore por baixo do overlay).
+#[test]
+fn clicking_detail_on_a_container_row_opens_and_closes_the_detail_panel() {
+    let _guard = e2e_guard();
+
+    let fixture_dir = fake_docker_dir();
+    let _path_guard = PathPrefixGuard::prepend(&fixture_dir);
+    std::env::set_var("FAKE_DOCKER_SCENARIO", "multi_state");
+
+    let fixture = HarnessFixture::new("docker-containers-detail-panel");
+
+    let mut harness = start_scenario(
+        "clicar \"Detalhe\" num container abre e fecha o painel de detalhe",
+        fixture.spawn_config("docker-containers"),
+    );
+    harness.settle();
+
+    wait_until(
+        &mut harness,
+        "primeiro ciclo de widget/get do docker-containers",
+        |h| h.screen_shows("web") && h.screen_shows("db") && h.screen_shows("mystery"),
+        STATE_TIMEOUT,
+    );
+
+    assert!(
+        !harness.screen_shows("Detalhe — docker-containers"),
+        "o painel de detalhe não deveria estar aberto antes do clique"
+    );
+
+    assert!(
+        harness.click_text("Detalhe"),
+        "clicar no botão \"Detalhe\" da primeira linha (db) deveria ter efeito"
+    );
+
+    // Painel de detalhe aberto: cabeçalho com o plugin_name, botão "Fechar", e pares label/valor
+    // de `format_item_detail` para o item de `db` — inclusive campos que a linha resumida do
+    // grid principal não mostra (`status_text`/`id`), confirmando que é conteúdo NOVO, não só a
+    // mesma linha reaparecendo.
+    for text in [
+        "Detalhe — docker-containers",
+        "Nome",
+        "db",
+        "Imagem",
+        "postgres:16",
+        "Estado",
+        "parado",
+        "Texto de status",
+        "Exited (0) 3 days ago",
+        "ID",
+        "Fechar",
+    ] {
+        assert!(
+            harness.screen_shows(text),
+            "o painel de detalhe deveria mostrar {text:?}"
+        );
+    }
+
+    assert!(
+        harness.click_text("Fechar"),
+        "clicar em \"Fechar\" deveria ter efeito"
+    );
+
+    assert!(
+        !harness.screen_shows("Detalhe — docker-containers"),
+        "o painel de detalhe deveria ter sumido depois de fechar"
+    );
+    assert!(
+        !harness.screen_shows("Exited (0) 3 days ago"),
+        "o texto de status bruto (só exibido no painel) não deveria mais aparecer depois de \
+         fechar"
+    );
+
+    // FR-007: fechar o painel MUST devolver o painel principal ao estado anterior, sem perda de
+    // estado dos demais widgets — a lista de containers continua completa e correta.
+    for text in ["web", "nginx:latest", "rodando", "db", "postgres:16", "parado", "mystery"] {
+        assert!(
+            harness.screen_shows(text),
+            "depois de fechar o painel de detalhe, a lista de containers deveria continuar \
+             mostrando {text:?} (FR-007)"
+        );
+    }
+
+    let app = harness.finish();
+
+    assert!(
+        app.detail_panel.is_none(),
+        "Farol::detail_panel deveria estar None depois de ItemDetailClosed"
+    );
+
+    let connection = &app
+        .plugins
+        .iter()
+        .find(|slot| slot.spawn_config.plugin_name == "docker-containers")
+        .expect("slot de docker-containers")
+        .connection;
+    assert_eq!(
+        connection.docker_widget.containers.len(),
+        3,
+        "fechar o painel de detalhe não deveria alterar o estado da lista de containers (FR-007)"
+    );
+
+    drop(app);
+    assert_no_lingering_children();
+}
+
 /// **T033 [US2] — `docker.container.start` bem-sucedido leva a linha do container a "rodando", com
 /// os botões invertidos corretamente** (`specs/005-docker-containers-plugin/tasks.md` T033), mesmo
 /// espírito dos cenários de ação já existentes deste módulo (dispatch de

@@ -75,24 +75,24 @@ genérico sobre a view atual, sem introduzir um sistema de rotas/telas novo no `
 **Independent Test**: clicar num item de container na UI do Farol abre um painel mostrando os
 detalhes desse item; fechar o painel volta à view normal, sem perder o estado da lista.
 
-- [ ] T015 [US2] Estender `crates/farol-core/src/model.rs`: novo campo `detail_panel:
+- [X] T015 [US2] Estender `crates/farol-core/src/model.rs`: novo campo `detail_panel:
       Option<DetailPanelState>` no `Model`, guardando o item selecionado (ou uma referência/índice
       suficiente para renderizar o painel)
-- [ ] T016 [US2] Estender `crates/farol-core/src/main.rs`: novas variantes de `Message` (ex.
+- [X] T016 [US2] Estender `crates/farol-core/src/main.rs`: novas variantes de `Message` (ex.
       `ItemDetailRequested{...}`, `ItemDetailClosed`); em `update.rs`, roteamento que abre/fecha
       `detail_panel` no `Model`
-- [ ] T017 [US2] Implementar `format_item_detail(&WidgetItems) -> Vec<(String, String)>` (par
+- [X] T017 [US2] Implementar `format_item_detail(&WidgetItems) -> Vec<(String, String)>` (par
       label/valor) em `crates/farol-core/src/view.rs` (ou `model.rs`), genérico o suficiente para
       qualquer tipo de item — evita duplicar a lógica de abertura do painel por tipo de widget
-- [ ] T018 [US2] Implementar `view_detail_panel` em `view.rs`, consumindo T017; a `view()` principal
+- [X] T018 [US2] Implementar `view_detail_panel` em `view.rs`, consumindo T017; a `view()` principal
       passa a usar `iced::widget::stack![view_main(...), view_detail_panel(...)]` quando
       `detail_panel.is_some()` (confirmar a API exata de `stack` na versão 0.14 do `iced` antes de
       implementar, ver `plan.md` § Complexity Tracking)
-- [ ] T019 [US2] Adicionar o gatilho de abertura do painel em `view_container_row`
+- [X] T019 [US2] Adicionar o gatilho de abertura do painel em `view_container_row`
       (`view.rs:490-533`), reaproveitando o padrão visual de
       `view_container_action_control`(`view.rs:539-555`) mas disparando
       `Message::ItemDetailRequested` em vez de `Message::ActionInvokeRequested`
-- [ ] T020 [US2] Teste de integração real (`iced_test::Emulator`, mesmo padrão de `e2e_tests.rs`):
+- [X] T020 [US2] Teste de integração real (`iced_test::Emulator`, mesmo padrão de `e2e_tests.rs`):
       clicar num item de container abre o painel de detalhe com o conteúdo esperado; fechar o
       painel restaura a view normal sem perder o estado da lista de containers
 
