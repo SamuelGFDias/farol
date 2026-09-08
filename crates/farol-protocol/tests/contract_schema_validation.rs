@@ -38,6 +38,17 @@
 //! `GitRepository`/`MonitorStatusItem`/`VpnStatusItem`. `protocol/schema/v0.1/` a `v0.3/`
 //! permanecem intocados como registro histórico.
 //!
+//! ## T003/T006 (`specs/010-widget-detail-surface/tasks.md`) — migração para `v0.5`
+//!
+//! Bump NÃO aditivo (`plan.md` D1-D3 da feature 010, issue #9): `WidgetGetResult` ganha o campo
+//! obrigatório `kind: WidgetItemKind` no envelope, que passa a dirigir a desserialização de
+//! `items` em vez da disjunção incidental de campos entre as variantes de `WidgetItems`. Todo
+//! exemplo de `WidgetGetResult` deste arquivo precisou ganhar `kind` (nos literais Rust) ou
+//! `"kind"` (nos `json!` brutos) — os 4 `include_str!`/`$id` migram para
+//! `protocol/schema/v0.5/*.schema.json`. `protocol/schema/v0.1/` a `v0.4/` permanecem intocados
+//! como registro histórico do formato sem `kind` que os plugins de referência falavam antes desta
+//! feature.
+//!
 //! ## Por que este arquivo mora aqui e não em `tests/contract/` na raiz do workspace
 //!
 //! A task original (T047, feature 001) e `tests/contract/README.md` (na raiz do workspace)
@@ -70,7 +81,7 @@ use serde_json::{json, Value};
 use farol_protocol::messages::{
     Capability, ContainerState, ContainerStatusItem, KnownCapability, MonitorStatus,
     MonitorStatusItem, RequiredConfigItem, VpnConnectionState, VpnProfile, VpnStatusItem,
-    WidgetItems,
+    WidgetItemKind, WidgetItems,
 };
 use farol_protocol::{
     ActionDeclaration, ActionInvokeParams, ActionInvokeRequest, ActionInvokeResponse,
@@ -81,11 +92,11 @@ use farol_protocol::{
 };
 
 // Conteúdo bruto dos 4 schemas normativos, embutido em tempo de compilação. Caminho relativo a
-// este arquivo: `crates/farol-protocol/tests/` -> raiz do workspace -> `protocol/schema/v0.4/`.
-const HANDSHAKE_SCHEMA: &str = include_str!("../../../protocol/schema/v0.4/handshake.schema.json");
-const WIDGET_SCHEMA: &str = include_str!("../../../protocol/schema/v0.4/widget.schema.json");
-const ACTION_SCHEMA: &str = include_str!("../../../protocol/schema/v0.4/action.schema.json");
-const ERROR_SCHEMA: &str = include_str!("../../../protocol/schema/v0.4/error.schema.json");
+// este arquivo: `crates/farol-protocol/tests/` -> raiz do workspace -> `protocol/schema/v0.5/`.
+const HANDSHAKE_SCHEMA: &str = include_str!("../../../protocol/schema/v0.5/handshake.schema.json");
+const WIDGET_SCHEMA: &str = include_str!("../../../protocol/schema/v0.5/widget.schema.json");
+const ACTION_SCHEMA: &str = include_str!("../../../protocol/schema/v0.5/action.schema.json");
+const ERROR_SCHEMA: &str = include_str!("../../../protocol/schema/v0.5/error.schema.json");
 
 /// Registra os 4 schemas juntos (por causa do `$ref` cruzado entre eles) e devolve um validador
 /// para cada um, montado sobre esse registry compartilhado.
@@ -107,25 +118,25 @@ fn load_schemas() -> Schemas {
         serde_json::from_str(ERROR_SCHEMA).expect("error.schema.json inválido");
 
     // Os 4 documentos são registrados sob suas próprias URLs `$id` para que `$ref` absolutos
-    // (ex.: `https://farol.dev/protocol/v0.4/error.schema.json`) resolvam entre eles.
+    // (ex.: `https://farol.dev/protocol/v0.5/error.schema.json`) resolvam entre eles.
     let registry = Registry::new()
         .add(
-            "https://farol.dev/protocol/v0.4/handshake.schema.json",
+            "https://farol.dev/protocol/v0.5/handshake.schema.json",
             handshake_value.clone(),
         )
         .expect("URI de handshake.schema.json inválida")
         .add(
-            "https://farol.dev/protocol/v0.4/widget.schema.json",
+            "https://farol.dev/protocol/v0.5/widget.schema.json",
             widget_value.clone(),
         )
         .expect("URI de widget.schema.json inválida")
         .add(
-            "https://farol.dev/protocol/v0.4/action.schema.json",
+            "https://farol.dev/protocol/v0.5/action.schema.json",
             action_value.clone(),
         )
         .expect("URI de action.schema.json inválida")
         .add(
-            "https://farol.dev/protocol/v0.4/error.schema.json",
+            "https://farol.dev/protocol/v0.5/error.schema.json",
             error_value.clone(),
         )
         .expect("URI de error.schema.json inválida")
@@ -412,6 +423,7 @@ fn widget_get_result_matches_schema() {
         id: RequestId::Integer(2),
         result: WidgetGetResult {
             widget_id: "repo-status".to_string(),
+            kind: WidgetItemKind::Git,
             items: WidgetItems::Git(vec![WidgetItem {
                 repo: GitRepository {
                     id: "/home/dev/projetos/farol".to_string(),
@@ -456,6 +468,7 @@ fn widget_get_result_with_monitor_items_matches_schema() {
         id: RequestId::Integer(4),
         result: WidgetGetResult {
             widget_id: "uptime-kuma-monitors".to_string(),
+            kind: WidgetItemKind::Monitor,
             items: WidgetItems::Monitor(vec![
                 MonitorStatusItem {
                     name: "api_example_com".to_string(),
@@ -493,6 +506,7 @@ fn widget_get_result_with_vpn_item_matches_schema() {
         id: RequestId::Integer(5),
         result: WidgetGetResult {
             widget_id: "vpn-connection".to_string(),
+            kind: WidgetItemKind::Vpn,
             items: WidgetItems::Vpn(vec![VpnStatusItem {
                 state: VpnConnectionState::Connected,
                 active_profile: Some("work-vpn".to_string()),
@@ -675,6 +689,7 @@ fn widget_get_result_with_container_items_matches_schema() {
         id: RequestId::Integer(7),
         result: WidgetGetResult {
             widget_id: "docker-containers".to_string(),
+            kind: WidgetItemKind::Container,
             items: WidgetItems::Container(items),
         },
     };
@@ -687,28 +702,63 @@ fn widget_get_result_with_container_items_matches_schema() {
     );
 }
 
-/// Caso positivo: `items: []` com `anyOf` (correção da definição em `widget.schema.json` v0.2).
-/// Com `oneOf`, um array vazio satisfaria *ambas* as alternativas (`WidgetItem[]` vs.
-/// `MonitorStatusItem[]`) — as duas ramas são `{"type":"array","items":{$ref ...}}` sem
-/// discriminador algum e sem `minItems`, então um array vazio satisfaz ambas (nada a validar
-/// contra `$ref` quando não há elementos). Mudanza `oneOf` → `anyOf` permite que `[]` seja
-/// válido (precisa casar com pelo menos uma alternativa, não exatamente uma) e preserva a
-/// discriminação no caso não-vazio (array de `WidgetItem` com propriedades obrigatórias
-/// incompatíveis com `MonitorStatusItem`, e vice-versa).
+/// Caso positivo: `items: []` — válido para qualquer `kind` (histórico: correção `oneOf` → `anyOf`
+/// da definição em `widget.schema.json` v0.2, para que um array vazio, que satisfaz qualquer uma
+/// das ramas de item por não ter elemento algum a validar, não fosse rejeitado por `oneOf` exigir
+/// casar com exatamente uma alternativa).
+///
+/// **v0.5** (`specs/010-widget-detail-surface`, T006): `widget.schema.json` deixou de usar `anyOf`
+/// sobre `items` — agora é `kind` (campo obrigatório do envelope) que seleciona, via `if`/`then`,
+/// qual `$defs` de item se aplicaria a `items` se ele não estivesse vazio. Este teste passa a
+/// declarar `"kind": "Git"` explicitamente e confirma que `items: []` continua válido sob esse novo
+/// mecanismo — o nome do teste é mantido por estabilidade histórica, mas a discriminação agora vem
+/// de `kind`, não de `anyOf`.
 #[test]
 fn widget_get_result_with_empty_items_matches_schema_via_any_of() {
     let schemas = load_schemas();
     let instance = json!({
         "jsonrpc": "2.0",
         "id": 1,
-        "result": { "widget_id": "repo-status", "items": [] }
+        "result": { "widget_id": "repo-status", "kind": "Git", "items": [] }
     });
     assert_valid(
         &schemas.widget,
         &instance,
         "widget.schema.json",
-        "WidgetGetResult com items vazio (anyOf discriminado)",
+        "WidgetGetResult com items vazio (kind explícito, if/then)",
     );
+}
+
+/// T008 (`specs/010-widget-detail-surface/tasks.md`, issue #9): confirma que a desserialização de
+/// `WidgetGetResult` escolhe a variante de `WidgetItems` a partir de `kind`, não mais da ordem de
+/// declaração das variantes (a ambiguidade estrutural documentada em `research.md` D12 e no doc de
+/// `WidgetItems` em `messages.rs`, Débito #5/issue #7). `items: []` é a ambiguidade estrutural mais
+/// extrema possível entre os quatro tipos de item: um array vazio é *literalmente idêntico* —
+/// campo por campo, isto é, nenhum — para qualquer uma das quatro variantes. Sob o antigo
+/// `#[serde(untagged)]` puro (sem `kind`), a primeira variante declarada (`Git`) sempre venceria
+/// nesse caso, qualquer que fosse o `kind` real do widget que originou a resposta (a causa raiz do
+/// Débito #5). Este teste desserializa o mesmo `items: []` com os 4 valores possíveis de `kind` e
+/// confirma que cada um produz a variante de `WidgetItems` correspondente — nunca sempre `Git`.
+#[test]
+fn widget_get_result_kind_disambiguates_structurally_identical_empty_items() {
+    let cases: [(&str, WidgetItems); 4] = [
+        ("Git", WidgetItems::Git(vec![])),
+        ("Monitor", WidgetItems::Monitor(vec![])),
+        ("Vpn", WidgetItems::Vpn(vec![])),
+        ("Container", WidgetItems::Container(vec![])),
+    ];
+
+    for (kind, expected) in cases {
+        let raw = format!(r#"{{"widget_id":"any-widget","kind":"{kind}","items":[]}}"#);
+        let parsed: WidgetGetResult = serde_json::from_str(&raw)
+            .unwrap_or_else(|e| panic!("kind={kind} deveria desserializar com sucesso: {e}"));
+        assert_eq!(
+            parsed.items, expected,
+            "kind={kind} deveria produzir a variante WidgetItems::{kind}, produziu {:?} - a \
+             disjunção incidental de campos não pode mais decidir aqui (D2, plan.md da feature 010)",
+            parsed.items
+        );
+    }
 }
 
 /// Caso negativo: `GitRepository` sem `remote_status` (campo obrigatório).
@@ -720,6 +770,7 @@ fn widget_get_result_missing_remote_status_is_rejected() {
         "id": 1,
         "result": {
             "widget_id": "repo-status",
+            "kind": "Git",
             "items": [{
                 "repo": {
                     "id": "/home/dev/projetos/farol",
@@ -755,6 +806,7 @@ fn widget_get_result_monitor_item_with_invalid_status_is_rejected() {
         "id": 1,
         "result": {
             "widget_id": "uptime-kuma-monitors",
+            "kind": "Monitor",
             "items": [{
                 "name": "api_example_com",
                 "status": "unknown_status",

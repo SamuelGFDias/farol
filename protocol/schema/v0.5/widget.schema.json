@@ -1,0 +1,346 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://farol.dev/protocol/v0.5/widget.schema.json",
+  "title": "Farol Protocol v0.5 — widget/get",
+  "description": "Request and response envelopes for the widget/get method. See protocol/SPEC.md §5.2 for the normative polling model. The core calls this once per refresh cycle, per widget declared in the handshake result (protocol/SPEC.md §6.3) - the plugin MUST NOT push widget data unsolicited. This file also defines GitRepository, RemoteStatus, MonitorStatusItem, VpnConnectionState/VpnProfile/VpnStatusItem and ContainerState/ContainerStatusItem; it references ActionDeclaration from handshake.schema.json. Evolved from v0.4 (protocol/schema/v0.4/widget.schema.json, retained as-is): WidgetGetResult gains a required `kind` field (WidgetItemKind: \"Git\"/\"Monitor\"/\"Vpn\"/\"Container\") at the envelope level, replacing the `anyOf` over `items` with an `if`/`then` keyed on `kind` (specs/010-widget-detail-surface, issue #9) - eliminates the incidental-field-disjunction dependency for choosing the shape of `items`; a fifth item type in the future no longer requires re-analyzing the disjunction of every existing variant's required fields. GitRepository/RemoteStatus/WidgetItem (kind \"status-grid\"), MonitorStatusItem (kind \"monitor-status-grid\"), VpnConnectionState/VpnProfile/VpnStatusItem (kind \"vpn-status\") and ContainerState/ContainerStatusItem (kind \"container-status-grid\") are unchanged, copied as-is from v0.4.",
+  "oneOf": [
+    { "$ref": "#/$defs/WidgetGetRequest" },
+    { "$ref": "#/$defs/WidgetGetResponseSuccess" },
+    { "$ref": "#/$defs/WidgetGetResponseError" }
+  ],
+  "$defs": {
+    "RequestId": {
+      "title": "RequestId",
+      "oneOf": [
+        { "type": "integer" },
+        { "type": "string", "minLength": 1 }
+      ]
+    },
+
+    "WidgetGetParams": {
+      "title": "WidgetGetParams",
+      "type": "object",
+      "properties": {
+        "widget_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Must match the `id` of a WidgetDeclaration returned by this plugin's handshake/hello result."
+        }
+      },
+      "required": ["widget_id"],
+      "additionalProperties": false
+    },
+
+    "WidgetGetRequest": {
+      "title": "WidgetGetRequest",
+      "type": "object",
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "id": { "$ref": "#/$defs/RequestId" },
+        "method": { "const": "widget/get" },
+        "params": { "$ref": "#/$defs/WidgetGetParams" }
+      },
+      "required": ["jsonrpc", "id", "method", "params"],
+      "additionalProperties": false
+    },
+
+    "RemoteStatus": {
+      "title": "RemoteStatus",
+      "description": "Discriminated union on `kind`. \"no_remote\" is a distinct serialization from a tracked repo reporting 0 ahead / 0 behind - the core never has to infer \"no remote\" from an absent field. \"no_upstream_tracking\" (new in v0.2, technical debt #3 / issue #3, specs/002-uptime-kuma-plugin/tasks.md T049) is a third distinct state: a remote is configured (unlike no_remote), but the current branch has no tracking branch (`@{u}`) set, so ahead/behind are not computable - distinct from both no_remote and from a genuine 0 ahead / 0 behind. Not present in v0.1 (protocol/schema/v0.1/widget.schema.json, retained as-is / frozen historical).",
+      "oneOf": [
+        {
+          "title": "RemoteStatusTracked",
+          "type": "object",
+          "properties": {
+            "kind": { "const": "tracked" },
+            "ahead": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Commits ahead of the configured upstream."
+            },
+            "behind": {
+              "type": "integer",
+              "minimum": 0,
+              "description": "Commits behind the configured upstream."
+            }
+          },
+          "required": ["kind", "ahead", "behind"],
+          "additionalProperties": false
+        },
+        {
+          "title": "RemoteStatusNoRemote",
+          "type": "object",
+          "properties": {
+            "kind": { "const": "no_remote" }
+          },
+          "required": ["kind"],
+          "additionalProperties": false
+        },
+        {
+          "title": "RemoteStatusNoUpstreamTracking",
+          "type": "object",
+          "description": "A remote is configured, but the current branch has no upstream tracking branch set - ahead/behind are unknown, not zero.",
+          "properties": {
+            "kind": { "const": "no_upstream_tracking" }
+          },
+          "required": ["kind"],
+          "additionalProperties": false
+        }
+      ]
+    },
+
+    "GitRepository": {
+      "title": "GitRepository",
+      "type": "object",
+      "description": "One repository item reported by widget/get.",
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Stable identifier - the repository's absolute filesystem path."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Short display name (e.g. the directory name)."
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Absolute filesystem path."
+        },
+        "dirty": {
+          "type": "boolean",
+          "description": "true = working tree has pending changes; false = clean."
+        },
+        "remote_status": {
+          "$ref": "#/$defs/RemoteStatus",
+          "description": "MUST be kind=\"no_remote\" if and only if this repository's corresponding fetch ActionDeclaration has enabled=false (protocol/SPEC.md invariant carried over from data-model.md)."
+        }
+      },
+      "required": ["id", "name", "path", "dirty", "remote_status"],
+      "additionalProperties": false
+    },
+
+    "WidgetItem": {
+      "title": "WidgetItem",
+      "type": "object",
+      "description": "Pairs one GitRepository with its corresponding fetch ActionDeclaration. This is how the actions[] list, possibly empty at handshake time, reaches the core in practice (protocol/SPEC.md §6.3.1). Exclusive to widgets declared with kind=\"status-grid\" - unchanged from v0.1.",
+      "properties": {
+        "repo": { "$ref": "#/$defs/GitRepository" },
+        "fetch_action": {
+          "$ref": "https://farol.dev/protocol/v0.5/handshake.schema.json#/$defs/ActionDeclaration",
+          "description": "MUST have enabled=false whenever repo.remote_status.kind == \"no_remote\"."
+        }
+      },
+      "required": ["repo", "fetch_action"],
+      "additionalProperties": false
+    },
+
+    "MonitorStatusItem": {
+      "title": "MonitorStatusItem",
+      "type": "object",
+      "description": "One monitor item reported by widget/get for a widget declared with kind=\"monitor-status-grid\" (new in v0.2, research.md D4, data-model.md §1.3). Reported by the uptime-kuma reference plugin. Unlike WidgetItem, it never carries an ActionDeclaration - this plugin never declares actions (FR-004); the field simply does not exist on this type, it is not an empty optional field.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Monitor display name, from the `monitor_name` label of the /metrics response - possibly sanitized relative to the original Uptime Kuma display name."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["up", "down", "pending", "maintenance"],
+          "description": "Mapped from the raw `monitor_status` value: 1->up, 0->down, 2->pending, 3->maintenance. A raw value outside {0,1,2,3} does not produce this item - it invalidates the entire widget/get response for that read (reason \"metrics_parse_error\", see error-model-delta.md)."
+        },
+        "response_time_ms": {
+          "type": ["integer", "null"],
+          "minimum": 0,
+          "description": "From `monitor_response_time` (ms), when applicable to the monitor's status; explicit null when not applicable - an explicit union, never inferred from an absent field (same spirit as RemoteStatus.NoRemote in v0.1). Required and nullable, never absent. Never negative - a response time is a duration."
+        }
+      },
+      "required": ["name", "status", "response_time_ms"],
+      "additionalProperties": false
+    },
+
+    "VpnConnectionState": {
+      "title": "VpnConnectionState",
+      "type": "string",
+      "enum": ["disconnected", "connecting", "connected"],
+      "description": "New in v0.3 (research.md D3, data-model.md §1.1). Mirrors StatusPayload.state of the openfortivpn-gui CLI status --json output. There is deliberately no \"error\" variant here - a failure to read VPN state (the CLI missing from PATH, or an ErrorPayload/internal_error from the CLI itself) is reported as a widget/get protocol error (code -32008 / reason \"vpn_status_unavailable\", see error.schema.json), never squeezed into this enum - the same reasoning already applied to RemoteStatus and MonitorStatusItem.status in this schema set: an observable state is distinct from a read failure."
+    },
+
+    "VpnProfile": {
+      "title": "VpnProfile",
+      "type": "object",
+      "description": "New in v0.3 (research.md D4, data-model.md §1.2). One VPN profile the openfortivpn-gui reference plugin knows about, paired with the ActionDeclaration that connects to it - same pattern as WidgetItem pairing GitRepository with fetch_action, one level down (per profile, not per widget item), because it is the profile - not the widget as a whole - that is the target of vpn.connect.",
+      "properties": {
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Profile display name, as known to the openfortivpn-gui CLI."
+        },
+        "connect_action": {
+          "$ref": "https://farol.dev/protocol/v0.5/handshake.schema.json#/$defs/ActionDeclaration",
+          "description": "id \"vpn.connect\", target {type: \"vpn-profile\", id: <this profile's name>}. MUST have enabled=true if and only if VpnStatusItem.state == \"disconnected\" (research.md D4) - mirrors the existing invariant between WidgetItem.fetch_action.enabled and repo.remote_status.kind == \"no_remote\"."
+        }
+      },
+      "required": ["name", "connect_action"],
+      "additionalProperties": false
+    },
+
+    "VpnStatusItem": {
+      "title": "VpnStatusItem",
+      "type": "object",
+      "description": "New in v0.3 (research.md D2-D4, data-model.md §1.3). The item shape reported by widget/get for a widget declared with kind=\"vpn-status\", by the openfortivpn-gui reference plugin. Unlike WidgetItem/MonitorStatusItem, WidgetGetResult.items for this kind is a singleton - always an array of zero or one VpnStatusItem, reflecting that there is at most one active VPN session at a time (research.md D3) - not a list of N independent items.",
+      "properties": {
+        "state": {
+          "$ref": "#/$defs/VpnConnectionState",
+          "description": "Current VPN connection state."
+        },
+        "active_profile": {
+          "type": ["string", "null"],
+          "description": "Mirrors selected_profile of the CLI. Explicit null when no profile is selected/active, never inferred from an absent field."
+        },
+        "elapsed_seconds": {
+          "type": ["number", "null"],
+          "minimum": 0,
+          "description": "Some only when state == \"connected\" (mirrors session.elapsed_seconds of the CLI when session is not null); explicit null when not applicable, never inferred from an absent field - same spirit as MonitorStatusItem.response_time_ms. Required and nullable, never absent. Never negative - a duration."
+        },
+        "available_profiles": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/VpnProfile" },
+          "description": "All VPN profiles known to the plugin, each paired with its own connect_action (research.md D4). MAY be empty if the CLI reports no configured profiles."
+        },
+        "disconnect_action": {
+          "$ref": "https://farol.dev/protocol/v0.5/handshake.schema.json#/$defs/ActionDeclaration",
+          "description": "id \"vpn.disconnect\", target {type: \"vpn-connection\", id: \"active\"}. MUST have enabled=true if and only if state == \"connected\" (research.md D4)."
+        }
+      },
+      "required": ["state", "active_profile", "elapsed_seconds", "available_profiles", "disconnect_action"],
+      "additionalProperties": false
+    },
+
+    "ContainerState": {
+      "title": "ContainerState",
+      "type": "string",
+      "enum": ["created", "restarting", "running", "removing", "paused", "exited", "dead", "unknown"],
+      "description": "New in v0.4 (research.md D1, D3, data-model.md §1.2). Estado do container. As sete primeiras são o vocabulário publicado pelo Docker, mapeadas 1:1 do campo `State` de `docker ps`. `unknown` NUNCA é emitido pelo Docker: é produzido pelo plugin ao encontrar um valor fora do vocabulário (FR-012), e implica nenhuma ação acionável."
+    },
+
+    "ContainerStatusItem": {
+      "title": "ContainerStatusItem",
+      "type": "object",
+      "description": "New in v0.4 (research.md D1-D4, D6, D12, data-model.md §1.3). One container item reported by widget/get for a widget declared with kind=\"container-status-grid\", by the docker-containers reference plugin. Unlike VpnStatusItem, WidgetGetResult.items for this kind is a list of N independent items, one per local Docker container (including non-running ones, FR-011) - not a singleton, same shape as WidgetItem/MonitorStatusItem. Invariants validated by contract test (data-model.md §1.3, invariants 1-6): id is 64 lowercase hex chars from `docker ps --no-trunc`, name/image are never empty, the three ActionDeclaration are always present with an identical target {type: \"docker-container\", id: <this item's id>}, their id fields are \"docker.container.start\"/\"stop\"/\"restart\", enabled follows the FR-008 matrix exactly, and timeout_hint_ms is always present (20000/35000/45000). status_text is auxiliary and human only - no consumer may derive state from it; the field is deliberately named status_text, not status, to avoid a structural collision with MonitorStatusItem in the untagged disambiguation of WidgetItems (research.md D12).",
+      "properties": {
+        "id": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$",
+          "description": "Full container ID (64 hex chars, from `docker ps --no-trunc`). Stable identity for FR-013 and the merge key for UI reconciliation (data-model.md §2.3). NEVER the name."
+        },
+        "name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Display name. First name when the CLI reports several (research.md D1); never empty."
+        },
+        "image": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Source image: tag when one exists, image identifier otherwise (research.md D1). Never empty."
+        },
+        "state": {
+          "$ref": "#/$defs/ContainerState",
+          "description": "Current container state."
+        },
+        "status_text": {
+          "type": ["string", "null"],
+          "description": "Auxiliary human text from the CLI (e.g. \"Up 38 hours (healthy)\"). Purely informational - the core MUST NOT derive state from it (research.md D1). Explicit null when unavailable, never inferred from an absent field - required and nullable, never absent, same spirit as VpnStatusItem.elapsed_seconds and MonitorStatusItem.response_time_ms."
+        },
+        "start_action": {
+          "$ref": "https://farol.dev/protocol/v0.5/handshake.schema.json#/$defs/ActionDeclaration",
+          "description": "id \"docker.container.start\", target {type: \"docker-container\", id: <this item's id>}. enabled follows the FR-008 matrix (data-model.md §1.3 invariant 5); timeout_hint_ms MUST be 20000 (research.md D6)."
+        },
+        "stop_action": {
+          "$ref": "https://farol.dev/protocol/v0.5/handshake.schema.json#/$defs/ActionDeclaration",
+          "description": "id \"docker.container.stop\", target {type: \"docker-container\", id: <this item's id>}. enabled follows the FR-008 matrix (data-model.md §1.3 invariant 5); timeout_hint_ms MUST be 35000 (research.md D6)."
+        },
+        "restart_action": {
+          "$ref": "https://farol.dev/protocol/v0.5/handshake.schema.json#/$defs/ActionDeclaration",
+          "description": "id \"docker.container.restart\", target {type: \"docker-container\", id: <this item's id>}. enabled follows the FR-008 matrix (data-model.md §1.3 invariant 5); timeout_hint_ms MUST be 45000 (research.md D6)."
+        }
+      },
+      "required": ["id", "name", "image", "state", "status_text",
+                   "start_action", "stop_action", "restart_action"],
+      "additionalProperties": false
+    },
+
+    "WidgetItemKind": {
+      "title": "WidgetItemKind",
+      "type": "string",
+      "enum": ["Git", "Monitor", "Vpn", "Container"],
+      "description": "New in v0.5 (specs/010-widget-detail-surface, issue #9). Explicit discriminator, at the WidgetGetResult envelope level, identifying which shape `items` uses. Mirrors the four WidgetItems variant names on the Rust binding (Git/Monitor/Vpn/Container) exactly, to minimize the chance of the wire value diverging from the variant actually chosen when deserializing. Replaces the previous approach of inferring the shape of `items` from the incidental disjunction of required fields across WidgetItem/MonitorStatusItem/VpnStatusItem/ContainerStatusItem (research.md D12, feature 005) - that disjunction was never guaranteed by design and would have required manual re-analysis for every future fifth item type.",
+      "$comment": "Consistency between `kind` and the actual content of `items` is enforced at parse time, not by a later consistency check: the farol-protocol Rust binding's custom Deserialize for WidgetGetResult reads `kind` first and only then deserializes `items` into the corresponding variant - by construction, a WidgetGetResult never carries a `kind` that lies about the shape of `items`. This schema mirrors the same rule declaratively via if/then below."
+    },
+
+    "WidgetGetResult": {
+      "title": "WidgetGetResult",
+      "type": "object",
+      "description": "`kind` (new in v0.5, required) explicitly identifies the shape of `items`: WidgetItem[] when kind=\"Git\" (widget_id declared with kind=\"status-grid\"), MonitorStatusItem[] when kind=\"Monitor\" (widget_id declared with kind=\"monitor-status-grid\"), VpnStatusItem[] (always length 0 or 1, research.md D3) when kind=\"Vpn\" (widget_id declared with kind=\"vpn-status\"), or ContainerStatusItem[] when kind=\"Container\" (widget_id declared with kind=\"container-status-grid\"). Before v0.5 this shape was inferred from the incidental disjunction of required fields across the four item types (protocol/schema/v0.4/widget.schema.json, research.md D12) - kind now makes that choice explicit and structurally sound regardless of field overlap between item types, current or future.",
+      "properties": {
+        "widget_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Echoes the widget_id from the request."
+        },
+        "kind": { "$ref": "#/$defs/WidgetItemKind" },
+        "items": {
+          "description": "MAY be empty for any kind - a configured scan root with no repositories under it, an Uptime Kuma instance with no monitors registered, a VPN plugin momentarily unable to represent status as a singleton item, or a machine with no Docker containers at all (FR-011, a normal and common case for this kind), are all valid states, not errors."
+        }
+      },
+      "required": ["widget_id", "kind", "items"],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "Git" } }, "required": ["kind"] },
+          "then": { "properties": { "items": { "type": "array", "items": { "$ref": "#/$defs/WidgetItem" } } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "Monitor" } }, "required": ["kind"] },
+          "then": { "properties": { "items": { "type": "array", "items": { "$ref": "#/$defs/MonitorStatusItem" } } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "Vpn" } }, "required": ["kind"] },
+          "then": { "properties": { "items": { "type": "array", "items": { "$ref": "#/$defs/VpnStatusItem" } } } }
+        },
+        {
+          "if": { "properties": { "kind": { "const": "Container" } }, "required": ["kind"] },
+          "then": { "properties": { "items": { "type": "array", "items": { "$ref": "#/$defs/ContainerStatusItem" } } } }
+        }
+      ]
+    },
+
+    "WidgetGetResponseSuccess": {
+      "title": "WidgetGetResponseSuccess",
+      "type": "object",
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "id": { "$ref": "#/$defs/RequestId" },
+        "result": { "$ref": "#/$defs/WidgetGetResult" }
+      },
+      "required": ["jsonrpc", "id", "result"],
+      "additionalProperties": false
+    },
+
+    "WidgetGetResponseError": {
+      "title": "WidgetGetResponseError",
+      "type": "object",
+      "description": "E.g. code -32004 / reason \"scan_root_unreadable\" (git-local), or code -32005/-32006/-32007 / reason \"not_configured\"/\"metrics_unreachable\"/\"metrics_parse_error\" (uptime-kuma). A pointwise error here does not, by itself, mark the plugin connection unavailable - the core keeps the last known items (protocol/SPEC.md §5.2).",
+      "properties": {
+        "jsonrpc": { "const": "2.0" },
+        "id": { "$ref": "#/$defs/RequestId" },
+        "error": { "$ref": "https://farol.dev/protocol/v0.5/error.schema.json" }
+      },
+      "required": ["jsonrpc", "id", "error"],
+      "additionalProperties": false
+    }
+  }
+}

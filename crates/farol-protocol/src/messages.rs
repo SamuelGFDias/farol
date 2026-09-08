@@ -496,6 +496,32 @@ pub enum WidgetItems {
     Container(Vec<ContainerStatusItem>),
 }
 
+/// Discriminador explícito de qual variante de [`WidgetItems`] uma resposta `widget/get` carrega —
+/// novo em v0.5 (`specs/010-widget-detail-surface`, issue #9). Nomes de variante idênticos aos de
+/// `WidgetItems` (`Git`/`Monitor`/`Vpn`/`Container`) de propósito, para minimizar a chance de o
+/// valor no wire divergir da variante realmente escolhida na desserialização.
+///
+/// Fecha o Débito #5 (issue #7) e a ambiguidade documentada em `research.md` D12 (feature 005):
+/// antes de v0.5, a variante de `WidgetItems` era inferida da disjunção incidental de campos
+/// obrigatórios entre `WidgetItem`/`MonitorStatusItem`/`VpnStatusItem`/`ContainerStatusItem` (nunca
+/// garantida pelo compilador nem pelo schema) — um array `items: []` em particular desserializava
+/// sempre como a primeira variante declarada (`Git`), corrigido só do lado consumidor
+/// (`farol-core::update::normalize_widget_items`). Com `kind` explícito no envelope
+/// (`WidgetGetResult::deserialize`, abaixo), a variante correta é conhecida antes mesmo de olhar o
+/// conteúdo de `items` — inclusive para `items: []` e para uma futura quinta variante
+/// estruturalmente ambígua com alguma das quatro atuais.
+///
+/// Serializa com o nome de variante puro (`"Git"`, `"Monitor"`, `"Vpn"`, `"Container"`) — sem
+/// `rename_all`, casando com o texto normativo de `protocol/schema/v0.5/widget.schema.json`
+/// (`$defs/WidgetItemKind`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum WidgetItemKind {
+    Git,
+    Monitor,
+    Vpn,
+    Container,
+}
+
 /// Params do request `widget/get`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct WidgetGetParams {
@@ -527,18 +553,69 @@ impl WidgetGetRequest {
 /// Result de sucesso do `widget/get`. Não deriva `Eq` desde v0.3 — `items: WidgetItems` pode
 /// conter `VpnStatusItem::elapsed_seconds: Option<f64>`, e `f64` não implementa `Eq` (ver nota em
 /// [`WidgetItems`]).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+///
+/// **Novo em v0.5**: campo `kind: WidgetItemKind` obrigatório no envelope (issue #9,
+/// `specs/010-widget-detail-surface`). `Deserialize` é implementado manualmente logo abaixo — lê
+/// `kind` primeiro e só então desserializa `items` diretamente para a variante correspondente de
+/// `WidgetItems`, em vez de depender do `#[serde(untagged)]` de `WidgetItems` para escolher a
+/// variante (que continua existindo só para o `Serialize`/`Deserialize` "solto" de `WidgetItems`
+/// fora deste envelope). A consistência entre `kind` e o conteúdo de `items` é garantida pela
+/// própria construção do parsing (D2, `plan.md`), não por uma checagem posterior: não existe
+/// caminho para produzir um `WidgetGetResult` cujo `kind` minta sobre a variante de `items`.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 pub struct WidgetGetResult {
     /// Ecoa o `widget_id` do request.
     pub widget_id: String,
+    /// Discriminador explícito da variante de `items` (novo em v0.5). Ver [`WidgetItemKind`].
+    pub kind: WidgetItemKind,
     /// `Vec<WidgetItem>`, `Vec<MonitorStatusItem>`, `Vec<VpnStatusItem>` ou
     /// `Vec<ContainerStatusItem>` (novo em v0.4), conforme o `kind` que este `widget_id` declarou
-    /// no handshake (correção C3, `data-model.md` §1.4). MAY ser vazia para qualquer `kind` — um
-    /// `scan_root` configurado sem repositórios embaixo, uma instância Uptime Kuma sem monitores
-    /// cadastrados, um plugin de VPN momentaneamente incapaz de representar o status como item
-    /// singleton, ou uma máquina sem nenhum container Docker (FR-011, caso normal e comum), são
-    /// todos estados válidos, não erros.
+    /// no handshake (correção C3, `data-model.md` §1.4) — e, desde v0.5, conforme o campo `kind`
+    /// deste mesmo envelope. MAY ser vazia para qualquer `kind` — um `scan_root` configurado sem
+    /// repositórios embaixo, uma instância Uptime Kuma sem monitores cadastrados, um plugin de VPN
+    /// momentaneamente incapaz de representar o status como item singleton, ou uma máquina sem
+    /// nenhum container Docker (FR-011, caso normal e comum), são todos estados válidos, não
+    /// erros.
     pub items: WidgetItems,
+}
+
+impl<'de> Deserialize<'de> for WidgetGetResult {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        /// Forma intermediária de `WidgetGetResult` usada só durante a desserialização: `items`
+        /// fica como `serde_json::Value` para poder ser redirecionado, sem reparsing do zero, à
+        /// variante de `WidgetItems` que `kind` identifica.
+        #[derive(Deserialize)]
+        struct WidgetGetResultWire {
+            widget_id: String,
+            kind: WidgetItemKind,
+            items: serde_json::Value,
+        }
+
+        let wire = WidgetGetResultWire::deserialize(deserializer)?;
+        let items = match wire.kind {
+            WidgetItemKind::Git => {
+                WidgetItems::Git(serde_json::from_value(wire.items).map_err(serde::de::Error::custom)?)
+            }
+            WidgetItemKind::Monitor => WidgetItems::Monitor(
+                serde_json::from_value(wire.items).map_err(serde::de::Error::custom)?,
+            ),
+            WidgetItemKind::Vpn => {
+                WidgetItems::Vpn(serde_json::from_value(wire.items).map_err(serde::de::Error::custom)?)
+            }
+            WidgetItemKind::Container => WidgetItems::Container(
+                serde_json::from_value(wire.items).map_err(serde::de::Error::custom)?,
+            ),
+        };
+
+        Ok(WidgetGetResult {
+            widget_id: wire.widget_id,
+            kind: wire.kind,
+            items,
+        })
+    }
 }
 
 /// Resposta a um `widget/get` — sucesso ou erro pontual (ex.: `-32004`/`scan_root_unreadable`).
@@ -812,6 +889,7 @@ mod tests {
     fn widget_get_result_round_trips_with_items() {
         let result = WidgetGetResult {
             widget_id: "repo-status".to_string(),
+            kind: WidgetItemKind::Git,
             items: WidgetItems::Git(vec![WidgetItem {
                 repo: GitRepository {
                     id: "/home/dev/projetos/farol".to_string(),
@@ -848,6 +926,7 @@ mod tests {
     fn widget_get_result_round_trips_with_monitor_items() {
         let result = WidgetGetResult {
             widget_id: "uptime-kuma-monitors".to_string(),
+            kind: WidgetItemKind::Monitor,
             items: WidgetItems::Monitor(vec![
                 MonitorStatusItem {
                     name: "api_example_com".to_string(),
@@ -865,7 +944,7 @@ mod tests {
         let json = serde_json::to_string(&result).unwrap();
         assert_eq!(
             json,
-            r#"{"widget_id":"uptime-kuma-monitors","items":[{"name":"api_example_com","status":"up","response_time_ms":42},{"name":"internal_service","status":"down","response_time_ms":null}]}"#
+            r#"{"widget_id":"uptime-kuma-monitors","kind":"Monitor","items":[{"name":"api_example_com","status":"up","response_time_ms":42},{"name":"internal_service","status":"down","response_time_ms":null}]}"#
         );
         let back: WidgetGetResult = serde_json::from_str(&json).unwrap();
         assert_eq!(back, result);

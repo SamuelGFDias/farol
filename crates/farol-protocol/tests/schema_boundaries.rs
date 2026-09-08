@@ -4,7 +4,7 @@
 //! Diferente de `contract_schema_validation.rs` (exemplos manuais, escritos à mão um a um), este
 //! arquivo deriva casos de borda (`MinimumMinusOne`/`Minimum`/`MaximumPlusOne`/`Maximum`/
 //! `NoMinimumNegative`/`Null`/`MissingRequired`) diretamente do CONTEÚDO REAL dos JSON Schemas
-//! `protocol/schema/v0.4/*.schema.json`, em tempo de execução do teste — nunca de uma constante
+//! `protocol/schema/v0.5/*.schema.json`, em tempo de execução do teste — nunca de uma constante
 //! Rust paralela que apenas descreve o schema. Se o schema mudar (um `minimum` for editado, um
 //! campo deixar de ser `required`...), os valores gerados aqui mudam junto, sem precisar tocar
 //! este arquivo — é essa propriedade que faz o teste realmente quebrar quando schema e binding
@@ -47,15 +47,15 @@ use farol_protocol::messages::{
 };
 use farol_protocol::{ActionDeclaration, ErrorObject, RemoteStatus, WidgetDeclaration};
 
-const HANDSHAKE_ID: &str = "https://farol.dev/protocol/v0.4/handshake.schema.json";
-const WIDGET_ID: &str = "https://farol.dev/protocol/v0.4/widget.schema.json";
-const ACTION_ID: &str = "https://farol.dev/protocol/v0.4/action.schema.json";
-const ERROR_ID: &str = "https://farol.dev/protocol/v0.4/error.schema.json";
+const HANDSHAKE_ID: &str = "https://farol.dev/protocol/v0.5/handshake.schema.json";
+const WIDGET_ID: &str = "https://farol.dev/protocol/v0.5/widget.schema.json";
+const ACTION_ID: &str = "https://farol.dev/protocol/v0.5/action.schema.json";
+const ERROR_ID: &str = "https://farol.dev/protocol/v0.5/error.schema.json";
 
-const HANDSHAKE_SCHEMA: &str = include_str!("../../../protocol/schema/v0.4/handshake.schema.json");
-const WIDGET_SCHEMA: &str = include_str!("../../../protocol/schema/v0.4/widget.schema.json");
-const ACTION_SCHEMA: &str = include_str!("../../../protocol/schema/v0.4/action.schema.json");
-const ERROR_SCHEMA: &str = include_str!("../../../protocol/schema/v0.4/error.schema.json");
+const HANDSHAKE_SCHEMA: &str = include_str!("../../../protocol/schema/v0.5/handshake.schema.json");
+const WIDGET_SCHEMA: &str = include_str!("../../../protocol/schema/v0.5/widget.schema.json");
+const ACTION_SCHEMA: &str = include_str!("../../../protocol/schema/v0.5/action.schema.json");
+const ERROR_SCHEMA: &str = include_str!("../../../protocol/schema/v0.5/error.schema.json");
 
 // -------------------------------------------------------------------------------------------
 // Carregamento dos schemas (equivalente a `load_schemas()` de `contract_schema_validation.rs`,
@@ -79,22 +79,22 @@ fn load_schema_set<'a>() -> SchemaSet<'a> {
 
     let registry = Registry::new()
         .add(
-            "https://farol.dev/protocol/v0.4/handshake.schema.json",
+            "https://farol.dev/protocol/v0.5/handshake.schema.json",
             handshake.clone(),
         )
         .expect("URI de handshake.schema.json inválida")
         .add(
-            "https://farol.dev/protocol/v0.4/widget.schema.json",
+            "https://farol.dev/protocol/v0.5/widget.schema.json",
             widget.clone(),
         )
         .expect("URI de widget.schema.json inválida")
         .add(
-            "https://farol.dev/protocol/v0.4/action.schema.json",
+            "https://farol.dev/protocol/v0.5/action.schema.json",
             action.clone(),
         )
         .expect("URI de action.schema.json inválida")
         .add(
-            "https://farol.dev/protocol/v0.4/error.schema.json",
+            "https://farol.dev/protocol/v0.5/error.schema.json",
             error.clone(),
         )
         .expect("URI de error.schema.json inválida")
@@ -886,6 +886,101 @@ fn widget_container_status_item_rejects_additional_properties() {
         !validator.is_valid(&instance),
         "ContainerStatusItem com campo extra 'labels' deveria ser REJEITADO por \
          `additionalProperties: false`, mas foi aceito:\n{}",
+        serde_json::to_string_pretty(&instance).unwrap(),
+    );
+}
+
+// -------------------------------------------------------------------------------------------
+// T007 (specs/010-widget-detail-surface/tasks.md) — widget.schema.json `WidgetGetResult.kind`
+// -------------------------------------------------------------------------------------------
+//
+// `kind` é novo em v0.5 (issue #9): campo obrigatório do envelope `WidgetGetResult`, que passa a
+// dirigir a validação de `items` via `if`/`then` (T005), substituindo o `anyOf` puro de v0.4. Os
+// testes de `additionalProperties:false`/`required` deste arquivo (T007) precisaram ser
+// revisitados para essa mudança de forma — as verificações específicas de `kind` ficam agrupadas
+// aqui, ao lado (mas fisicamente após) as de `ContainerStatusItem` que ocupavam as linhas citadas
+// pela task original antes deste campo existir.
+
+/// Um `WidgetGetResult` válido mínimo, como JSON bruto, para o `kind` dado — `items: []` é válido
+/// para qualquer `kind` (FR-011, `widget_get_result_with_empty_items_matches_schema_via_any_of`
+/// em `contract_schema_validation.rs`), então serve de base neutra para os casos de borda de
+/// `kind` em si, sem acoplar ao vocabulário de nenhum item específico.
+fn widget_get_result_json(kind: &str) -> Value {
+    json!({
+        "widget_id": "any-widget",
+        "kind": kind,
+        "items": []
+    })
+}
+
+/// `WidgetGetResult.kind` — novo em v0.5, campo obrigatório do envelope (issue #9,
+/// `specs/010-widget-detail-surface`, FR-003). Omiti-lo é rejeitado pelo schema.
+#[test]
+fn widget_get_result_kind_missing_required_is_rejected() {
+    let schemas = load_schema_set();
+    let validator = schemas.def_validator(WIDGET_ID, "WidgetGetResult");
+    let pointer = "/$defs/WidgetGetResult";
+    let parent_schema = schemas.at(&schemas.widget, pointer);
+    let case = missing_required_case(parent_schema, "kind")
+        .expect("`kind` deveria estar no array `required` de WidgetGetResult (T003/T005/FR-003)");
+
+    let base = widget_get_result_json("Git");
+    let instance = apply_case(&base, "kind", &case);
+    assert_case_matches_schema(&validator, "widget.schema.json", pointer, &case, &instance);
+}
+
+/// `WidgetGetResult.kind` — `enum` fechado de 4 valores (`WidgetItemKind`:
+/// `Git`/`Monitor`/`Vpn`/`Container`). Um valor fora desse vocabulário é rejeitado pelo schema.
+#[test]
+fn widget_get_result_kind_outside_known_enum_is_rejected() {
+    let schemas = load_schema_set();
+    let validator = schemas.def_validator(WIDGET_ID, "WidgetGetResult");
+
+    let instance = widget_get_result_json("Volume"); // fora do enum de 4 valores conhecidos
+    assert!(
+        !validator.is_valid(&instance),
+        "WidgetGetResult.kind='Volume' (fora do enum de 4 valores) deveria ser REJEITADO por \
+         widget.schema.json, mas foi aceito:\n{}",
+        serde_json::to_string_pretty(&instance).unwrap(),
+    );
+}
+
+/// `WidgetGetResult` — `additionalProperties: false` continua valendo com o novo campo `kind`
+/// presente. Confirma que a reestruturação de `anyOf` para `if`/`then` sobre `kind` (T005) não
+/// abriu brecha nenhuma para campos extras no envelope.
+#[test]
+fn widget_get_result_rejects_additional_properties() {
+    let schemas = load_schema_set();
+    let validator = schemas.def_validator(WIDGET_ID, "WidgetGetResult");
+
+    let mut instance = widget_get_result_json("Git");
+    instance["extra_field"] = json!("unexpected"); // campo não declarado no schema
+    assert!(
+        !validator.is_valid(&instance),
+        "WidgetGetResult com campo extra 'extra_field' deveria ser REJEITADO por \
+         `additionalProperties: false`, mas foi aceito:\n{}",
+        serde_json::to_string_pretty(&instance).unwrap(),
+    );
+}
+
+/// `WidgetGetResult` — `kind` dirige a forma de `items` via `if`/`then` (T005/D3, `plan.md`): um
+/// `kind` que não bate com o vocabulário real de `items` é rejeitado, não silenciosamente aceito
+/// (ex.: `kind: "Git"` com um item no formato de `MonitorStatusItem`, sem `repo`/`fetch_action`).
+#[test]
+fn widget_get_result_kind_mismatched_with_items_shape_is_rejected() {
+    let schemas = load_schema_set();
+    let validator = schemas.def_validator(WIDGET_ID, "WidgetGetResult");
+
+    let mut instance = widget_get_result_json("Git");
+    instance["items"] = json!([{
+        "name": "api_example_com",
+        "status": "up",
+        "response_time_ms": 42
+    }]);
+    assert!(
+        !validator.is_valid(&instance),
+        "WidgetGetResult com kind=\"Git\" mas items no formato de MonitorStatusItem deveria ser \
+         REJEITADO pelo if/then de widget.schema.json (T005), mas foi aceito:\n{}",
         serde_json::to_string_pretty(&instance).unwrap(),
     );
 }
