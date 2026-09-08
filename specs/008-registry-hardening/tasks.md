@@ -168,7 +168,8 @@ código) estão fechadas — falta só a publicação do repositório-índice re
 externamente — o arquiteto MUST confirmar com o usuário o nome/owner exatos antes de disparar esta
 task, mesmo que T001-T016 já estejam completas e verificadas. Não presumir autorização implícita.
 
-- [ ] T017 Criar e publicar o repositório-índice `index.toml` + `.github/workflows/validate.yml`
+- [X] T017 Criar e publicar o repositório-índice `index.toml` + `.github/workflows/validate.yml`
       (CI valida: nome único, `owner/repo` bem-formado, manifesto do repo referenciado é alcançável
       e parseável) + `README.md` com instruções de submissão — só após confirmação explícita do
-      usuário sobre nome/owner do repositório
+      usuário sobre nome/owner do repositório. Publicado em
+      https://github.com/SamuelGFDias/farol-plugin-index (owner/nome confirmados pelo usuário).
