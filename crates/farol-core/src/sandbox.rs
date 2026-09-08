@@ -155,15 +155,14 @@ pub enum SandboxMountError {
     /// compilado (`cargo build -p farol-seccomp-preload`); a mensagem já vem
     /// pronta de [`crate::sandbox_seccomp::locate_seccomp_preload_library`].
     SeccompUnavailable(String),
-    /// [US2] `nft`/`iptables` ausentes ou inutilizáveis para aplicar a
-    /// allowlist de rede por host declarada num `SandboxProfile`. Variante
-    /// declarada nesta task (T003) só para que o tipo de erro seja único e
-    /// compartilhado entre US1 e US2 — nenhuma lógica de rede é implementada
-    /// neste módulo por esta feature (US2, issue #13, é escopo futuro).
-    /// `#[allow(dead_code)]`: ainda não construída em lugar nenhum (mesmo
-    /// padrão já usado em `plugin_manifest.rs`/`registry_index.rs` para
-    /// tipos que só ganham consumidor numa task/feature futura).
-    #[allow(dead_code)]
+    /// [US2] `nft`/`iptables` ausentes/inutilizáveis para aplicar a
+    /// allowlist de rede por host declarada (T010/T014), ou um host
+    /// declarado que não resolveu para nenhum IP (T009, edge case de
+    /// `spec.md`) — construída por
+    /// `sandbox_network::detect_firewall_tool`/`resolve_hosts_to_ips` e
+    /// propagada via `panic!` por
+    /// [`build_bwrap_args_with_network_hosts`], nunca um fallback
+    /// silencioso para liga/desliga total.
     NetworkFirewallUnavailable(String),
 }
 
@@ -223,18 +222,83 @@ impl std::error::Error for SandboxMountError {}
 /// `config.args` do chamador (`plugin_worker::worker`, T008) e para
 /// eventual uso futuro (ex.: logging), por isso prefixado com `_` — não
 /// participa da composição dos argumentos.
+///
+/// [US2, feature `009-sandbox-hardening`] Assinatura pública intocada de
+/// propósito — chamada hoje por `plugin_worker::worker()` com exatamente
+/// estes 5 parâmetros posicionais, arquivo que esta subtarefa está proibida
+/// de editar. Sempre delega para
+/// [`build_bwrap_args_with_network_hosts`] com `network_hosts: &[]`
+/// (nenhuma allowlist de rede por host) — comportamento 100% idêntico ao
+/// anterior à feature 009/US2 (ver doc daquela função e de
+/// `sandbox_network` para o porquê disso, não de um novo campo em
+/// [`SandboxProfile`]).
 pub fn build_bwrap_args(
+    repo_root: &Path,
+    interpreter_path: &Path,
+    profile: &SandboxProfile,
+    command: &str,
+    args: &[String],
+) -> Vec<String> {
+    build_bwrap_args_with_network_hosts(repo_root, interpreter_path, profile, command, args, &[])
+}
+
+/// [US2, T009-T011, feature `009-sandbox-hardening`] Mesma composição de
+/// [`build_bwrap_args`], estendida com `network_hosts`: quando não vazia (e
+/// `profile.allow_network` é `true`), restringe o egress de rede aos IPs
+/// desses hosts (FR-005/FR-006/FR-008/FR-009) em vez do liga/desliga total
+/// via `--share-net` de antes desta feature — ver módulo
+/// [`crate::sandbox_network`] para o mecanismo completo (resolução de
+/// host→IP no processo pai, geração do script wrapper `nft`/`iptables`, e a
+/// nota extensa sobre por que este parâmetro existe como argumento
+/// explícito em vez de um campo novo em [`SandboxProfile`]).
+///
+/// `network_hosts` vazia (o caso de TODOS os 4 plugins de referência de
+/// `plugin_worker::known_plugins()` hoje, já que a extração de hosts do
+/// manifesto de um plugin para este parâmetro é integração explicitamente
+/// Fora de Escopo desta subtarefa) reproduz exatamente o comportamento de
+/// `build_bwrap_args` anterior a esta função existir — nenhuma regressão
+/// (T012).
+///
+/// Fail-closed (FR-004 por analogia): `panic!` com a mensagem do
+/// [`SandboxMountError`] correspondente se os hosts declarados não
+/// resolverem para IP (T009) ou se nem `nft` nem `iptables` estiverem
+/// disponíveis (T010/T014) — nunca monta um sandbox com `network_hosts` não
+/// vazia sem a allowlist real em vigor.
+pub(crate) fn build_bwrap_args_with_network_hosts(
     repo_root: &Path,
     interpreter_path: &Path,
     profile: &SandboxProfile,
     _command: &str,
     args: &[String],
+    network_hosts: &[String],
 ) -> Vec<String> {
+    // [US2] Só ativa o mecanismo de allowlist por host quando rede está
+    // ligada E há pelo menos um host declarado — `network_hosts` não vazia
+    // com `allow_network=false` (combinação sem sentido, nunca produzida
+    // por `plugin_worker::known_plugins()`) é tratada como se estivesse
+    // vazia, sem nenhum efeito.
+    let network_allowlist_active = profile.allow_network && !network_hosts.is_empty();
+
     let mut out: Vec<String> = Vec::new();
 
     // (1) Namespaces + die-with-parent.
     out.push("--unshare-all".to_string());
-    if profile.allow_network {
+    if network_allowlist_active {
+        // [US2] Desvio deliberado do texto curto de T011 ("preservando
+        // --share-net") — ver doc extensa do módulo `sandbox_network` para
+        // a justificativa completa (D3/FR-008 exigem um namespace de rede
+        // "recém-criado"/"criado pelo bwrap", que só existe SEM
+        // `--share-net`; `--cap-add CAP_NET_ADMIN` só é efetivo, validado
+        // empiricamente, sobre um namespace de rede que o próprio user
+        // namespace novo do `bwrap` é dono — nunca sobre o namespace real
+        // do host que `--share-net` compartilharia).
+        out.push("--uid".to_string());
+        out.push("0".to_string());
+        out.push("--gid".to_string());
+        out.push("0".to_string());
+        out.push("--cap-add".to_string());
+        out.push("CAP_NET_ADMIN".to_string());
+    } else if profile.allow_network {
         out.push("--share-net".to_string());
     }
     out.push("--die-with-parent".to_string());
@@ -307,6 +371,19 @@ pub fn build_bwrap_args(
     //
     // Fail-closed (FR-004): `panic!` com a mensagem do erro se o `.so` não
     // puder ser localizado — nunca monta o sandbox sem a proteção real.
+    //
+    // [US2] Quando `network_allowlist_active`, o `--setenv LD_PRELOAD` NÃO é
+    // emitido aqui — seria herdado pelo próprio processo do WRAPPER de rede
+    // (passo 8 abaixo, o processo que o `bwrap` de fato `exec`a primeiro),
+    // cujo construtor ELF bloquearia o `execve` que o PRÓPRIO wrapper
+    // precisa fazer (para `nft`/`ip`, e para o `exec` final do
+    // interpretador) antes mesmo de aplicar a allowlist — mesma classe de
+    // bug de D1, um nível acima (ver doc de
+    // `sandbox_network::plan_network_wrapper`). Em vez disso, o caminho do
+    // `.so` é guardado em `ld_preload_path_for_wrapper` e o PRÓPRIO SCRIPT
+    // do wrapper exporta `LD_PRELOAD` só imediatamente antes do seu `exec`
+    // final.
+    let mut ld_preload_path_for_wrapper: Option<PathBuf> = None;
     if !profile.allow_exec {
         match crate::sandbox_seccomp::locate_seccomp_preload_library() {
             Ok(preload_path) => {
@@ -314,9 +391,13 @@ pub fn build_bwrap_args(
                 out.push("--ro-bind".to_string());
                 out.push(preload_str.clone());
                 out.push(preload_str.clone());
-                out.push("--setenv".to_string());
-                out.push("LD_PRELOAD".to_string());
-                out.push(preload_str);
+                if network_allowlist_active {
+                    ld_preload_path_for_wrapper = Some(preload_path);
+                } else {
+                    out.push("--setenv".to_string());
+                    out.push("LD_PRELOAD".to_string());
+                    out.push(preload_str);
+                }
             }
             Err(err) => panic!("{err}"),
         }
@@ -336,10 +417,30 @@ pub fn build_bwrap_args(
         out.push(host_str);
     }
 
-    // (8) `--` + comando final (caminho absoluto) + args.
-    out.push("--".to_string());
-    out.push(interpreter_path.to_string_lossy().into_owned());
-    out.extend(args.iter().cloned());
+    // (8) `--` + comando final (caminho absoluto) + args — ou, [US2] quando
+    // `network_allowlist_active`, os binds das ferramentas do wrapper de
+    // rede (T009/T010) seguidos de `--` + o wrapper `sh -c <script>
+    // <interpreter> <args...>` (T011) no lugar do exec direto do
+    // interpretador. Fail-closed: `panic!` com a mensagem do
+    // `SandboxMountError` se os hosts não resolverem (T009) ou se nem
+    // `nft` nem `iptables` estiverem disponíveis (T010/T014).
+    if network_allowlist_active {
+        let wrapper = crate::sandbox_network::plan_network_wrapper(
+            network_hosts,
+            ld_preload_path_for_wrapper.as_deref(),
+            interpreter_path,
+            args,
+        )
+        .unwrap_or_else(|err| panic!("{err}"));
+
+        out.extend(wrapper.tool_binds);
+        out.push("--".to_string());
+        out.extend(wrapper.final_command);
+    } else {
+        out.push("--".to_string());
+        out.push(interpreter_path.to_string_lossy().into_owned());
+        out.extend(args.iter().cloned());
+    }
 
     out
 }
@@ -695,6 +796,230 @@ mod sandbox_unit_tests {
         assert_eq!(args[separator_index + 1], "/usr/bin/python3");
         assert_eq!(args[separator_index + 2], "plugins/git-local/main.py");
         assert_eq!(args.len(), separator_index + 3);
+    }
+
+    /// T012 [US2] Regressão: `network_hosts` vazia MUST produzir exatamente
+    /// o mesmo `Vec<String>` que `build_bwrap_args` (a função pública
+    /// original, sem o parâmetro novo) produzia antes desta feature —
+    /// garante que nenhum dos 4 perfis reais de
+    /// `plugin_worker::known_plugins()` (que só chamam `build_bwrap_args`,
+    /// nunca a variante com hosts) sofre nenhuma mudança de comportamento.
+    ///
+    /// Deliberadamente NÃO varia `allow_exec=false` aqui (ficaria sujeito ao
+    /// mesmo tipo de corrida de variável de ambiente global de processo já
+    /// documentado em `exec_denied_panics_when_seccomp_preload_library_cannot_be_located`,
+    /// que só se protege via lock contra OUTROS testes que também tomam o
+    /// mesmo lock — um teste como este, que não toma lock nenhum, pode ler
+    /// `FAROL_SANDBOX_TEST_FORCE_SECCOMP_PRELOAD_MISSING` no meio de uma
+    /// janela em que aquele outro teste a define, sob execução paralela de
+    /// `cargo test`; isso não é um bug do mecanismo de rede desta feature —
+    /// é uma limitação preexistente do padrão de escape-hatch via env var
+    /// global, fora do escopo desta task consertar). Cobrir só a dimensão
+    /// `allow_network` já é suficiente para provar a equivalência de
+    /// `network_hosts` vazia — a dimensão `allow_exec` já tem sua própria
+    /// cobertura de regressão em `exec_allowed_does_not_bind_seccomp_preload_library_nor_set_ld_preload`/
+    /// `exec_denied_binds_seccomp_preload_library_and_sets_ld_preload`.
+    #[test]
+    fn network_hosts_empty_is_byte_for_byte_identical_to_build_bwrap_args() {
+        for network in [false, true] {
+            let via_public_fn = build_bwrap_args(
+                Path::new("/repo"),
+                Path::new("/usr/bin/python3"),
+                &profile(network, true, vec![]),
+                "python3",
+                &["plugins/git-local/main.py".to_string()],
+            );
+            let via_hosts_fn_empty = build_bwrap_args_with_network_hosts(
+                Path::new("/repo"),
+                Path::new("/usr/bin/python3"),
+                &profile(network, true, vec![]),
+                "python3",
+                &["plugins/git-local/main.py".to_string()],
+                &[],
+            );
+            assert_eq!(
+                via_public_fn, via_hosts_fn_empty,
+                "network={network}: network_hosts vazia deveria ser 100% equivalente a \
+                 build_bwrap_args (regressão T012)"
+            );
+        }
+    }
+
+    /// T012 [US2] `network_hosts` não vazia com `allow_network=false`
+    /// (combinação sem sentido, nunca produzida por `known_plugins()`) é
+    /// tratada como se `network_hosts` estivesse vazia — a rede continua
+    /// completamente desligada (FR-007), sem `--uid 0`/`--cap-add
+    /// CAP_NET_ADMIN` nenhum.
+    #[test]
+    fn network_hosts_present_but_network_disabled_has_no_effect() {
+        let args = build_bwrap_args_with_network_hosts(
+            Path::new("/repo"),
+            Path::new("/usr/bin/python3"),
+            &profile(false, true, vec![]),
+            "python3",
+            &[],
+            &["127.0.0.1".to_string()],
+        );
+
+        assert!(!args.contains(&"--share-net".to_string()));
+        assert!(!args.contains(&"--cap-add".to_string()));
+        assert!(!args.iter().any(|a| a == "0" ));
+    }
+
+    /// T012 [US2] Com `allow_network=true` e ao menos um host declarado, o
+    /// `Vec<String>` resultante: (1) NÃO contém `--share-net` (desvio
+    /// deliberado de T011, ver doc de `build_bwrap_args_with_network_hosts`
+    /// e do módulo `sandbox_network`); (2) contém `--uid 0 --gid 0
+    /// --cap-add CAP_NET_ADMIN`; (3) o comando final depois de `--` não é
+    /// mais o interpretador direto, e sim `sh -c <script>` com o host
+    /// declarado embutido no script, seguido do interpretador/args
+    /// originais. Depende de `nft` ou `iptables` estarem instalados nesta
+    /// máquina (Assumptions de `spec.md` — mesma categoria de dependência já
+    /// aceita por `exec_denied_binds_seccomp_preload_library_and_sets_ld_preload`,
+    /// acima, para o `.so` de `farol-seccomp-preload`).
+    #[test]
+    fn network_hosts_present_swaps_share_net_for_private_netns_wrapper_reflecting_hosts() {
+        let args = build_bwrap_args_with_network_hosts(
+            Path::new("/repo"),
+            Path::new("/usr/bin/python3"),
+            &profile(true, true, vec![]),
+            "python3",
+            &["plugins/git-local/main.py".to_string()],
+            &["127.0.0.1".to_string()],
+        );
+
+        assert!(
+            !args.contains(&"--share-net".to_string()),
+            "network_hosts não vazia MUST omitir --share-net (D3/FR-008: namespace de rede \
+             recém-criado pelo bwrap, não o do host); args={args:?}"
+        );
+        assert!(args.contains(&"--uid".to_string()));
+        assert!(args.contains(&"--cap-add".to_string()));
+        assert!(args.contains(&"CAP_NET_ADMIN".to_string()));
+
+        let separator_index = args
+            .iter()
+            .position(|a| a == "--")
+            .expect("esperava um separador -- nos argumentos");
+        assert!(
+            args[separator_index + 1].ends_with("/sh"),
+            "comando final MUST ser `<sh> -c <script> ...`, não mais o interpretador direto; \
+             args={args:?}"
+        );
+        assert_eq!(
+            args[separator_index + 2], "-c",
+            "segundo argumento posicional depois de -- MUST ser -c; args={args:?}"
+        );
+        let script = &args[separator_index + 3];
+        assert!(
+            script.contains("127.0.0.1"),
+            "script do wrapper deveria conter o IP do host declarado; script={script:?}"
+        );
+        // O interpretador original e seus args continuam presentes, agora
+        // como argumentos posicionais do `sh -c` (viram $0/$@ dentro do
+        // script, consumidos pelo `exec "$0" "$@"` final).
+        assert!(args.contains(&"/usr/bin/python3".to_string()));
+        assert!(args.contains(&"plugins/git-local/main.py".to_string()));
+    }
+
+    /// T012 [US2] Mesma combinação real de `uptime-kuma`
+    /// (`allow_network=true`, `allow_exec=false`) com um host declarado: o
+    /// `--setenv LD_PRELOAD` do `bwrap` NÃO deve aparecer (vazaria pro
+    /// próprio wrapper — ver doc de `build_bwrap_args_with_network_hosts`);
+    /// em vez disso, o `export LD_PRELOAD=` MUST estar embutido dentro do
+    /// próprio script do wrapper.
+    #[test]
+    fn network_hosts_present_with_exec_denied_defers_ld_preload_into_the_wrapper_script() {
+        crate::sandbox_seccomp::locate_seccomp_preload_library().expect(
+            "libfarol_seccomp_preload.so MUST estar compilado para este teste — rode `cargo \
+             build -p farol-seccomp-preload` antes de `cargo test -p farol-core`",
+        );
+
+        let args = build_bwrap_args_with_network_hosts(
+            Path::new("/repo"),
+            Path::new("/usr/bin/python3"),
+            &profile(true, false, vec![]),
+            "python3",
+            &[],
+            &["127.0.0.1".to_string()],
+        );
+
+        assert!(
+            !args.contains(&"--setenv".to_string()),
+            "--setenv LD_PRELOAD nunca deve ser emitido pelo bwrap quando network_hosts não é \
+             vazia (vazaria pro processo do wrapper); args={args:?}"
+        );
+
+        let separator_index = args.iter().position(|a| a == "--").unwrap();
+        let script = &args[separator_index + 3];
+        assert!(
+            script.contains("export LD_PRELOAD="),
+            "script do wrapper deveria exportar LD_PRELOAD antes do exec final quando \
+             allow_exec=false; script={script:?}"
+        );
+        assert!(
+            script.contains("libfarol_seccomp_preload.so"),
+            "script={script:?}"
+        );
+    }
+
+    /// T014 [US2] Fail-closed (FR-004 por analogia): com o escape-hatch de
+    /// teste de `sandbox_network` forçando nft/iptables a parecerem
+    /// ausentes, `network_hosts` não vazia MUST fazer
+    /// `build_bwrap_args_with_network_hosts` entrar em `panic!` em vez de
+    /// devolver um `Vec<String>` que monta o sandbox sem a allowlist real —
+    /// nunca degrada silenciosamente para o comportamento antigo de
+    /// liga/desliga total via `--share-net`. Serializado via
+    /// `FORCE_FIREWALL_MISSING_ENV_VAR_TEST_LOCK` (mesmo padrão do lock
+    /// equivalente de `sandbox_seccomp`, doc lá explica por quê precisa ser
+    /// único).
+    #[test]
+    fn network_hosts_present_panics_when_no_firewall_tool_is_available() {
+        let _guard = crate::sandbox_network::FORCE_FIREWALL_MISSING_ENV_VAR_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
+        std::env::set_var(crate::sandbox_network::FORCE_FIREWALL_MISSING_ENV_VAR, "1");
+        let result = std::panic::catch_unwind(|| {
+            build_bwrap_args_with_network_hosts(
+                Path::new("/repo"),
+                Path::new("/usr/bin/python3"),
+                &profile(true, true, vec![]),
+                "python3",
+                &[],
+                &["127.0.0.1".to_string()],
+            )
+        });
+        std::env::remove_var(crate::sandbox_network::FORCE_FIREWALL_MISSING_ENV_VAR);
+
+        assert!(
+            result.is_err(),
+            "esperava panic! quando nem nft nem iptables estão disponíveis e network_hosts não \
+             é vazia (FR-004 por analogia, fail-closed) — build_bwrap_args_with_network_hosts \
+             NUNCA deve montar o sandbox sem a allowlist real de rede"
+        );
+    }
+
+    /// T014 [US2] Fail-closed também para um host que não resolve (T009,
+    /// edge case de `spec.md`): `panic!`, nunca uma allowlist parcial
+    /// silenciosa.
+    #[test]
+    fn network_hosts_present_panics_when_a_declared_host_cannot_be_resolved() {
+        let result = std::panic::catch_unwind(|| {
+            build_bwrap_args_with_network_hosts(
+                Path::new("/repo"),
+                Path::new("/usr/bin/python3"),
+                &profile(true, true, vec![]),
+                "python3",
+                &[],
+                &["host-que-nao-existe.invalid".to_string()],
+            )
+        });
+
+        assert!(
+            result.is_err(),
+            "esperava panic! quando um host declarado não resolve para IP (T009, fail-closed)"
+        );
     }
 }
 
@@ -1363,6 +1688,186 @@ mod sandbox_integration_tests {
             "esperava que o sandbox de uptime-kuma não conseguisse abrir secrets.toml do Farol \
              (BLOCKED, research.md D9); stdout={stdout:?} stderr={:?}",
             String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    /// [US2, T013] Script Python auto-contido que roda DENTRO do sandbox e
+    /// prova, num único processo, a allowlist de rede por host: como o
+    /// mecanismo desta feature (D3/FR-008, ver doc de `sandbox_network`)
+    /// exige um namespace de rede PRIVADO recém-criado pelo próprio `bwrap`
+    /// (sem `--share-net`) para que `--cap-add CAP_NET_ADMIN` seja efetivo,
+    /// esse namespace enxerga só `lo` — nenhum `TcpListener` do processo de
+    /// teste (fora do sandbox) seria alcançável de dentro dele, diferente de
+    /// `uptime_kuma_real_profile_allows_local_tcp_connection` (que depende
+    /// de `--share-net`). Por isso os dois "servidores de fixture" exigidos
+    /// pela task (host declarado vs. não declarado) sobem como threads DENTRO
+    /// do próprio script sandboxado, em `127.0.0.1` (declarado na allowlist)
+    /// e `127.0.0.2` (não declarado) — o range inteiro `127.0.0.0/8` fica
+    /// disponível via `lo` mesmo num netns privado, uma vez que a interface é
+    /// levantada pelo wrapper de T010 (`ip link set lo up`). Cada listener
+    /// usa porta efêmera (`bind(ip, 0)`), lida no mesmo processo via
+    /// `getsockname()`, então não há nenhuma coordenação entre processos.
+    const NETWORK_ALLOWLIST_FIXTURE_SCRIPT: &str = "import socket, threading, time\n\
+         def serve(bind_ip):\n\
+         \tsrv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)\n\
+         \tsrv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)\n\
+         \tsrv.bind((bind_ip, 0))\n\
+         \tport = srv.getsockname()[1]\n\
+         \tsrv.listen(1)\n\
+         \tsrv.settimeout(5)\n\
+         \tdef accept_once():\n\
+         \t\ttry:\n\
+         \t\t\tconn, _ = srv.accept()\n\
+         \t\t\tconn.close()\n\
+         \t\texcept socket.timeout:\n\
+         \t\t\tpass\n\
+         \t\tfinally:\n\
+         \t\t\tsrv.close()\n\
+         \tthreading.Thread(target=accept_once, daemon=True).start()\n\
+         \treturn port\n\
+         declared_port = serve('127.0.0.1')\n\
+         undeclared_port = serve('127.0.0.2')\n\
+         time.sleep(0.3)\n\
+         try:\n\
+         \ts = socket.create_connection(('127.0.0.1', declared_port), timeout=3)\n\
+         \ts.close()\n\
+         \tprint('DECLARED_OK')\n\
+         except OSError:\n\
+         \tprint('DECLARED_BLOCKED')\n\
+         try:\n\
+         \ts = socket.create_connection(('127.0.0.2', undeclared_port), timeout=3)\n\
+         \ts.close()\n\
+         \tprint('UNDECLARED_LEAKED')\n\
+         except OSError:\n\
+         \tprint('UNDECLARED_BLOCKED')\n";
+
+    /// [US2, T013] Cenário principal exigido pela task: plugin com allowlist
+    /// declarando um host consegue conectar a ele e falha ao conectar a
+    /// outro. Perfil sintético `allow_network=true, allow_exec=true`, com
+    /// `network_hosts=["127.0.0.1"]` — só `127.0.0.1` (o host "declarado")
+    /// deve ser alcançável; `127.0.0.2` (não declarado) deve ser bloqueado
+    /// pelas regras `nft`/`iptables` aplicadas pelo wrapper de T010. Depende
+    /// de `nft` ou `iptables` estarem instalados nesta máquina (Assumptions
+    /// de `spec.md`), além de `bwrap`.
+    #[test]
+    fn network_hosts_allowlist_permits_declared_host_and_blocks_undeclared_host() {
+        let interpreter = python3_path();
+        let profile = SandboxProfile {
+            allow_network: true,
+            allow_exec: true,
+            extra_binds: vec![],
+        };
+        let args = build_bwrap_args_with_network_hosts(
+            &repo_root(),
+            &interpreter,
+            &profile,
+            "python3",
+            &["-c".to_string(), NETWORK_ALLOWLIST_FIXTURE_SCRIPT.to_string()],
+            &["127.0.0.1".to_string()],
+        );
+
+        let output = Command::new("bwrap")
+            .args(&args)
+            .output()
+            .expect("bwrap MUST estar instalado e executável nesta máquina");
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stdout.contains("DECLARED_OK"),
+            "esperava que a conexão ao host declarado (127.0.0.1) funcionasse; \
+             stdout={stdout:?} stderr={stderr:?}"
+        );
+        assert!(
+            stdout.contains("UNDECLARED_BLOCKED"),
+            "esperava que a conexão ao host NÃO declarado (127.0.0.2) fosse bloqueada pela \
+             allowlist de rede (T009-T011); stdout={stdout:?} stderr={stderr:?}"
+        );
+        assert!(
+            !stdout.contains("UNDECLARED_LEAKED"),
+            "NUNCA deveria conseguir conectar a um host fora da allowlist declarada; \
+             stdout={stdout:?}"
+        );
+    }
+
+    /// [US2, T013] Cenário combinado: prova que a correção do bug "wrapper
+    /// bloqueia o próprio exec" (`export LD_PRELOAD` adiado para dentro do
+    /// script do wrapper, ver doc de `sandbox_network::build_wrapper_script`)
+    /// funciona de ponta a ponta com `bwrap` real — perfil real de
+    /// `uptime-kuma` teria `allow_exec=false`; este teste usa um perfil
+    /// sintético equivalente (`allow_network=true, allow_exec=false`) com um
+    /// host declarado, confirmando DUAS coisas ao mesmo tempo no mesmo
+    /// processo sandboxado: (1) a allowlist de rede continua funcionando
+    /// (prova que o wrapper conseguiu aplicar `nft`/`iptables` e fazer seu
+    /// próprio `exec` final do interpretador, mesmo com `LD_PRELOAD`
+    /// endereçado); (2) o filtro seccomp de US1 continua ativo no processo
+    /// final do plugin (prova que o `LD_PRELOAD` adiado realmente chegou ao
+    /// interpretador, não se perdeu) — sem essa combinação, um regression no
+    /// meio do caminho poderia silenciosamente desativar US1 OU US2 sem que
+    /// nenhum teste existente (que testa os dois mecanismos separadamente)
+    /// percebesse.
+    #[test]
+    fn network_hosts_allowlist_combined_with_exec_denied_still_blocks_exec_and_reaches_declared_host()
+    {
+        ensure_seccomp_preload_library_is_built();
+
+        let interpreter = python3_path();
+        let profile = SandboxProfile {
+            allow_network: true,
+            allow_exec: false,
+            extra_binds: vec![],
+        };
+        let script = format!(
+            "{NETWORK_ALLOWLIST_FIXTURE_SCRIPT}\
+             import os, subprocess\n\
+             payload = '/tmp/farol-sandbox-network-seccomp-payload'\n\
+             with open(payload, 'w') as f:\n\
+             \tf.write('#!/bin/sh\\necho SHOULD_NOT_RUN\\n')\n\
+             os.chmod(payload, 0o755)\n\
+             try:\n\
+             \tsubprocess.run([payload], check=True)\n\
+             \tprint('EXEC_LEAKED')\n\
+             except (PermissionError, OSError):\n\
+             \tprint('EXEC_BLOCKED')\n"
+        );
+        let args = build_bwrap_args_with_network_hosts(
+            &repo_root(),
+            &interpreter,
+            &profile,
+            "python3",
+            &["-c".to_string(), script],
+            &["127.0.0.1".to_string()],
+        );
+
+        let output = Command::new("bwrap")
+            .args(&args)
+            .output()
+            .expect("bwrap MUST estar instalado e executável nesta máquina");
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stdout.contains("DECLARED_OK"),
+            "com allow_exec=false E allowlist de rede juntos, a conexão ao host declarado ainda \
+             deveria funcionar (prova que o wrapper conseguiu exec'ar o interpretador real \
+             mesmo com o LD_PRELOAD endereçado); stdout={stdout:?} stderr={stderr:?}"
+        );
+        assert!(
+            stdout.contains("UNDECLARED_BLOCKED"),
+            "allowlist de rede deveria continuar bloqueando o host não declarado mesmo \
+             combinada com allow_exec=false; stdout={stdout:?} stderr={stderr:?}"
+        );
+        assert!(
+            stdout.contains("EXEC_BLOCKED"),
+            "o filtro seccomp de US1 (LD_PRELOAD) deveria continuar ativo no processo final do \
+             plugin mesmo quando adiado para dentro do script do wrapper de rede — prova que o \
+             LD_PRELOAD adiado (fix desta sessão) realmente chega ao interpretador; \
+             stdout={stdout:?} stderr={stderr:?}"
+        );
+        assert!(
+            !stdout.contains("EXEC_LEAKED") && !stdout.contains("UNDECLARED_LEAKED"),
+            "nenhum dos dois mecanismos (US1 seccomp, US2 rede) deveria vazar quando \
+             combinados; stdout={stdout:?}"
         );
     }
 }

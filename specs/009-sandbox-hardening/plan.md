@@ -145,6 +145,16 @@ crates/farol-core/
   de montar os argumentos do `bwrap` — os IPs resolvidos (não os hostnames) são passados ao wrapper
   de dentro do namespace, evitando exigir que o plugin sandboxed tenha acesso a DNS antes de as
   regras `nftables` estarem em vigor.
+- **D5 (US2 — limitação descoberta na implementação)**: o mecanismo de allowlist por host exige que o
+  `bwrap` monte um namespace de rede PRIVADO (sem `--share-net`) para que `CAP_NET_ADMIN` seja efetivo
+  dentro do sandbox — confirmado empiricamente durante a implementação de T009-T014. Um namespace de
+  rede privado, sem uma camada adicional de roteamento externo (ex.: `slirp4netns` ou veth+NAT —
+  nova dependência de sistema, fora do escopo autorizado por este `plan.md`), só enxerga `lo`
+  (loopback). A allowlist funciona corretamente para destinos de loopback (validada com testes reais),
+  mas **hosts externos declarados na allowlist não são alcançáveis** no estado atual. Uma decisão de
+  design futura será necessária para resolver o roteamento externo (introduzindo nova dependência de
+  sistema ou alternativa arquitetural); este trabalho fecha a mediação de allowlist em si (fail-closed,
+  sem regressão).
 
 ## Complexity Tracking
 

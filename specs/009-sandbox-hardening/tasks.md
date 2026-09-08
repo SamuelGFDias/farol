@@ -88,25 +88,27 @@ vez do atual liga/desliga total via `--share-net`.
 **Independent Test**: plugin com `network` declarando um host específico consegue conectar a esse
 host e falha ao conectar a qualquer outro.
 
-- [ ] T009 [US2] Implementar em `sandbox_network.rs`: resolução de host→IP no processo pai (fora do
+- [X] T009 [US2] Implementar em `sandbox_network.rs`: resolução de host→IP no processo pai (fora do
       sandbox), antes de montar os argumentos do `bwrap` (D4 do `plan.md`)
-- [ ] T010 [US2] Implementar em `sandbox_network.rs`: geração de um script wrapper (inline, string
+- [X] T010 [US2] Implementar em `sandbox_network.rs`: geração de um script wrapper (inline, string
       Rust — sem exigir binário/passo de build extra, ver `plan.md` § Complexity Tracking) que
       aplica regras `nftables` (fallback `iptables` se `nft` ausente) restringindo saída aos IPs
       resolvidos em T009, e então faz `exec` do comando real do plugin
-- [ ] T011 [US2] Em `sandbox.rs:170-206`, quando `allow_network=true` com allowlist de hosts não
+- [X] T011 [US2] Em `sandbox.rs:170-206`, quando `allow_network=true` com allowlist de hosts não
       vazia: usar o wrapper de T010 como comando efetivo dentro do `bwrap` (em vez de exec direto do
       comando do plugin), preservando o `--share-net`/binds de DNS/TLS já existentes
-- [ ] T012 [US2] Estender `sandbox_unit_tests`: quando `network=true` com hosts declarados, os
+- [X] T012 [US2] Estender `sandbox_unit_tests`: quando `network=true` com hosts declarados, os
       argumentos/wrapper gerados refletem os hosts esperados; quando `network=true` sem allowlist
       (comportamento atual), nada muda (regressão)
-- [ ] T013 [US2] Estender `sandbox_integration_tests` com dois servidores HTTP de fixture locais em
+- [X] T013 [US2] Estender `sandbox_integration_tests` com dois servidores HTTP de fixture locais em
       endereços/portas de loopback distintos simulando "host declarado" vs. "host não declarado":
       plugin com allowlist consegue conectar ao host declarado e falha ao conectar ao outro
-- [ ] T014 [US2] Testar explicitamente o caso de falha do mecanismo (FR-004): simular ausência de
+- [X] T014 [US2] Testar explicitamente o caso de falha do mecanismo (FR-004): simular ausência de
       `nft`/`iptables` e confirmar que a montagem do sandbox é recusada com mensagem clara
       (`NetworkFirewallUnavailable`, T003), nunca voltando ao comportamento antigo (liga/desliga
       total) silenciosamente
 
 **Checkpoint**: US2 entregue e testável de forma independente (issue #13 fechada), sem regressão em
 US1.
+
+**Limitação arquitetural conhecida (descoberta durante a implementação, decisão registrada em `plan.md`)**: o mecanismo de allowlist por host exige que o `bwrap` monte um namespace de rede PRIVADO (sem `--share-net`) para que `CAP_NET_ADMIN` seja efetivo dentro do sandbox — confirmado empiricamente. Um namespace de rede privado, sem uma camada adicional de roteamento externo (ex.: `slirp4netns` ou veth+NAT — nova dependência de sistema, fora do escopo autorizado por este `plan.md`), só enxerga `lo` (loopback). Na prática, isso significa que a allowlist funciona corretamente e foi validada com testes reais, mas **hosts externos declarados na allowlist não são alcançáveis** no estado atual — só destinos de loopback. A issue #13 permanece aberta até uma decisão de design resolver o roteamento externo; este trabalho fecha a mediação de allowlist em si (fail-closed, sem regressão), não o caso de uso completo de plugins que dependem de rede externa real (ex.: uptime-kuma monitorando um serviço remoto).
