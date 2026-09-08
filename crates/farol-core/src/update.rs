@@ -54,14 +54,11 @@ const MONITOR_WIDGET_KIND: &str = "monitor-status-grid";
 /// subtarefa — popular `PluginConnection::vpn_widget` a partir de um sucesso
 /// ou erro pontual de `widget/get` continua sendo escopo de T024, não T018.
 ///
-/// **Nota (T024, feature 005)**: um erro pontual de `widget/get` para este `kind` continua
-/// roteado para `PluginConnection::last_widget_error` (mesmo braço `WidgetKind::Git |
-/// WidgetKind::Vpn` de `handle_widget_outcome`, comportamento de antes desta subtarefa) — a
-/// docstring de `VpnWidgetViewModel` (`model.rs`) atribui esse roteamento a "T024" da feature
-/// 004, mas isso nunca chegou a ser implementado (só o sucesso de `widget/get`/`action/invoke`
-/// popula `vpn_widget.status`/`vpn_widget.last_action_error`); rotear o erro de `widget/get`
-/// para `vpn_widget.last_error` fica fora do escopo desta subtarefa (só o `kind` `Container` é
-/// tocado aqui).
+/// **Issue #11**: um erro pontual de `widget/get` para este `kind` popula
+/// `PluginConnection::vpn_widget.last_error` (braço próprio `WidgetKind::Vpn` de
+/// `handle_widget_outcome`, mesmo padrão de `Monitor`/`Container`) — até essa correção caía no
+/// braço genérico `WidgetKind::Git | WidgetKind::Vpn` (`last_widget_error`), campo que
+/// `view_vpn_widget` (`view.rs`) não lê, então a falha nunca chegava a aparecer na UI.
 const VPN_WIDGET_KIND: &str = "vpn-status";
 
 /// `kind` do widget do plugin `docker-containers` (feature 005,
@@ -343,9 +340,10 @@ impl Farol {
     /// `id`, ver docstring daquela função) e marca `docker_widget.loaded = true` (distingue "ainda
     /// não li" de "li e está vazia", `DockerWidgetViewModel::loaded`, FR-011); erro pontual popula
     /// `docker_widget.last_error`, preservando `containers` — mesmo padrão de `monitor_widget`.
-    /// `WidgetKind::Vpn` continua sem braço dedicado no erro (nota de escopo em
-    /// [`VPN_WIDGET_KIND`] acima) — só `Container` ganha um braço novo aqui, `Git`/`Vpn` continuam
-    /// exatamente como estavam.
+    ///
+    /// **Issue #11**: `WidgetKind::Vpn` também ganhou braço dedicado no erro (ver nota em
+    /// [`VPN_WIDGET_KIND`] acima), populando `vpn_widget.last_error` — só `Git` continua roteado
+    /// para o mecanismo genérico (`last_widget_error`).
     fn handle_widget_outcome(&mut self, plugin_name: &str, outcome: WidgetOutcome) {
         let Some(slot) = self.slot_mut(plugin_name) else {
             return;
@@ -411,11 +409,13 @@ impl Farol {
                 // popula só `docker_widget.last_error`, preservando `containers` da leitura
                 // anterior (FR-006), sem alterar `PluginState` — mesmo padrão de `Monitor` acima.
                 WidgetKind::Container => slot.connection.docker_widget.last_error = Some(message),
-                // `Git`/`Vpn` continuam roteados para o mecanismo genérico — ver nota de escopo em
-                // `VPN_WIDGET_KIND` sobre `Vpn` não ganhar um campo próprio aqui.
-                WidgetKind::Git | WidgetKind::Vpn => {
-                    slot.connection.last_widget_error = Some(message)
-                }
+                // Issue #11: erro pontual de `widget/get` para `vpn-status` popula
+                // `vpn_widget.last_error` — mesmo padrão de `Monitor`/`Container` acima. Antes
+                // dessa correção caía no braço genérico (`last_widget_error`), campo que
+                // `view_vpn_widget` não lê, então a falha nunca aparecia na UI.
+                WidgetKind::Vpn => slot.connection.vpn_widget.last_error = Some(message),
+                // `Git` continua roteado para o mecanismo genérico (feature 001).
+                WidgetKind::Git => slot.connection.last_widget_error = Some(message),
             },
             WidgetOutcome::Unresponsive => {
                 slot.connection.state = PluginState::Unavailable {

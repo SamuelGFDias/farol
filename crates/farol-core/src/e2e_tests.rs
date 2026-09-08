@@ -2612,6 +2612,88 @@ fn openfortivpn_vpn_reaches_ready_and_populates_the_vpn_widget() {
     assert_no_lingering_children();
 }
 
+/// **Issue #11** — um erro pontual de `widget/get` do plugin `openfortivpn-vpn` (`openfortivpn-gui
+/// status --json` falhando, `FAKE_OPENFORTIVPN_ERROR` na fixture) chega até
+/// `PluginConnection::vpn_widget.last_error` e é exibido em [`view_vpn_widget`] — antes da
+/// correção em `update.rs::handle_widget_outcome`, `WidgetKind::Vpn` caía no braço genérico
+/// (compartilhado com `Git`) que só grava `PluginConnection::last_widget_error`, campo que a view
+/// do widget VPN nunca lê, então a falha nunca aparecia na tela.
+///
+/// Mesmo padrão de [`openfortivpn_vpn_reaches_ready_and_populates_the_vpn_widget`] (fixture via
+/// `PATH`, `PathPrefixGuard`) e de
+/// [`uptime_kuma_reports_metrics_unreachable_for_an_invalid_base_url_but_stays_ready`] (T038) para
+/// a asserção de estado: `PluginState` permanece `Ready` — um erro pontual de leitura nunca vira
+/// `Unavailable` (FR-019, mecanismo genérico da feature 001) — e o erro fica só no campo dedicado
+/// do widget.
+///
+/// `main.py::handle_widget_get` traduz `FAKE_OPENFORTIVPN_ERROR` (não vazio, código diferente de
+/// `-32003`) para `-32008`/`vpn_status_unavailable` com a mensagem fixa "falha ao consultar status
+/// da VPN" (o `detail` da fixture vai só em `error.data`, que `WidgetOutcome::PluginError` não
+/// carrega — ver `plugin_worker.rs::run_widget_get_cycle`) — por isso a asserção de texto usa essa
+/// mensagem fixa, não o valor de `FAKE_OPENFORTIVPN_ERROR`.
+#[test]
+fn openfortivpn_vpn_widget_get_error_reaches_vpn_widget_last_error() {
+    let _guard = e2e_guard();
+
+    let fixture_dir = fake_openfortivpn_gui_dir();
+    let _path_guard = PathPrefixGuard::prepend(&fixture_dir);
+
+    // Qualquer valor não vazio força `_cmd_status` da fixture a responder um `ErrorPayload`
+    // (`internal_error`), que `vpn_cli.py`/`main.py::handle_widget_get` traduzem para
+    // `-32008`/`vpn_status_unavailable` (ver docstring acima).
+    std::env::set_var("FAKE_OPENFORTIVPN_ERROR", "falha simulada pela fixture");
+    std::env::remove_var("FAKE_OPENFORTIVPN_STATE");
+    std::env::remove_var("FAKE_OPENFORTIVPN_PROFILE");
+    std::env::remove_var("FAKE_OPENFORTIVPN_PROFILES");
+    std::env::remove_var("FAKE_OPENFORTIVPN_ELAPSED");
+
+    let fixture = HarnessFixture::new("openfortivpn-vpn-widget-get-error");
+
+    let mut harness = start_scenario(
+        "issue #11: erro pontual de widget/get chega a vpn_widget.last_error",
+        fixture.spawn_config("openfortivpn-vpn"),
+    );
+    harness.settle();
+    assert!(
+        harness.screen_shows("Plugin: openfortivpn-vpn (protocolo 0.4)"),
+        "required_config vazio (D6) deveria levar a Ready mesmo com o binário simulando erro no \
+         primeiro widget/get"
+    );
+
+    let error_text = "Falha ao consultar VPN: falha ao consultar status da VPN";
+    wait_until(
+        &mut harness,
+        "erro pontual de vpn_status_unavailable",
+        |h| h.screen_shows(error_text),
+        STATE_TIMEOUT,
+    );
+
+    let app = harness.finish();
+    assert_eq!(
+        plugin_state(&app, "openfortivpn-vpn"),
+        PluginState::Ready,
+        "um erro pontual de widget/get NÃO muda PluginState — continua Ready, distinto de \
+         qualquer Unavailable"
+    );
+    let connection = &app
+        .plugins
+        .iter()
+        .find(|slot| slot.spawn_config.plugin_name == "openfortivpn-vpn")
+        .expect("slot de openfortivpn-vpn")
+        .connection;
+    assert!(
+        connection.vpn_widget.last_error.is_some(),
+        "issue #11: o erro pontual de widget/get deveria chegar a vpn_widget.last_error, não só a \
+         last_widget_error"
+    );
+    assert!(
+        connection.vpn_widget.status.is_none(),
+        "nunca houve nenhuma leitura bem-sucedida nesta conexão"
+    );
+    drop(app);
+    assert_no_lingering_children();
+}
+
 /// **T026b [US1] — `docker-containers` alcança `Ready` e popula o widget `container-status-grid`**
 /// (`specs/005-docker-containers-plugin/tasks.md` T026), mesmo padrão de
 /// [`openfortivpn_vpn_reaches_ready_and_populates_the_vpn_widget`] (T026 da feature 004).
