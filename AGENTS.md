@@ -149,6 +149,152 @@ Features existentes:
   publicar de verdade um repositório-índice GitHub central com CI de validação de PRs — decisão de
   infraestrutura externa fora de modo silencioso, ver `spec.md`/Clarifications).
 
+- `specs/008-registry-hardening/` — **quase completa (16/17 tasks; T017 pendente, ação de
+  infraestrutura externa)**. Fecha as quatro issues de débito abertas na feature 007 (#15, #16,
+  #17, #18), com quatro User Stories: (US1, issue #18) repositório-índice GitHub central — novo
+  módulo `crates/farol-core/src/registry_index.rs`, `RegistryIndexEntry{name, owner, repo}` e
+  `resolve_name(name, index_url_base) -> Result<RegistryIndexEntry, RegistryIndexError>`
+  (`NotFound`/`FetchFailed`/`MalformedIndex`, distinção deliberada para que "índice inacessível"
+  nunca seja interpretado como "plugin não existe") busca `index.toml` via `curl` (mesmo padrão
+  `install.rs`), com override de teste `FAROL_REGISTRY_INDEX_URL` (mesmo espírito de
+  `FAROL_GITHUB_API_BASE` da feature 007); `install::run_by_name(name) -> InstallByNameOutcome`
+  (tipo **novo**, não uma variante a mais em `InstallOutcome` — decisão de escopo documentada na
+  nota de T006: evitar tocar o `match` exaustivo de `main.rs::handle_install_subcommand` fora do
+  Foundational) repassa `owner/repo` resolvido para o `install::run` já existente da feature 007,
+  sem duplicar lógica de instalação (FR-003); `default_index_url_base()` aponta hoje para um
+  placeholder (`https://raw.githubusercontent.com/farol-registry/farol-plugin-index/main`) que
+  falha com `FetchFailed` visível até T017 publicar o repositório de verdade. (US2, issue #16)
+  comando de `build` opcional no manifesto (`PluginManifest::build: Option<String>`) — quando
+  presente, `install::run` o executa via `sh -c` no `staging_dir`, depois de `parse_manifest` e
+  antes do rename atômico; `exit code != 0` aborta a instalação sem publicar nada (reaproveita
+  `InstallOutcome::DownloadFailed`, mensagem prefixada "comando de build falhou: ..." — outra
+  variante nova de `InstallOutcome` exigiria o mesmo `match` exaustivo de `main.rs` fora de escopo,
+  mesmo raciocínio de US1). (US3, issue #17) capability de filesystem genérica — manifesto ganha
+  `filesystem_read`/`filesystem_read_write: Vec<String>` (caminhos absolutos), validados por
+  `validate_filesystem_paths` contra `filesystem_capability_denylist()` (`~/.ssh`, `/etc`,
+  `$XDG_CONFIG_HOME/farol` — resolvendo env vars, nunca caminho literal hardcoded) via
+  `Path::starts_with` (rejeita tanto o caminho denylistado exato quanto qualquer descendente, ex.
+  `~/.ssh/id_rsa`); caminho relativo vira `ManifestError::RelativeFilesystemPath`, caminho na
+  denylist vira `ManifestError::DenylistedFilesystemPath` — ambos rejeitados já no `parse_manifest`
+  (nunca chegam a `plugin_worker::discover_installed_plugins`). `discover_installed_plugins`
+  converte cada caminho já validado em um `sandbox::BindMount` (`extra_binds`), somente-leitura
+  para `filesystem_read` e leitura/escrita para `filesystem_read_write` — mesma disciplina
+  "negado por padrão, concedido explicitamente" de `network`/`exec` (feature 006) e mesma fonte de
+  verdade "manifesto lido do disco na descoberta, nunca o `CapabilityManifest` do handshake"
+  (D1 da feature 006, generalizada de novo na feature 007). (US4, issue #15) tela de instalação
+  in-app: `Farol::install_form: model::InstallForm` (`model.rs`, mesmo padrão de desvio de local
+  já documentado para `SetupForm` — vive direto em `Farol`, não numa `PluginConnection`, porque a
+  instalação não pertence a nenhuma conexão de plugin específica), `InstallFormStatus`
+  (`Idle`/`InProgress`/`Success(String)`/`Error(String)`), `Message::InstallFormNameChanged`/
+  `InstallByNameSubmitted`/`InstallOutcomeReceived{success, message}`, `view_install_form`
+  (`view.rs`, reaproveita o padrão visual de `view_setup_form`) e
+  `Farol::handle_install_by_name_submitted` (`update.rs`) que dispara `install::run_by_name` dentro
+  de `tokio::task::spawn_blocking` via `iced::Task::perform`, mantendo a UI responsiva durante
+  download/build (FR-012) — resultado chega como `Message::InstallOutcomeReceived`, já traduzido
+  para `(bool, String)` por `describe_install_by_name_outcome` porque `InstallByNameOutcome`/
+  `InstallOutcome` não são `Clone` e `Message` precisa ser. **Único item pendente: T017** —
+  publicar de verdade o repositório-índice (`index.toml` + `.github/workflows/validate.yml` de CI)
+  no GitHub; marcado em `tasks.md` como checkpoint sensível que exige confirmação explícita do
+  usuário sobre nome/owner antes de disparar, não presumível a partir de T001-T016 completas.
+
+- `specs/009-sandbox-hardening/` — **parcial (8/14 tasks, só User Story 1 completa)**. Fecha as
+  duas issues de débito abertas na feature 006 (#12, #13). **US1 (issue #12, mediação real de
+  `execve`/`execveat` via seccomp) — completa**: antes desta feature, `allow_exec=false` só
+  escondia binários por visibilidade seletiva de filesystem (bind: sem `exec`, `/usr/bin`/`/bin`/
+  `/usr/local/bin` não são bindados), deixando um vetor residual — um plugin hostil podia escrever
+  um payload executável num `tmpfs` gravável (`/tmp`) e executá-lo por caminho absoluto, sem
+  depender de `$PATH`. **D1, revisado por achado empírico durante a implementação**: a abordagem
+  original de `plan.md`/`tasks.md` (gerar o filtro com `seccompiler` no processo do Farol,
+  serializar num `memfd`, passar ao `bwrap` via `--seccomp FD`) se mostrou **inviável** —
+  `bwrap --seccomp FD` instala o filtro NO PRÓPRIO PROCESSO `bwrap`, antes do `execvp()` final que
+  ele mesmo faz para lançar o comando do plugin, bloqueando esse exec interno (confirmado
+  empiricamente: `bwrap: execvp /usr/bin/python3: Permission denied`). Correção adotada: o filtro
+  passa a ser aplicado DENTRO do processo do plugin, depois que ele já foi `exec`ado com sucesso
+  pelo `bwrap`, via `LD_PRELOAD` de uma biblioteca compartilhada com um construtor ELF. Novo membro
+  do workspace, crate `cdylib` `crates/farol-seccomp-preload/`: gera o filtro BPF
+  (`build_exec_deny_filter`, via `seccompiler`, bloqueando `execve`/`execveat`, cobrindo `fexecve`
+  por consequência) e o aplica ao próprio processo a partir de um `#[ctor::ctor]` que roda quando o
+  `.so` é carregado via `LD_PRELOAD`, depois que o dynamic linker termina de carregar mas antes do
+  `main()` do processo alvo — nesse ponto o processo já está de pé e não precisa de nenhum exec
+  adicional para continuar, então o filtro só nega tentativas SUBSEQUENTES do próprio plugin.
+  `crates/farol-core/src/sandbox_seccomp.rs`, depois da revisão, só localiza o `.so` já compilado
+  (`SECCOMP_PRELOAD_LIB_FILENAME = "libfarol_seccomp_preload.so"` em
+  `target/{debug,release}/`) via `locate_seccomp_preload_library()` — não gera mais nenhum filtro
+  do lado do Farol; escape-hatch só de teste `FAROL_SANDBOX_TEST_FORCE_SECCOMP_PRELOAD_MISSING`
+  (mesmo padrão de `FAROL_SANDBOX_TEST_EXTRA_BIND` da feature 006), usado só por
+  `sandbox_unit_tests`/`sandbox_integration_tests` para exercitar o caminho fail-closed. Novo
+  `pub enum SandboxMountError` em `sandbox.rs` (`SeccompUnavailable`/`NetworkFirewallUnavailable`,
+  ambos com `Display`/`Error`); `build_bwrap_args`, quando `allow_exec=false`, bind-monta o `.so`
+  read-only (posicionado DEPOIS do bind da raiz do repo/`code_root`, nunca antes — mesma classe de
+  bug de sombreamento de ordem já documentada para `--tmpfs /tmp` na feature 006) e anexa
+  `--setenv LD_PRELOAD <caminho>`; quando `locate_seccomp_preload_library()` devolve
+  `Err(SandboxMountError::SeccompUnavailable)`, `build_bwrap_args` entra em `panic!` com a mensagem
+  do erro — fail-closed real, nunca monta o sandbox sem a proteção (risco residual documentado em
+  `plan.md`: `build_bwrap_args` é infalível/`Vec<String>`, chamada por `plugin_worker::worker()`
+  sem `Result`, então propagar o erro tipado até lá exigiria mudar essa assinatura, fora do escopo
+  desta US). **Nota de processo, vale como lição**: a integração em `sandbox.rs` desta feature foi
+  implementada, depois perdida por um `git checkout` acidental que descartou trabalho não
+  commitado numa sessão anterior (sem rastro recuperável em `git reflog` nem em objetos órfãos), e
+  reconstruída do zero nesta sessão a partir da especificação em `tasks.md`/`plan.md` — o crate
+  `farol-seccomp-preload` e `sandbox_seccomp.rs` sobreviveram intactos porque já estavam
+  commitados. **US2 (issue #13, allowlist de rede por host via `nftables`) — não iniciada**:
+  `crates/farol-core/src/sandbox_network.rs` existe como esqueleto vazio (T009-T014 pendentes).
+  Design já decidido em `plan.md`: D3, como `bwrap` não aplica `nftables`/`iptables` nativamente, a
+  regra é aplicada por um processo auxiliar rodando DENTRO do namespace de rede recém-criado pelo
+  `bwrap` (que já tem `CAP_NET_ADMIN` efetivo sobre seu próprio namespace, por ser dono dele via
+  user namespace não privilegiado), antes de `exec`ar o comando real do plugin — padrão
+  `bwrap [...] -- <wrapper que aplica nft e faz exec do comando original>`, gerado como script
+  inline (heredoc/string Rust) para não exigir binário/passo de build extra no Farol; D4, a
+  resolução host→IP acontece uma vez no processo pai, fora do sandbox, antes de montar os
+  argumentos do `bwrap` — só os IPs resolvidos (não os hostnames) são passados ao wrapper de
+  dentro do namespace, evitando exigir DNS disponível ao plugin sandboxed antes de as regras
+  `nftables` estarem em vigor.
+
+- `specs/010-widget-detail-surface/` — **parcial (14/20 tasks, só User Story 1 completa)**. Fecha
+  as duas issues de débito abertas nas features 002/005 (#9, #10). **US1 (issue #9, discriminador
+  explícito de `WidgetItems`) — completa, protocolo `"0.4"` → `"0.5"`**: antes desta feature,
+  `WidgetItems` (`#[serde(untagged)]`, `farol-protocol/src/messages.rs`) desambiguava a variante
+  (`Git`/`Monitor`/`Vpn`/`Container`) por uma disjunção incidental de campos obrigatórios entre os
+  quatro tipos de item — invariante informal, nunca garantida pelo compilador nem pelo schema
+  (débito documentado em `research.md` D12 da feature 005/002; um `items: []` em particular sempre
+  desserializava como a primeira variante declarada, `Git`, corrigido só do lado consumidor por
+  `update::normalize_widget_items`, débito #5/issue #7). Resolvido com novo `enum WidgetItemKind`
+  (`Git`/`Monitor`/`Vpn`/`Container`, `Copy`/`Eq`, serializa como o nome de variante puro sem
+  `rename_all`) e um campo `kind: WidgetItemKind` obrigatório em `WidgetGetResult`, com
+  `Deserialize` **implementado manualmente** (não `derive`): lê `kind` primeiro via uma struct
+  `WidgetGetResultWire` intermediária (`items` como `serde_json::Value`), e só então desserializa
+  `items` diretamente para a variante de `WidgetItems` correspondente — a consistência entre `kind`
+  e o formato real de `items` é garantida pela própria construção do parsing, não por checagem
+  posterior; não existe caminho para produzir um `WidgetGetResult` cujo `kind` minta sobre a
+  variante de `items`. `WidgetItems` em si continua `#[serde(untagged)]` (usado "solto" fora deste
+  envelope). Protocolo bump `"0.4"` → `"0.5"` (`crates/farol-protocol/src/version.rs`); os 4
+  plugins de referência (`git-local`, `uptime-kuma`, `openfortivpn-vpn`, `docker-containers`)
+  migrados para `"0.5"` na mesma feature, cada um emitindo o `kind` correspondente
+  (`"Git"`/`"Monitor"`/`"Vpn"`/`"Container"`) — mesma disciplina de migração conjunta já praticada
+  nas features 004/005 (D2, evitando reacumular débito #4). Novo diretório de schema
+  `protocol/schema/v0.5/` (cópia de `v0.4` com `widget.schema.json` trocando o `anyOf` puro por
+  `if`/`then` sobre `kind`, tornando o campo obrigatório no schema também). **US2 (issue #10,
+  painel de detalhe/drill-down genérico) — parcial, implementação adiantada em relação a
+  `tasks.md`**: `tasks.md` marca T015 (estado em `model.rs`) e T016 (variantes de `Message` +
+  roteamento em `update.rs`) como `[ ]` não feitas, mas o código já as tem — `model.rs` ganhou
+  `DetailPanelState{plugin_name: String, items: farol_protocol::messages::WidgetItems}` (por
+  convenção, `items` sempre carrega exatamente um elemento, o item clicado; reaproveita o
+  `WidgetItems` do protocolo em vez de um enum paralelo), `Farol::detail_panel:
+  Option<model::DetailPanelState>` vive direto em `Farol` (`main.rs`, mesmo desvio de local já
+  documentado para `SetupForm`/`InstallForm` — não pertence a nenhuma `PluginConnection`
+  específica), `Message::ItemDetailRequested{plugin_name, items}`/`ItemDetailClosed`, e
+  `Farol::handle_item_detail_requested`/`handle_item_detail_closed` (`update.rs`) que
+  substituem/limpam `detail_panel` incondicionalmente. O que falta de fato (T017-T020, confirmado
+  pelo warning do compilador "variants `ItemDetailRequested` and `ItemDetailClosed` are never
+  constructed" — nenhum código em `view.rs` produz essas mensagens ainda): `format_item_detail(&
+  WidgetItems) -> Vec<(String, String)>` (par label/valor, genérico por tipo de item),
+  `view_detail_panel` consumindo esse formato e composto sobre a view principal via
+  `iced::widget::stack!` (API a confirmar na versão `iced 0.14` em uso antes de implementar), o
+  gatilho de abertura em `view_container_row` (reaproveitando o padrão visual de
+  `view_container_action_control` mas disparando `Message::ItemDetailRequested` em vez de
+  `ActionInvokeRequested`), e o teste de integração via `iced_test::Emulator` confirmando
+  clique-abre/fecha-restaura sem perder o estado da lista.
+
 `.specify/memory/constitution.md` é normativo e versionado (SemVer próprio, atualmente v1.0.0).
 Mudança de princípio exige emenda formal (skill `speckit-constitution`) — não editar a constitution
 diretamente fora desse processo.
@@ -260,7 +406,9 @@ injetados como variável de ambiente no spawn — não há dependência de keyri
 
 ## Testes
 
-- `cargo test --workspace` — 168 testes passando (0 `#[ignore]`d): unit/e2e/snapshot/sandbox/registry
+- `cargo test --workspace` — 208 testes Rust passando (0 `#[ignore]`d, contagem confirmada
+  2026-09-08, inclui os testes novos das features 008/009/010; a lista detalhada abaixo ainda
+  reflete o estado até a feature 007 e não foi reconciliada linha a linha): unit/e2e/snapshot/sandbox/registry
   de `farol-core` (107, incluindo novos cenários de features 004–005, os 15 testes de sandbox da
   feature 006 — 7 em `sandbox_unit_tests`, construção pura do `Vec<String>` de argumentos do `bwrap`
   a partir de um `SandboxProfile`, sem spawnar nada de verdade; 8 em `sandbox_integration_tests`,
