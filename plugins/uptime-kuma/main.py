@@ -22,7 +22,8 @@ Handlers declarados:
 Apenas biblioteca padrão (D7 de `research.md`) — `json`, `sys`, `threading`.
 Migrado para `"0.3"` como parte da feature 004 (`specs/004-vpn-status-plugin/research.md` D2)
 — mudança mecânica, nenhum campo novo usado por este plugin.
-Migrado novamente para `"0.4"` como parte da feature 005 (`specs/005-docker-containers-plugin/research.md` D2) — mudança mecânica, nenhum campo novo usado por este plugin.
+Migrado novamente para `"0.4"` como parte da feature 005 (`specs/005-docker-containers-
+plugin/research.md` D2) — mudança mecânica, nenhum campo novo usado por este plugin.
 """
 
 from __future__ import annotations

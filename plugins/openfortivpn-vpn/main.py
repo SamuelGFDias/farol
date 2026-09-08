@@ -14,7 +14,9 @@ quem inicia cada requisição; este processo nunca escreve nada em stdout antes 
 nunca faz parte do protocolo em si.
 
 Apenas biblioteca padrão — `json`, `sys`.
-Migrado para `"0.4"` como parte da feature 005 (`specs/005-docker-containers-plugin/research.md` D2) — mudança mecânica, nenhum campo novo usado por este plugin.
+Migrado para `"0.4"` como parte da feature 005
+(`specs/005-docker-containers-plugin/research.md` D2) — mudança mecânica, nenhum
+campo novo usado por este plugin.
 """
 
 from __future__ import annotations
