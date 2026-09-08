@@ -393,16 +393,18 @@ plugin antes de considerar uma mudança Python pronta.
 - `git-local` (feature 001): testes em `tests/unit/test_git_local_scan.py` (raiz do repo,
   `unittest`, ver `tests/unit/README.md`) — repositórios git reais em diretórios temporários, não
   mocks de subprocess.
-- `uptime-kuma` (feature 002): testes colocados junto do código
-  (`plugins/uptime-kuma/test_*.py`, `unittest`, D7 de `research.md`), **não** em `tests/unit/` —
-  divergência de layout pré-existente entre as duas features, não corrigida (mover exigiria tocar um
-  arquivo fora do escopo de quem a criou; ver a nota de T046 em
-  `specs/002-uptime-kuma-plugin/tasks.md`). Rodar tudo junto: `python3 -m unittest discover -p
-  "test_*.py"` dentro de `plugins/uptime-kuma/` (21 testes) — `test_metrics_parser.py` (parsing
-  Prometheus, mapeamento de status FR-012), `test_poller.py` (cache/erro do poller,
-  `metrics_client.fetch_metrics` mockado via `unittest.mock`), `test_config.py`/`test_secrets.py`
-  (leitura de `FAROL_PLUGIN_UPTIME_KUMA_BASE_URL`/`_API_KEY` via `unittest.mock.patch.dict(os.environ,
-  ...)`, nunca segredo real).
+- `uptime-kuma` (feature 002): testes em `tests/unit/test_uptime_kuma_*.py` (`unittest`, D7 de
+  `research.md`) — mesmo padrão de layout que `git-local` (issue #8; movidos de
+  `plugins/uptime-kuma/test_*.py`, ver a nota de T046 em `specs/002-uptime-kuma-plugin/tasks.md`).
+  Cada arquivo insere `plugins/uptime-kuma/` em `sys.path` no import, seguindo o padrão de
+  `tests/unit/test_git_local_scan.py` para `git-local`. Rodar tudo junto (a partir da raiz do repo):
+  `pytest tests/unit/test_uptime_kuma_*.py -v` (ou `python3 -m unittest discover -s tests/unit -p
+  "test_uptime_kuma_*.py"`) — 21 testes — `test_uptime_kuma_metrics_parser.py` (parsing Prometheus,
+  mapeamento de status FR-012), `test_uptime_kuma_poller.py` (cache/erro do poller,
+  `metrics_client.fetch_metrics` mockado via `unittest.mock`),
+  `test_uptime_kuma_config.py`/`test_uptime_kuma_secrets.py` (leitura de
+  `FAROL_PLUGIN_UPTIME_KUMA_BASE_URL`/`_API_KEY` via `unittest.mock.patch.dict(os.environ, ...)`,
+  nunca segredo real).
 - `openfortivpn-vpn` (feature 004): testes colocados junto do código (`plugins/openfortivpn-vpn/
   test_vpn_cli.py`, `unittest`, mesmo padrão de feature 002). Rodar: `python3 -m unittest discover
   -p "test_*.py"` dentro de `plugins/openfortivpn-vpn/` (15 testes) — `test_vpn_cli.py` cobre

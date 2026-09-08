@@ -4,15 +4,24 @@
 documento — aqui via `unittest.mock.patch.dict(os.environ, ...)`, com um valor sintético, nunca um
 segredo real.
 
-Rodar com: `python3 test_secrets.py` (ou `python3 -m unittest test_secrets`).
+Rodar com: `pytest tests/unit/test_uptime_kuma_secrets.py -v` (ou `python3 -m unittest
+discover -s tests/unit -p "test_uptime_kuma_*.py"`) a partir da raiz do repo. Movido de
+`plugins/uptime-kuma/test_secrets.py` para `tests/unit/` na issue #8.
 """
 
 from __future__ import annotations
 
 import os
+import sys
 import unittest
-from secrets import ENV_VAR_API_KEY, load_api_key
+from pathlib import Path
 from unittest import mock
+
+PLUGIN_DIR = Path(__file__).resolve().parents[2] / "plugins" / "uptime-kuma"
+if str(PLUGIN_DIR) not in sys.path:
+    sys.path.insert(0, str(PLUGIN_DIR))
+
+from secrets import ENV_VAR_API_KEY, load_api_key  # noqa: E402 — import depende do sys.path.insert acima; sombreia o módulo stdlib `secrets` de propósito
 
 
 class LoadApiKeyTests(unittest.TestCase):

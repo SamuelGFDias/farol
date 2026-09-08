@@ -670,6 +670,14 @@ story.
   sintético, presente/ausente/vazio. 21 testes no total (`python3 -m unittest discover -p
   "test_*.py"`), `ruff check .` limpo.
 
+  **Atualização (2026-09-04, issue #8)**: os 4 arquivos foram movidos de `plugins/uptime-kuma/
+  test_*.py` para `tests/unit/test_uptime_kuma_*.py`, alinhando finalmente com o caminho que esta
+  task já pedia no texto original acima. Cada arquivo agora insere `plugins/uptime-kuma/` em
+  `sys.path` no import (mesmo padrão de `tests/unit/test_git_local_scan.py` para `git-local`). Os
+  21 testes continuam passando: `pytest tests/unit/test_uptime_kuma_*.py -v` e `python3 -m unittest
+  discover -s tests/unit -p "test_uptime_kuma_*.py"`. Ver `AGENTS.md` § "Python (plugins)" e
+  `tests/unit/README.md`.
+
 ---
 
 ## Débito técnico (issues abertas)

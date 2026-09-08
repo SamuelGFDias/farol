@@ -1,14 +1,22 @@
 """Testes de regressão para `metrics_parser.py` — só stdlib (`unittest`), sem framework externo
 (D7 de `research.md`).
 
-Rodar com: `python3 test_metrics_parser.py` (ou `python3 -m unittest test_metrics_parser`).
+Rodar com: `pytest tests/unit/test_uptime_kuma_metrics_parser.py -v` (ou `python3 -m unittest
+discover -s tests/unit -p "test_uptime_kuma_*.py"`) a partir da raiz do repo. Movido de
+`plugins/uptime-kuma/test_metrics_parser.py` para `tests/unit/` na issue #8.
 """
 
 from __future__ import annotations
 
+import sys
 import unittest
+from pathlib import Path
 
-from metrics_parser import MetricsParseError, parse_metrics
+PLUGIN_DIR = Path(__file__).resolve().parents[2] / "plugins" / "uptime-kuma"
+if str(PLUGIN_DIR) not in sys.path:
+    sys.path.insert(0, str(PLUGIN_DIR))
+
+from metrics_parser import MetricsParseError, parse_metrics  # noqa: E402 — import depende do sys.path.insert acima
 
 
 class ParseMetricsTests(unittest.TestCase):

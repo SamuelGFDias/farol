@@ -4,16 +4,24 @@ mockando a chamada HTTP (`metrics_client.fetch_metrics`) — nunca rede de verda
 real (`_poll_once` é chamado diretamente; a cadência do laço `while True: ...; time.sleep(...)` de
 `PollerThread.run` já é comportamento de biblioteca padrão, não deste plugin).
 
-Rodar com: `python3 test_poller.py` (ou `python3 -m unittest test_poller`).
+Rodar com: `pytest tests/unit/test_uptime_kuma_poller.py -v` (ou `python3 -m unittest
+discover -s tests/unit -p "test_uptime_kuma_*.py"`) a partir da raiz do repo. Movido de
+`plugins/uptime-kuma/test_poller.py` para `tests/unit/` na issue #8.
 """
 
 from __future__ import annotations
 
+import sys
 import unittest
+from pathlib import Path
 from unittest import mock
 
-from metrics_client import MetricsUnreachableError
-from poller import MetricsCache, PollerThread
+PLUGIN_DIR = Path(__file__).resolve().parents[2] / "plugins" / "uptime-kuma"
+if str(PLUGIN_DIR) not in sys.path:
+    sys.path.insert(0, str(PLUGIN_DIR))
+
+from metrics_client import MetricsUnreachableError  # noqa: E402 — import depende do sys.path.insert acima
+from poller import MetricsCache, PollerThread  # noqa: E402
 
 
 class MetricsCacheTests(unittest.TestCase):
