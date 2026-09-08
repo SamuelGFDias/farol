@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/farol-core", "crates/farol-protocol"]
+members = ["crates/farol-core", "crates/farol-protocol", "crates/farol-seccomp-preload"]
 resolver = "2"
 
 [workspace.package]

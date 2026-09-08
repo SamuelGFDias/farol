@@ -1,0 +1,36 @@
+[package]
+name = "farol-seccomp-preload"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+# Não publicado nem consumido como dependência de código Rust por nenhum
+# outro crate do workspace — só o artefato binário (`.so`) compilado é usado,
+# via `LD_PRELOAD`, por `farol-core::sandbox::build_bwrap_args` (feature
+# `009-sandbox-hardening`, User Story 1, issue #12). Ver doc de `src/lib.rs`.
+publish = false
+
+[lib]
+name = "farol_seccomp_preload"
+# `cdylib`: precisa ser um `.so` carregável em processo já em execução via
+# `LD_PRELOAD`/`dlopen` — um `rlib` comum (o default implícito de um crate
+# sem `[lib]`) não produz esse formato binário.
+crate-type = ["cdylib"]
+
+[dependencies]
+# Mesma versão declarada em `crates/farol-core/Cargo.toml` — evita duas
+# versões major distintas de `seccompiler`/`libc` resolvidas no
+# `Cargo.lock` do workspace só porque a lógica de geração do filtro foi
+# duplicada aqui (ver "Por que duplicar, não importar farol-core" em
+# `src/lib.rs`).
+seccompiler = "0.4"
+libc = "0.2"
+# `#[ctor]`: gera a seção de linker ELF (`.init_array`) que faz este
+# construtor rodar assim que o dynamic linker termina de carregar este
+# `.so` via `LD_PRELOAD` — antes do `main()` do processo alvo (ex. o
+# interpretador `python3` de um plugin). Só a feature `proc_macro` (a macro
+# de atributo `#[ctor::ctor]` usada em `src/lib.rs`) — `default-features =
+# false` evita puxar `dtor`/`dtor-proc-macro`/`link-section` (features
+# `dtor`/`priority` do crate `ctor`, não usadas aqui: este `.so` nunca
+# precisa rodar código ao ser descarregado, nem ordenar vários construtores
+# entre si).
+ctor = { version = "0.10", default-features = false, features = ["proc_macro"] }

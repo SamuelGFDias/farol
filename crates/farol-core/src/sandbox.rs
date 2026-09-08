@@ -133,6 +133,55 @@ pub fn resolve_interpreter_path(command: &str) -> Option<PathBuf> {
     None
 }
 
+/// Erro de montagem do sandbox: sinaliza que um mecanismo de enforcement
+/// REAL (não só visibilidade de filesystem) não pôde ser aplicado no sistema
+/// atual (feature `009-sandbox-hardening`, T003, foundational a US1/US2).
+///
+/// Fail-closed (FR-004): nenhuma variante tem um caminho de fallback
+/// silencioso para o comportamento antigo (só filesystem para `exec`,
+/// liga/desliga total para `network`) — o chamador MUST recusar montar o
+/// sandbox sem a proteção correspondente. Como [`build_bwrap_args`] é hoje
+/// uma função infalível (`Vec<String>`, chamada por `plugin_worker::worker()`
+/// sem tratamento de `Result` — mudar essa assinatura pública está fora do
+/// escopo desta feature, ver `plan.md` § Complexity Tracking), o contrato é
+/// propagar a mensagem deste erro via `panic!` no ponto exato em que o
+/// mecanismo se revela indisponível, nunca continuar a composição dos
+/// argumentos como se a proteção estivesse em vigor.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SandboxMountError {
+    /// [US1] O filtro seccomp real de `exec` (`crates/farol-seccomp-preload`,
+    /// aplicado via `LD_PRELOAD`) não pôde ser localizado/aplicado neste
+    /// sistema — na prática, hoje, sempre porque o `.so` ainda não foi
+    /// compilado (`cargo build -p farol-seccomp-preload`); a mensagem já vem
+    /// pronta de [`crate::sandbox_seccomp::locate_seccomp_preload_library`].
+    SeccompUnavailable(String),
+    /// [US2] `nft`/`iptables` ausentes ou inutilizáveis para aplicar a
+    /// allowlist de rede por host declarada num `SandboxProfile`. Variante
+    /// declarada nesta task (T003) só para que o tipo de erro seja único e
+    /// compartilhado entre US1 e US2 — nenhuma lógica de rede é implementada
+    /// neste módulo por esta feature (US2, issue #13, é escopo futuro).
+    /// `#[allow(dead_code)]`: ainda não construída em lugar nenhum (mesmo
+    /// padrão já usado em `plugin_manifest.rs`/`registry_index.rs` para
+    /// tipos que só ganham consumidor numa task/feature futura).
+    #[allow(dead_code)]
+    NetworkFirewallUnavailable(String),
+}
+
+impl std::fmt::Display for SandboxMountError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            SandboxMountError::SeccompUnavailable(detail) => {
+                write!(f, "mediação real de exec via seccomp indisponível: {detail}")
+            }
+            SandboxMountError::NetworkFirewallUnavailable(detail) => {
+                write!(f, "allowlist de rede via nftables/iptables indisponível: {detail}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for SandboxMountError {}
+
 /// Constrói a lista de argumentos de `bwrap` para spawnar `command`/`args`
 /// (o comando/args do plugin real, já resolvidos como caminho absoluto em
 /// `interpreter_path` por [`resolve_interpreter_path`]) sob o perfil de
@@ -146,10 +195,26 @@ pub fn resolve_interpreter_path(command: &str) -> Option<PathBuf> {
 /// que nenhum bind subsequente corra risco de estar aninhado sob um desses
 /// três caminhos e ser sombreado (D5, correção de escopo 2026-09-03); (3)
 /// binds base de lib/interpretador; (4) binds condicionais a
-/// `allow_network`; (5) binds condicionais a `allow_exec`; (6) bind da raiz
-/// do repo + `--chdir`; (7) `extra_binds`, sempre por último entre os binds
-/// reais — a posição relativa aos passos 3-6 não importa, só estar depois
-/// do passo 2; (8) `--` + o comando final.
+/// `allow_network`; (5) binds condicionais a `allow_exec` (bind read-only de
+/// `/usr/bin`/`/bin`/`/usr/local/bin` quando `true`, mediação por
+/// visibilidade de filesystem, D3 da feature 006); (6) bind da raiz do repo
+/// e `--chdir`; (6b) [US1, T005, feature `009-sandbox-hardening`] mediação
+/// REAL de `exec` via seccomp quando `allow_exec = false`: bind read-only do
+/// `.so` de `farol-seccomp-preload` + `--setenv LD_PRELOAD <caminho>` —
+/// MUST vir depois do passo (6), nunca antes (mesma classe de bug de
+/// sombreamento de ordem já corrigida para `extra_binds` em D5; o `.so`
+/// vive sob `<repo_root>/target/{debug,release}/`, aninhado sob o bind da
+/// raiz do repo); (7) `extra_binds`, sempre por último entre os binds reais
+/// — a posição relativa aos passos 3-6b não importa, só estar depois do
+/// passo 2; (8) `--` + o comando final.
+///
+/// Fail-closed (FR-004, `plan.md` D1 revisado): quando `allow_exec = false`
+/// e o `.so` de `farol-seccomp-preload` não pode ser localizado
+/// (`sandbox_seccomp::locate_seccomp_preload_library` devolve
+/// `Err(SandboxMountError::SeccompUnavailable)`), esta função entra em
+/// `panic!` com a mensagem do erro em vez de compor um sandbox sem a
+/// proteção real de `exec` — nunca degrada silenciosamente para o
+/// comportamento antigo (só visibilidade de filesystem).
 ///
 /// `command` (o nome/comando original do plugin, ex. `"python3"`) não entra
 /// na lista de argumentos produzida — o processo final é sempre invocado
@@ -219,6 +284,43 @@ pub fn build_bwrap_args(
     out.push(repo_root_str.clone());
     out.push("--chdir".to_string());
     out.push(repo_root_str);
+
+    // (6b) [US1, T005] Mediação REAL de `exec` via seccomp (issue #12):
+    // quando `allow_exec = false`, localiza o `.so` já compilado de
+    // `farol-seccomp-preload` (`sandbox_seccomp::locate_seccomp_preload_library`),
+    // bind-monta-o read-only dentro do sandbox e repassa `--setenv LD_PRELOAD
+    // <caminho>` ao `bwrap` — o construtor ELF do `.so` (`#[ctor]`) aplica o
+    // filtro seccomp-bpf real DENTRO do processo do plugin, depois que o
+    // `bwrap` já o `exec`ou com sucesso (D1 revisado de `plan.md`), fechando
+    // o vetor de escrever-e-executar um binário por caminho absoluto num
+    // `tmpfs` gravável que a mediação por visibilidade de filesystem (D3 da
+    // feature 006) sozinha não cobria.
+    //
+    // Posicionado DEPOIS do bind da raiz do repo (passo 6, acima), nunca
+    // antes — mesma classe de bug de sombreamento de ordem já documentada e
+    // testada para `extra_binds` (D5): o `.so` vive sob
+    // `<repo_root>/target/{debug,release}/`, aninhado sob esse bind.
+    //
+    // Quando `allow_exec = true`, NÃO aplica filtro nenhum (D2 de
+    // `plan.md`) — mantém o comportamento atual do passo (5) acima, sem
+    // mudança.
+    //
+    // Fail-closed (FR-004): `panic!` com a mensagem do erro se o `.so` não
+    // puder ser localizado — nunca monta o sandbox sem a proteção real.
+    if !profile.allow_exec {
+        match crate::sandbox_seccomp::locate_seccomp_preload_library() {
+            Ok(preload_path) => {
+                let preload_str = preload_path.to_string_lossy().into_owned();
+                out.push("--ro-bind".to_string());
+                out.push(preload_str.clone());
+                out.push(preload_str.clone());
+                out.push("--setenv".to_string());
+                out.push("LD_PRELOAD".to_string());
+                out.push(preload_str);
+            }
+            Err(err) => panic!("{err}"),
+        }
+    }
 
     // (7) `extra_binds` do `SandboxProfile` — SEMPRE por último entre os
     // binds reais, depois do passo 2 (D5, regressão de ordem coberta em
@@ -309,6 +411,109 @@ mod sandbox_unit_tests {
         assert!(args.contains(&"/usr/bin".to_string()));
         assert!(args.contains(&"/bin".to_string()));
         assert!(args.contains(&"/usr/local/bin".to_string()));
+    }
+
+    /// T006 (feature `009-sandbox-hardening`, US1): `allow_exec = false` MUST
+    /// resultar num bind read-only do `.so` de `farol-seccomp-preload` e num
+    /// `--setenv LD_PRELOAD <caminho>` correspondente — a mediação real de
+    /// exec via seccomp (issue #12). Depende do `.so` já estar compilado
+    /// (`cargo build -p farol-seccomp-preload`); sem ele,
+    /// `locate_seccomp_preload_library()` devolve `Err` e o `.expect(...)`
+    /// abaixo falha com uma mensagem explicando o pré-requisito, em vez de
+    /// deixar `build_bwrap_args` panicar de forma menos clara.
+    #[test]
+    fn exec_denied_binds_seccomp_preload_library_and_sets_ld_preload() {
+        let preload_path = crate::sandbox_seccomp::locate_seccomp_preload_library()
+            .expect(
+                "libfarol_seccomp_preload.so MUST estar compilado para este teste — rode \
+                 `cargo build -p farol-seccomp-preload` antes de `cargo test -p farol-core`",
+            )
+            .to_string_lossy()
+            .into_owned();
+
+        let args = build_bwrap_args(
+            Path::new("/repo"),
+            Path::new("/usr/bin/python3"),
+            &profile(false, false, vec![]),
+            "python3",
+            &[],
+        );
+
+        let bind_flag_index = args
+            .iter()
+            .position(|a| a == &preload_path)
+            .map(|i| i - 1)
+            .unwrap_or_else(|| {
+                panic!("esperava bind do .so de farol-seccomp-preload ({preload_path:?}) em args={args:?}")
+            });
+        assert_eq!(
+            args[bind_flag_index], "--ro-bind",
+            "o .so de farol-seccomp-preload MUST ser bindado read-only (não --ro-bind-try, já \
+             que sua ausência é fail-closed via panic!, não um bind opcional)"
+        );
+
+        let setenv_index = args
+            .iter()
+            .position(|a| a == "--setenv")
+            .expect("esperava --setenv LD_PRELOAD <caminho> presente quando allow_exec=false");
+        assert_eq!(args[setenv_index + 1], "LD_PRELOAD");
+        assert_eq!(args[setenv_index + 2], preload_path);
+    }
+
+    /// T006: o caso contrário — `allow_exec = true` NÃO aplica o filtro
+    /// seccomp (D2 de `plan.md`), então nenhum bind do `.so` nem
+    /// `--setenv LD_PRELOAD` deve aparecer.
+    #[test]
+    fn exec_allowed_does_not_bind_seccomp_preload_library_nor_set_ld_preload() {
+        let args = build_bwrap_args(
+            Path::new("/repo"),
+            Path::new("/usr/bin/python3"),
+            &profile(false, true, vec![]),
+            "python3",
+            &[],
+        );
+
+        assert!(
+            !args.contains(&"--setenv".to_string()),
+            "allow_exec=true não deveria emitir nenhum --setenv; args={args:?}"
+        );
+        assert!(
+            !args.iter().any(|a| a.ends_with("libfarol_seccomp_preload.so")),
+            "allow_exec=true não deveria bindar o .so de farol-seccomp-preload; args={args:?}"
+        );
+    }
+
+    /// T008: fail-closed (FR-004) — com o escape-hatch de teste de
+    /// `sandbox_seccomp` forçando o `.so` a parecer ausente, `allow_exec =
+    /// false` MUST fazer `build_bwrap_args` entrar em `panic!` em vez de
+    /// devolver um `Vec<String>` que monta o sandbox sem a proteção real de
+    /// exec. Serializado via `FORCE_LIBRARY_MISSING_ENV_VAR_TEST_LOCK`
+    /// (mesmo lock compartilhado com `sandbox_seccomp::tests`, doc do lock
+    /// em `sandbox_seccomp.rs` explica por quê precisa ser único).
+    #[test]
+    fn exec_denied_panics_when_seccomp_preload_library_cannot_be_located() {
+        let _guard = crate::sandbox_seccomp::FORCE_LIBRARY_MISSING_ENV_VAR_TEST_LOCK
+            .lock()
+            .unwrap_or_else(|e| e.into_inner());
+
+        std::env::set_var(crate::sandbox_seccomp::FORCE_LIBRARY_MISSING_ENV_VAR, "1");
+        let result = std::panic::catch_unwind(|| {
+            build_bwrap_args(
+                Path::new("/repo"),
+                Path::new("/usr/bin/python3"),
+                &profile(false, false, vec![]),
+                "python3",
+                &[],
+            )
+        });
+        std::env::remove_var(crate::sandbox_seccomp::FORCE_LIBRARY_MISSING_ENV_VAR);
+
+        assert!(
+            result.is_err(),
+            "esperava panic! quando o .so de farol-seccomp-preload não pode ser localizado \
+             (FR-004, fail-closed) — build_bwrap_args NUNCA deve montar o sandbox sem a \
+             proteção real de exec"
+        );
     }
 
     #[test]
@@ -571,9 +776,22 @@ mod sandbox_integration_tests {
         );
     }
 
-    /// Perfil sem exec: `subprocess.run(['/usr/bin/true'])` MUST falhar com
-    /// `FileNotFoundError` — replica o experimento manual de `research.md`
-    /// D3/D11 ("No such file or directory").
+    /// Perfil sem exec: `subprocess.run(['/usr/bin/true'])` MUST falhar —
+    /// originalmente (feature 006, D3/D11) sempre com `FileNotFoundError`
+    /// ("No such file or directory"), já que `/usr/bin` nunca é bindado sob
+    /// `allow_exec=false`. Desde a feature `009-sandbox-hardening` (T005), o
+    /// filtro seccomp real (`LD_PRELOAD` de `farol-seccomp-preload`) também
+    /// está ativo sob `allow_exec=false` e intercepta a própria syscall
+    /// `execve` ANTES de o kernel sequer resolver o caminho — a exceção
+    /// observada passa a ser `PermissionError` (`EACCES`, a ação do filtro
+    /// BPF), não mais `FileNotFoundError` (`ENOENT`, a ausência de bind).
+    /// Aceita as duas para continuar válido independente de qual dos dois
+    /// mecanismos de mediação (visibilidade de filesystem da feature 006, ou
+    /// seccomp da feature 009) é o primeiro a barrar a tentativa — a
+    /// conclusão relevante ("BLOCKED") é a mesma nos dois casos. Ver
+    /// `seccomp_preload_blocks_execve_of_a_binary_written_inside_the_sandboxed_tmpfs`
+    /// (T007, abaixo) para o teste que isola especificamente o mecanismo
+    /// seccomp, provando que é ele (e não a ausência de bind) que bloqueia.
     #[test]
     fn exec_denied_blocks_external_binary() {
         let interpreter = python3_path();
@@ -593,7 +811,7 @@ mod sandbox_integration_tests {
                  try:\n\
                  \tsubprocess.run(['/usr/bin/true'])\n\
                  \tprint('LEAKED')\n\
-                 except FileNotFoundError:\n\
+                 except (FileNotFoundError, PermissionError):\n\
                  \tprint('BLOCKED')\n"
                     .to_string(),
             ],
@@ -610,6 +828,137 @@ mod sandbox_integration_tests {
             "esperava exec bloqueado (BLOCKED) sob allow_exec=false; stdout={stdout:?} stderr={:?}",
             String::from_utf8_lossy(&output.stderr)
         );
+    }
+
+    /// [US1, T007] Garante que `libfarol_seccomp_preload.so` está compilado
+    /// antes de um teste de integração que dependa da mediação real de
+    /// `exec` via seccomp rodar — evita que o resultado do teste dependa da
+    /// ordem de execução ou de um `cargo build -p farol-seccomp-preload`
+    /// manual prévio. Idempotente: só dispara o build se
+    /// `sandbox_seccomp::locate_seccomp_preload_library()` ainda não
+    /// encontrar o artefato; devolve o caminho localizado (usado pelos
+    /// testes para comparar contra `--setenv LD_PRELOAD`).
+    fn ensure_seccomp_preload_library_is_built() -> PathBuf {
+        if let Ok(path) = crate::sandbox_seccomp::locate_seccomp_preload_library() {
+            return path;
+        }
+
+        let status = Command::new("cargo")
+            .args(["build", "-p", "farol-seccomp-preload"])
+            .status()
+            .expect("cargo MUST estar disponível para compilar farol-seccomp-preload");
+        assert!(
+            status.success(),
+            "`cargo build -p farol-seccomp-preload` falhou — não é possível testar a mediação \
+             real de exec via seccomp sem o .so compilado"
+        );
+
+        crate::sandbox_seccomp::locate_seccomp_preload_library().expect(
+            "libfarol_seccomp_preload.so ainda não encontrado depois do build — verifique o \
+             nome do artefato/target dir (sandbox_seccomp::locate_seccomp_preload_library)",
+        )
+    }
+
+    /// [US1, T007] Prova que É O FILTRO SECCOMP (via `LD_PRELOAD`), não a
+    /// ausência de bind de `/usr/bin`, que bloqueia `exec` sob `allow_exec =
+    /// false` — diferente de `exec_denied_blocks_external_binary` (acima),
+    /// que só prova que um binário do HOST nunca bindado (`/usr/bin/true`)
+    /// não existe do ponto de vista do sandbox (mediação da feature 006,
+    /// visibilidade de filesystem). Aqui o plugin escreve um binário
+    /// executável DENTRO do `tmpfs` gravável que ele já enxerga (`--tmpfs
+    /// /tmp`, passo 2 de `build_bwrap_args`) e tenta executá-lo por caminho
+    /// absoluto: o arquivo existe de fato, tem permissão de execução, e
+    /// mesmo assim a tentativa de `execve` MUST falhar, porque o filtro
+    /// seccomp aplicado pelo `.so` de `farol-seccomp-preload` (via
+    /// `LD_PRELOAD`) intercepta a própria syscall antes de o kernel sequer
+    /// tentar resolver o shebang/interpretador do arquivo.
+    #[test]
+    fn seccomp_preload_blocks_execve_of_a_binary_written_inside_the_sandboxed_tmpfs() {
+        ensure_seccomp_preload_library_is_built();
+
+        let interpreter = python3_path();
+        let profile = SandboxProfile {
+            allow_network: false,
+            allow_exec: false,
+            extra_binds: vec![],
+        };
+        let args = build_bwrap_args(
+            &repo_root(),
+            &interpreter,
+            &profile,
+            "python3",
+            &[
+                "-c".to_string(),
+                "import os, subprocess\n\
+                 payload = '/tmp/farol-sandbox-seccomp-payload'\n\
+                 with open(payload, 'w') as f:\n\
+                 \tf.write('#!/bin/sh\\necho SHOULD_NOT_RUN\\n')\n\
+                 os.chmod(payload, 0o755)\n\
+                 try:\n\
+                 \tsubprocess.run([payload], check=True)\n\
+                 \tprint('LEAKED')\n\
+                 except (PermissionError, OSError):\n\
+                 \tprint('BLOCKED')\n"
+                    .to_string(),
+            ],
+        );
+
+        let output = Command::new("bwrap")
+            .args(&args)
+            .output()
+            .expect("bwrap MUST estar instalado e executável nesta máquina");
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            stdout.contains("BLOCKED"),
+            "esperava BLOCKED — o filtro seccomp (LD_PRELOAD de farol-seccomp-preload) deve \
+             negar o execve do binário escrito dentro do tmpfs gravável do sandbox, mesmo com \
+             o arquivo existindo e executável de verdade (issue #12); \
+             stdout={stdout:?} stderr={:?}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(
+            !stdout.contains("LEAKED"),
+            "NUNCA deveria conseguir executar um binário escrito dentro do tmpfs sob \
+             allow_exec=false; stdout={stdout:?}"
+        );
+    }
+
+    /// [US1, T007] Segundo cenário exigido pela task: operação normal do
+    /// plugin (sem nenhuma tentativa de `execve`/`execveat`) continua
+    /// funcionando sem erro com o filtro seccomp ativo — o filtro só nega
+    /// `exec`, não deve interferir em nada mais do processo.
+    #[test]
+    fn seccomp_preload_does_not_break_normal_plugin_operation_without_exec() {
+        ensure_seccomp_preload_library_is_built();
+
+        let interpreter = python3_path();
+        let profile = SandboxProfile {
+            allow_network: false,
+            allow_exec: false,
+            extra_binds: vec![],
+        };
+        let args = build_bwrap_args(
+            &repo_root(),
+            &interpreter,
+            &profile,
+            "python3",
+            &["-c".to_string(), "print('OK')\n".to_string()],
+        );
+
+        let output = Command::new("bwrap")
+            .args(&args)
+            .output()
+            .expect("bwrap MUST estar instalado e executável nesta máquina");
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            output.status.success(),
+            "operação normal do plugin (sem exec) NÃO deveria falhar com o filtro seccomp \
+             (LD_PRELOAD) ativo; stdout={stdout:?} stderr={:?}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert!(stdout.contains("OK"), "stdout={stdout:?}");
     }
 
     /// Localiza a entrada de `plugin_name` no registro real
@@ -670,7 +1019,9 @@ mod sandbox_integration_tests {
 
     /// T013/T018: perfil REAL de `uptime-kuma` (`allow_exec: false`) — mesmo
     /// experimento negativo de exec que `exec_denied_blocks_external_binary`,
-    /// mas atrelado à configuração real do plugin.
+    /// mas atrelado à configuração real do plugin. Mesma nota sobre
+    /// `PermissionError`/`FileNotFoundError` desde a feature
+    /// `009-sandbox-hardening` (T005) se aplica aqui — ver doc daquele teste.
     #[test]
     fn uptime_kuma_real_profile_denies_exec() {
         let interpreter = python3_path();
@@ -690,7 +1041,7 @@ mod sandbox_integration_tests {
                  try:\n\
                  \tsubprocess.run(['/usr/bin/true'])\n\
                  \tprint('LEAKED')\n\
-                 except FileNotFoundError:\n\
+                 except (FileNotFoundError, PermissionError):\n\
                  \tprint('BLOCKED')\n"
                     .to_string(),
             ],
