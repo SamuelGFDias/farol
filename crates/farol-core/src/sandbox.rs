@@ -806,6 +806,8 @@ mod sandbox_integration_tests {
             ("GIT_AUTHOR_EMAIL", "farol-sandbox-test@example.invalid"),
             ("GIT_COMMITTER_NAME", "Farol Sandbox Test"),
             ("GIT_COMMITTER_EMAIL", "farol-sandbox-test@example.invalid"),
+            ("GIT_CONFIG_GLOBAL", "/dev/null"),
+            ("GIT_CONFIG_SYSTEM", "/dev/null"),
         ];
 
         let run_git = |args: &[&str], cwd: &Path| {
